@@ -279,7 +279,7 @@ function Ensure-VoiceEnvironment {
     $env:AMADEUS_REPAIR_BASE_MODELS = $(if ($LASTEXITCODE -eq 0) { "0" } else { "1" })
     Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--index-url", $torchIndex, "torch==$($environment.torch.version)", "torchaudio==$($environment.torch.version)")
     Invoke-Native -FilePath $Conda -Arguments @(
-        "run", "--prefix", $voiceEnv,
+        "run", "--no-capture-output", "--prefix", $voiceEnv,
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $gptRoot "install.ps1"),
         "-Device", $device,
