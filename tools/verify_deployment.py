@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -21,13 +22,32 @@ def probe(python: Path, modules: list[str]) -> dict:
     return {"ok": result.returncode == 0, "error": result.stderr[-1200:] if result.returncode else ""}
 
 
+def verify_source(root: Path) -> dict:
+    source = root / ".sources/GPT-SoVITS"
+    expected = json.loads((root / "configs/deployment_environment.json").read_text(encoding="utf-8"))["gptSovits"]["commit"]
+    if not (source / "GPT_SoVITS/inference_webui.py").is_file():
+        return {"ok": False, "error": "inference_source_missing"}
+    git = shutil.which("git")
+    if not git:
+        git = next((str(path) for path in (
+            root / ".tools/git/Library/bin/git.exe",
+            root / ".tools/git/Library/usr/bin/git.exe",
+        ) if path.is_file()), "git")
+    try:
+        result = subprocess.run([git, "-C", str(source), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, encoding="utf-8", timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"ok": False, "error": str(error)}
+    actual = result.stdout.strip()
+    return {"ok": result.returncode == 0 and actual == expected, "expected": expected, "actual": actual}
+
+
 def verify(root: Path) -> dict:
     source = root / ".sources/GPT-SoVITS"
-    patched = source / "GPT_SoVITS/AR/models/t2s_lightning_module.py"
     results = {
         "desktop": probe(root / ".conda/amadeus-desktop/python.exe", ["webview", "PIL", "pypdf", "cv2", "numpy", "onnxruntime", "tokenizers"]),
         "voice": probe(root / ".conda/gpt-sovits/python.exe", ["torch", "librosa", "soundfile", "transformers", "pyopenjtalk"]),
-        "gptSovitsSource": {"ok": patched.is_file() and "AMADEUS_GPT_FREEZE_FIRST_LAYERS" in patched.read_text(encoding="utf-8")},
+        "gptSovitsSource": verify_source(root),
         "rhubarb": {"ok": (root / ".tools/rhubarb/Rhubarb-Lip-Sync-1.14.0-Windows/rhubarb.exe").is_file()},
     }
     voice_python = root / ".conda/gpt-sovits/python.exe"

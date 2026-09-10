@@ -2,7 +2,20 @@
 
 面向 Windows 的 Live2D 桌面助手，支持文字对话、长期记忆、Todo 与日程、主动提醒、日语情绪语音、口型同步，以及按需截图、摄像头和网页工具。
 
-## 一条命令部署
+## 拉取后启动
+
+下载并解压源码，或用 Git 拉取后，双击根目录的 **`start.cmd`** 即可。首次启动会自动下载安装缺少的环境和声音资源，准备完成后打开界面；以后仍双击同一个文件。无需先运行其他安装脚本，也无需手动安装 Python。
+
+```powershell
+git clone --depth 1 https://github.com/Akatosh6DW/Amadeus.git
+.\Amadeus\start.cmd
+```
+
+第一次需要联网等待下载：主要环境、基础模型和声音包合计超过 9 GB，实际时间取决于网络。请保留启动窗口，完成后在“设置 → API”填写自己的 API Key。下载失败时，处理提示中的问题后重新双击 `start.cmd`，程序会检查并补齐缺失内容。完整的已下载资源会复用；未完成的文件可能需要重新下载。
+
+主仓库与声音资源仓库公开后，未登录 GitHub 的用户才能直接下载。单独的拉取动作只下载源码，自动准备在第一次启动时执行。
+
+## 尚未下载源码：一条命令安装并启动
 
 在 **64 位 Windows 10/11 的 PowerShell** 中粘贴：
 
@@ -23,12 +36,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/Akatosh6DW/Amadeus/main/inst
 powershell -ExecutionPolicy Bypass -File .\install-amadeus.ps1 -InstallDirectory D:\Apps\Amadeus -Backend cpu
 ```
 
-如果已经下载并解压仓库 ZIP，可直接双击 `deploy.cmd`；如果已安装 Git，也可以：
-
-```powershell
-git clone --depth 1 https://github.com/Akatosh6DW/Amadeus.git
-.\Amadeus\deploy.cmd
-```
+已经拿到源码时直接双击 `start.cmd`。原 `deploy.cmd` 保留为手动部署入口。
 
 ## 自动安装的内容
 
@@ -37,7 +45,7 @@ git clone --depth 1 https://github.com/Akatosh6DW/Amadeus.git
 桌面使用 Python 3.11，语音使用 Python 3.10；PyTorch/TorchAudio 固定 2.7.0，Transformers 固定 4.50.0。GPT-SoVITS 固定到清单中的提交。Miniforge 安装器与 WebView2 使用官方维护的安装入口。依赖由安装脚本下载，单独执行 `git clone` 只会下载仓库文件。
 
 - 桌面 Python 环境：`.conda/amadeus-desktop`，包含界面、附件处理、截图/摄像头采集及人格检索依赖。
-- 语音 Python 环境：`.conda/gpt-sovits`，固定版本的 GPT-SoVITS 源码、项目补丁与上游基础资源。
+- 语音 Python 环境：`.conda/gpt-sovits`，固定版本的 GPT-SoVITS 源码与上游基础资源。普通部署不应用声音训练补丁；上游安装脚本的 Windows 兼容修正仍由安装器自动处理。
 - 缺失时补齐 Git、项目专用 Miniforge、Microsoft WebView2、Rhubarb 口型工具。
 - `AmadeusVoice` 提供 V7 默认/V6 回退权重、参考音频、原声反应及人格检索资源；下载有完整包和逐文件 SHA-256 校验。
 
@@ -47,7 +55,7 @@ git clone --depth 1 https://github.com/Akatosh6DW/Amadeus.git
 
 ## 使用与检查
 
-以后可在安装目录执行 `powershell -ExecutionPolicy Bypass -File .\run_amadeus.ps1` 启动。API Key、模型和权限可在界面中设置；默认模型为支持图像输入的 DeepSeek 配置，使用其他接口前需确认对应能力。
+每次双击 `start.cmd` 启动即可：准备完整时直接启动，检测到缺失组件时自动补齐。API Key、模型和权限可在界面中设置；默认模型为支持图像输入的 DeepSeek 配置，使用其他接口前需确认对应能力。`run_amadeus.ps1` 是已有环境的底层启动入口，不负责首次安装。
 
 仅检查安装，不打开窗口：
 

@@ -23,7 +23,6 @@ $desktopEnv = Join-Path $root ".conda\amadeus-desktop"
 $voiceEnv = Join-Path $root ".conda\gpt-sovits"
 $gptRoot = Join-Path $root ".sources\GPT-SoVITS"
 $voiceRoot = Join-Path $root ".runtime-assets\voice"
-$gptPatch = Join-Path $root "patches\gpt-sovits-amadeus.patch"
 $environment = Get-Content -LiteralPath (Join-Path $root "configs\deployment_environment.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($environment.formatVersion -ne 1) { throw "Unsupported deployment environment manifest" }
 $gptRepository = $environment.gptSovits.repository
@@ -45,9 +44,21 @@ function Assert-PathInsideRoot {
 
 function Invoke-Native {
     param([string]$FilePath, [string[]]$Arguments)
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$FilePath failed with exit code $LASTEXITCODE"
+    # Resolve before relaxing native stderr handling so a missing executable
+    # cannot reuse the previous command's successful exit code.
+    $command = Get-Command -Name $FilePath -ErrorAction Stop
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        # Native progress/warnings are display output, never a caller's return
+        # value. PowerShell 5 must use the exit code to decide native failure.
+        $ErrorActionPreference = "Continue"
+        & $command @Arguments 2>&1 | Out-Host
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($exitCode -ne 0) {
+        throw "$FilePath failed with exit code $exitCode"
     }
 }
 
@@ -112,8 +123,9 @@ function Ensure-CondaEnvironment {
     if ((Test-Path -LiteralPath $python -PathType Leaf) -and -not $Force) {
         return $python
     }
-    $arguments = @("create", "--prefix", $Prefix, "python=$PythonVersion", "pip", "-y", "--override-channels", "-c", $environment.condaChannel)
+    $arguments = @("create", "--prefix", $Prefix, "python=$PythonVersion", "pip")
     $arguments += $CondaPackages
+    $arguments += @("-y", "--override-channels", "-c", $environment.condaChannel)
     Invoke-Native -FilePath $Conda -Arguments $arguments
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
         throw "Environment creation did not produce $python"
@@ -163,24 +175,13 @@ function Ensure-GptSovitsSource {
         Invoke-Native -FilePath "git" -Arguments @("-C", $gptRoot, "checkout", "--detach", $gptCommit)
     }
 
-    $patchedFile = Join-Path $gptRoot "GPT_SoVITS\AR\models\t2s_lightning_module.py"
-    $patchPresent = (Test-Path -LiteralPath $patchedFile) -and (
-        (Get-Content -LiteralPath $patchedFile -Raw -Encoding UTF8).Contains("AMADEUS_GPT_FREEZE_FIRST_LAYERS")
-    )
-    if ($patchPresent) {
-        return
-    }
-
-    $status = (& git -C $gptRoot status --porcelain) -join "`n"
-    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect GPT-SoVITS checkout" }
-    if ($status.Trim()) {
-        throw "GPT-SoVITS has local changes and the AMADEUS patch is missing. Preserve those changes before rerunning bootstrap."
-    }
+    # Playback uses upstream inference. Training-only changes belong to the
+    # developer workflow and must not be a prerequisite for user deployment.
     $head = (& git -C $gptRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect GPT-SoVITS checkout" }
     if ($head -ne $gptCommit) {
         throw "GPT-SoVITS is at $head, expected pinned commit $gptCommit. Bootstrap will not overwrite an existing checkout."
     }
-    Invoke-Native -FilePath "git" -Arguments @("-C", $gptRoot, "apply", $gptPatch)
 }
 
 function Ensure-VoiceEnvironment {

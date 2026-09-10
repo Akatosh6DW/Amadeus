@@ -9,6 +9,8 @@
 *.jsonl text eol=lf
 *.txt text eol=lf
 *.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.patch text eol=lf
 *.png binary
 *.moc3 binary
 
