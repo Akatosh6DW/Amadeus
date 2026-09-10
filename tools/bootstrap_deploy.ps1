@@ -170,9 +170,22 @@ function Resolve-Backend {
 function Ensure-GptSovitsSource {
     Assert-PathInsideRoot -Path $gptRoot
     if (-not (Test-Path -LiteralPath (Join-Path $gptRoot ".git"))) {
-        New-Item -ItemType Directory -Path (Split-Path $gptRoot -Parent) -Force | Out-Null
-        Invoke-Native -FilePath "git" -Arguments @("clone", "--filter=blob:none", $gptRepository, $gptRoot)
-        Invoke-Native -FilePath "git" -Arguments @("-C", $gptRoot, "checkout", "--detach", $gptCommit)
+        $sourceParent = Split-Path $gptRoot -Parent
+        New-Item -ItemType Directory -Path $sourceParent -Force | Out-Null
+        $staging = Join-Path $sourceParent (".gpt-sovits-download-" + [guid]::NewGuid().ToString("N"))
+        Assert-PathInsideRoot -Path $staging
+        try {
+            # Publish the checkout only after the pinned revision is ready.
+            # An interrupted clone must not look like a complete installation
+            # at the upstream default branch on the next launch.
+            Invoke-Native -FilePath "git" -Arguments @("clone", "--no-checkout", "--filter=blob:none", $gptRepository, $staging)
+            Invoke-Native -FilePath "git" -Arguments @("-C", $staging, "checkout", "--detach", $gptCommit)
+            if (Test-Path -LiteralPath $gptRoot) { throw "GPT-SoVITS destination already exists: $gptRoot" }
+            Move-Item -LiteralPath $staging -Destination $gptRoot
+        } finally {
+            Assert-PathInsideRoot -Path $staging
+            if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+        }
     }
 
     # Playback uses upstream inference. Training-only changes belong to the
@@ -184,6 +197,39 @@ function Ensure-GptSovitsSource {
     }
 }
 
+function Find-MsvcCompiler {
+    $vswhere = Join-Path ([Environment]::GetFolderPath("ProgramFilesX86")) "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { return "" }
+    $paths = @(& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\HostX64\x64\cl.exe')
+    if ($LASTEXITCODE -ne 0) { return "" }
+    foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+    }
+    return ""
+}
+
+function Ensure-BuildTools {
+    if (Find-MsvcCompiler) { return }
+    Write-Host "Installing Microsoft's C++ build tools required by speech dependencies. Windows may request administrator approval."
+    $downloadDir = Join-Path $root ".tmp\bootstrap"
+    New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+    $installer = Join-Path $downloadDir "vs_buildtools.exe"
+    Invoke-WebRequest -Uri $environment.buildToolsInstaller -OutFile $installer -UseBasicParsing
+    $buildToolsRoot = Join-Path $root ".tools\vs-buildtools"
+    Assert-PathInsideRoot -Path $buildToolsRoot
+    $arguments = @("--quiet", "--wait", "--norestart", "--installPath", "`"$buildToolsRoot`"", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended")
+    $parameters = @{ FilePath=$installer; ArgumentList=$arguments; Wait=$true; PassThru=$true; WindowStyle="Hidden" }
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $parameters.Verb="RunAs" }
+    $process = Start-Process @parameters
+    if ($process.ExitCode -eq 3010) {
+        throw "Microsoft C++ tools require a Windows restart. Restart when convenient, then run start.cmd again. AMADEUS has not restarted Windows."
+    }
+    if ($process.ExitCode -ne 0 -or -not (Find-MsvcCompiler)) {
+        throw "Microsoft C++ build tools were not installed successfully (exit $($process.ExitCode)). Run start.cmd again after resolving the installer error."
+    }
+}
+
 function Ensure-VoiceEnvironment {
     param([string]$Conda, [string]$SelectedBackend)
     $python = Ensure-CondaEnvironment `
@@ -191,10 +237,19 @@ function Ensure-VoiceEnvironment {
         -Prefix $voiceEnv `
         -PythonVersion $environment.python.voice `
         -CondaPackages @("ffmpeg", "cmake")
-    $modelsReady = Test-Path -LiteralPath (Join-Path $gptRoot "GPT_SoVITS\pretrained_models\chinese-hubert-base\pytorch_model.bin")
-    if ($modelsReady -and (Test-PythonImports -Python $python -Modules @("torch", "librosa", "soundfile", "transformers", "pyopenjtalk")) -and -not $Force) {
+    $voiceReady = $false
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $python -X utf8 (Join-Path $root "tools\verify_deployment.py") --project-root $root --voice-only *> $null
+        $voiceReady = $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($voiceReady -and -not $Force) {
         return
     }
+    Ensure-BuildTools
     # Use the upstream asset installer with a small, reviewable Windows patch.
     # TorchAudio 2.7 uses its own decoder; TorchCodec is not required by this stack.
     $installerPatch = Join-Path $root "patches\gpt-sovits-install.patch"

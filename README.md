@@ -11,7 +11,7 @@ git clone --depth 1 https://github.com/Akatosh6DW/Amadeus.git
 .\Amadeus\start.cmd
 ```
 
-第一次需要联网等待下载：主要环境、基础模型和声音包合计超过 9 GB，实际时间取决于网络。请保留启动窗口，完成后在“设置 → API”填写自己的 API Key。下载失败时，处理提示中的问题后重新双击 `start.cmd`，程序会检查并补齐缺失内容。完整的已下载资源会复用；未完成的文件可能需要重新下载。
+第一次需要联网等待下载：主要环境、基础模型和声音包合计超过 9 GB；没有微软 C++ 构建工具时还会自动安装该工具及 Windows SDK，下载量和占用空间会进一步增加，Windows 可能要求管理员授权。请保留启动窗口，完成后在“设置 → API”填写自己的 API Key。下载失败时，处理提示中的问题后重新双击 `start.cmd`，程序会检查并补齐缺失内容。完整的已下载资源会复用；未完成的文件可能需要重新下载。若微软安装器要求重启，程序会提示你重启后再运行，不会自动重启电脑。
 
 主仓库与声音资源仓库公开后，未登录 GitHub 的用户才能直接下载。单独的拉取动作只下载源码，自动准备在第一次启动时执行。
 
@@ -47,9 +47,10 @@ powershell -ExecutionPolicy Bypass -File .\install-amadeus.ps1 -InstallDirectory
 - 桌面 Python 环境：`.conda/amadeus-desktop`，包含界面、附件处理、截图/摄像头采集及人格检索依赖。
 - 语音 Python 环境：`.conda/gpt-sovits`，固定版本的 GPT-SoVITS 源码与上游基础资源。普通部署不应用声音训练补丁；上游安装脚本的 Windows 兼容修正仍由安装器自动处理。
 - 缺失时补齐 Git、项目专用 Miniforge、Microsoft WebView2、Rhubarb 口型工具。
+- 语音依赖需要源码构建时，使用已有 MSVC；缺失时从微软下载 Visual Studio Build Tools 和推荐的 C++/Windows SDK 组件。安装位置为项目 `.tools/vs-buildtools`，微软安装器仍可能在系统共享目录写入组件，因此需要 Windows 管理员授权。
 - `AmadeusVoice` 提供 V7 默认/V6 回退权重、参考音频、原声反应及人格检索资源；下载有完整包和逐文件 SHA-256 校验。
 
-自动检测可用 NVIDIA 驱动，满足 CUDA 12.8 条件时选择 GPU，否则选择 CPU。不要求另外安装 CUDA Toolkit。CPU 能运行语音，但通常更慢。建议至少 16 GB 内存并预留 25 GB 磁盘空间。
+自动检测可用 NVIDIA 驱动，满足 CUDA 12.8 条件时选择 GPU，否则选择 CPU。不要求另外安装 CUDA Toolkit。CPU 能运行语音，但通常更慢。建议至少 16 GB 内存并预留 40 GB 磁盘空间。
 
 图像理解使用当前对话模型的原图输入能力。部署不下载 Florence-2 等旧版视觉模型，也不创建旧视觉模型环境。小型 BGE 模型用于人格文本检索，与图像识别无关。
 

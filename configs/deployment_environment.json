@@ -16,6 +16,7 @@
     "cpuIndex": "https://download.pytorch.org/whl/cpu"
   },
   "voiceConstraints": "requirements-voice-constraints.txt",
+  "buildToolsInstaller": "https://aka.ms/vs/17/release/vs_buildtools.exe",
   "rhubarb": {
     "directory": "Rhubarb-Lip-Sync-1.14.0-Windows",
     "url": "https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.14.0/Rhubarb-Lip-Sync-1.14.0-Windows.zip"

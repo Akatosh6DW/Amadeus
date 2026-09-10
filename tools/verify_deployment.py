@@ -42,25 +42,49 @@ def verify_source(root: Path) -> dict:
     return {"ok": result.returncode == 0 and actual == expected, "expected": expected, "actual": actual}
 
 
-def verify(root: Path) -> dict:
+def voice_model_status(root: Path) -> dict:
     source = root / ".sources/GPT-SoVITS"
-    results = {
-        "desktop": probe(root / ".conda/amadeus-desktop/python.exe", ["webview", "PIL", "pypdf", "cv2", "numpy", "onnxruntime", "tokenizers"]),
-        "voice": probe(root / ".conda/gpt-sovits/python.exe", ["torch", "librosa", "soundfile", "transformers", "pyopenjtalk"]),
-        "gptSovitsSource": verify_source(root),
-        "rhubarb": {"ok": (root / ".tools/rhubarb/Rhubarb-Lip-Sync-1.14.0-Windows/rhubarb.exe").is_file()},
-    }
+    base_models = source / "GPT_SoVITS/pretrained_models"
+    required = (
+        "chinese-hubert-base/pytorch_model.bin", "chinese-hubert-base/config.json",
+        "chinese-roberta-wwm-ext-large/pytorch_model.bin", "chinese-roberta-wwm-ext-large/config.json",
+        "chinese-roberta-wwm-ext-large/vocab.txt",
+        "gsv-v4-pretrained/s2Gv4.pth", "gsv-v4-pretrained/vocoder.pth",
+    )
+    missing = [name for name in required if not (base_models / name).is_file()]
+    return {"ok": not missing, "missing": missing}
+
+
+def verify_voice(root: Path) -> dict:
     voice_python = root / ".conda/gpt-sovits/python.exe"
+    results = {
+        "voice": probe(voice_python, ["torch", "torchaudio", "librosa", "soundfile", "transformers", "pyopenjtalk", "gradio", "peft", "pytorch_lightning", "faster_whisper"]),
+        "voiceBaseModels": voice_model_status(root),
+        "voiceDictionary": {"ok": False, "error": "python_missing"},
+    }
     if voice_python.is_file():
+        dictionary_program = "import os,pyopenjtalk; from pathlib import Path; p=Path(os.fsdecode(pyopenjtalk.OPEN_JTALK_DICT_DIR)); assert (p/'sys.dic').is_file(), 'OpenJTalk dictionary missing'; print(p)"
+        dictionary = subprocess.run([str(voice_python), "-X", "utf8", "-c", dictionary_program], capture_output=True, text=True, encoding="utf-8", timeout=30)
+        results["voiceDictionary"] = {"ok": dictionary.returncode == 0, "detail": (dictionary.stdout if dictionary.returncode == 0 else dictionary.stderr)[-1200:]}
         program = "import json,torch; d='cuda' if torch.cuda.is_available() else 'cpu'; x=torch.ones(2,device=d); assert x.sum().item()==2; print(json.dumps({'backend':d,'torch':torch.__version__,'device':torch.cuda.get_device_name(0) if d=='cuda' else 'CPU'}))"
         tensor = subprocess.run([str(voice_python), "-X", "utf8", "-c", program], capture_output=True, text=True, encoding="utf-8", timeout=120)
         results["voiceComputation"] = {"ok": tensor.returncode == 0, "detail": (tensor.stdout if tensor.returncode == 0 else tensor.stderr)[-1200:]}
+    return results
+
+
+def verify(root: Path, *, voice_only: bool = False) -> dict:
+    results = verify_voice(root)
+    if voice_only:
+        results["ok"] = all(value["ok"] for value in results.values())
+        return results
+    results.update({
+        "desktop": probe(root / ".conda/amadeus-desktop/python.exe", ["webview", "PIL", "pypdf", "cv2", "numpy", "onnxruntime", "tokenizers"]),
+        "gptSovitsSource": verify_source(root),
+        "rhubarb": {"ok": (root / ".tools/rhubarb/Rhubarb-Lip-Sync-1.14.0-Windows/rhubarb.exe").is_file()},
+    })
     for name, bundle in json.loads((root / "configs/deployment_assets.json").read_text(encoding="utf-8"))["bundles"].items():
         problems = verify_bundle(root, bundle)
         results[name + "Assets"] = {"ok": not problems, "missingOrChanged": problems}
-    base_models = source / "GPT_SoVITS/pretrained_models"
-    missing = [name for name in ("chinese-hubert-base/pytorch_model.bin", "chinese-roberta-wwm-ext-large/pytorch_model.bin") if not (base_models / name).is_file()]
-    results["voiceBaseModels"] = {"ok": not missing, "missing": missing}
     results["ok"] = all(value["ok"] for value in results.values())
     return results
 
@@ -68,8 +92,9 @@ def verify(root: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=ROOT)
+    parser.add_argument("--voice-only", action="store_true")
     args = parser.parse_args()
-    result = verify(args.project_root.resolve())
+    result = verify(args.project_root.resolve(), voice_only=args.voice_only)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 
