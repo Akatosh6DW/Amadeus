@@ -1,0 +1,11 @@
+--- a/install.ps1
++++ b/install.ps1
+@@ -162,7 +162,7 @@
+     }
+ }
+ 
+-if (-not (Test-Path "GPT_SoVITS/pretrained_models/sv")) {
++if ($env:AMADEUS_REPAIR_BASE_MODELS -eq "1" -or -not (Test-Path "GPT_SoVITS/pretrained_models/sv")) {
+     Write-Info "Downloading Pretrained Models..."
+     Invoke-Download -Uri $PretrainedURL -OutFile "pretrained_models.zip"
+     Invoke-Unzip "pretrained_models.zip" "GPT_SoVITS"

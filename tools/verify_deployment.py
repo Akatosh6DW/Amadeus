@@ -93,8 +93,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=ROOT)
     parser.add_argument("--voice-only", action="store_true")
+    parser.add_argument("--models-only", action="store_true")
     args = parser.parse_args()
-    result = verify(args.project_root.resolve(), voice_only=args.voice_only)
+    result = (voice_model_status(args.project_root.resolve()) if args.models_only
+              else verify(args.project_root.resolve(), voice_only=args.voice_only))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 

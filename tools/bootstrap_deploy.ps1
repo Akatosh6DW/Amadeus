@@ -252,7 +252,8 @@ function Ensure-VoiceEnvironment {
     Ensure-BuildTools
     # Use the upstream asset installer with a small, reviewable Windows patch.
     # TorchAudio 2.7 uses its own decoder; TorchCodec is not required by this stack.
-    $installerPatch = Join-Path $root "patches\gpt-sovits-install.patch"
+    foreach ($patchName in @("gpt-sovits-install.patch", "gpt-sovits-model-repair.patch")) {
+    $installerPatch = Join-Path $root ("patches\" + $patchName)
     $previousErrorAction = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -263,15 +264,19 @@ function Ensure-VoiceEnvironment {
         Invoke-Native -FilePath "git" -Arguments @("-C", $gptRoot, "apply", "--check", $installerPatch)
         Invoke-Native -FilePath "git" -Arguments @("-C", $gptRoot, "apply", $installerPatch)
     }
+    }
     $device = $(if ($SelectedBackend -eq "cuda") { "CU128" } else { "CPU" })
     $torchIndex = $(if ($SelectedBackend -eq "cuda") { $environment.torch.cudaIndex } else { $environment.torch.cpuIndex })
     $condaDirectory = Split-Path $Conda -Parent
     $env:Path = "$condaDirectory;$voiceEnv;$(Join-Path $voiceEnv 'Scripts');$env:Path"
     $previousConstraint = $env:PIP_CONSTRAINT
     $previousIndex = $env:PIP_INDEX_URL
+    $previousModelRepair = $env:AMADEUS_REPAIR_BASE_MODELS
     try {
     $env:PIP_CONSTRAINT = Join-Path $root $environment.voiceConstraints
     $env:PIP_INDEX_URL = $environment.pipIndex
+    & $python -X utf8 (Join-Path $root "tools\verify_deployment.py") --project-root $root --models-only > $null
+    $env:AMADEUS_REPAIR_BASE_MODELS = $(if ($LASTEXITCODE -eq 0) { "0" } else { "1" })
     Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--index-url", $torchIndex, "torch==$($environment.torch.version)", "torchaudio==$($environment.torch.version)")
     Invoke-Native -FilePath $Conda -Arguments @(
         "run", "--prefix", $voiceEnv,
@@ -284,6 +289,7 @@ function Ensure-VoiceEnvironment {
     } finally {
         $env:PIP_CONSTRAINT = $previousConstraint
         $env:PIP_INDEX_URL = $previousIndex
+        $env:AMADEUS_REPAIR_BASE_MODELS = $previousModelRepair
     }
 }
 
