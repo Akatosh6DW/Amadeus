@@ -1,0 +1,21 @@
+{
+  "memory_layers": ["short_context", "session_summary", "long_term_semantic_memory", "relationship_state"],
+  "save_when": [
+    "用户明确要求记住",
+    "用户长期偏好、项目目标、技术环境、重要决策",
+    "用户纠正了角色对自己的理解",
+    "关系状态或互动边界发生变化"
+  ],
+  "do_not_save": [
+    "一次性闲聊",
+    "临时情绪，除非用户明确希望长期关注",
+    "敏感隐私，除非用户明确要求且对长期交互必要",
+    "重复或只换说法的旧记忆"
+  ],
+  "candidate_schema": {
+    "content": "长期有用的信息",
+    "type": "user_memory|task_state|correction|episode|shared_reference|relationship_state",
+    "importance": "0.0-1.0",
+    "should_save": true
+  }
+}

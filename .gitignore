@@ -1,0 +1,55 @@
+.sources/
+__pycache__/
+*.pyc
+amadeus-check.png
+amadeus-screenshot.png
+amadeus-mobile-screenshot.png
+live2d-check.png
+.env
+.cache/
+.pytest_tmp/
+/.tmp/
+/tmp/
+/exports/
+.conda/
+.conda_pkgs/
+.tools/
+.runtime-assets/
+data/
+# Salieri's append-only transcript is private runtime data even if the broader
+# data ignore rule is changed later.
+/data/private/salieri_recorder.json
+/data/private/salieri_dialogue.txt
+build/
+dist/
+.worktrees/
+/.release-candidates/
+/.codex/
+
+# Detailed architecture notes, handoffs, experiments, and incident records are
+# maintained locally.  The public repository keeps only the concise README and
+# the legal/contribution notices required by users and contributors.
+/docs/
+/.local-git-hooks/
+/AGENTS.md
+/assets/characters/README.md
+/assets/live2d/README.md
+/assets/vendor/live2d/README.md
+/release/README.md
+
+# Local research and scratch files that are not part of the distributable
+# developer source tree.
+/Claude-Code-Notes-完整版.pdf
+/=
+
+# Local prototype/original-series media is not covered by the Live2D model
+# authorization. The public UI uses procedural backgrounds and the authorized
+# Live2D packages instead.
+/assets/backgrounds/original/
+/assets/characters/*.png
+/assets/amadeus.ico
+
+# Local licensed media and source archives. Keep these outside Git/GitHub.
+/いとうかなこ - アマデウス.flac
+/牧濑红莉栖.zip
+/牧濑红莉栖/

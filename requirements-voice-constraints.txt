@@ -1,0 +1,6 @@
+# Match the working Windows inference stack. CUDA/CPU wheels come from PyTorch.
+torch==2.7.0
+torchaudio==2.7.0
+transformers==4.50.0
+numpy==1.26.4
+librosa==0.10.2

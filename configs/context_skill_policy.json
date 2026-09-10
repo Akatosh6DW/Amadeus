@@ -1,0 +1,109 @@
+{
+  "assets": {
+    "embeddingRoot": "assets/context-embedding/bge-small-zh-v1.5",
+    "embeddings": "assets/context-skills/persona-embeddings.v2.npy",
+    "index": "assets/context-skills/persona-index.v2.json"
+  },
+  "bm25": {
+    "b": 0.75,
+    "k1": 1.2
+  },
+  "calibration": {
+    "casesSha256": "1dd7bb8171dbe379aa29a83aa5ad9df77ccd002bbcfeefdd715f336241790739",
+    "metrics": {
+      "dev": {
+        "caseCount": 19,
+        "criticalFalsePositiveCount": 0,
+        "criticalNegativeCount": 6,
+        "exactAccuracy": 1.0,
+        "expectedPositiveCount": 14,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "noSkillAccuracy": 1.0,
+        "noSkillCorrectCount": 5,
+        "noSkillCount": 5,
+        "precision": 1.0,
+        "predictedPositiveCount": 14,
+        "recall": 1.0,
+        "truePositiveCount": 14
+      },
+      "heldOut": {
+        "caseCount": 13,
+        "criticalFalsePositiveCount": 0,
+        "criticalNegativeCount": 6,
+        "exactAccuracy": 1.0,
+        "expectedPositiveCount": 7,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "noSkillAccuracy": 1.0,
+        "noSkillCorrectCount": 6,
+        "noSkillCount": 6,
+        "precision": 1.0,
+        "predictedPositiveCount": 7,
+        "recall": 1.0,
+        "truePositiveCount": 7
+      },
+      "overall": {
+        "caseCount": 32,
+        "criticalFalsePositiveCount": 0,
+        "criticalNegativeCount": 12,
+        "exactAccuracy": 1.0,
+        "expectedPositiveCount": 21,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "noSkillAccuracy": 1.0,
+        "noSkillCorrectCount": 11,
+        "noSkillCount": 11,
+        "precision": 1.0,
+        "predictedPositiveCount": 21,
+        "recall": 1.0,
+        "truePositiveCount": 21
+      }
+    },
+    "releaseGate": {
+      "allCriticalNegativesPassed": true,
+      "criticalFalsePositiveMaximum": 0,
+      "developmentPassed": true,
+      "heldOutPassed": true,
+      "minimumHeldOutNoSkillAccuracy": 0.95,
+      "minimumHeldOutPrecision": 0.95,
+      "minimumHeldOutRecall": 0.8,
+      "passed": true
+    },
+    "toolSchemaVersion": 1
+  },
+  "calibrationStatus": "calibrated",
+  "fusion": {
+    "bm25Scale": 2.0,
+    "bm25Weight": 0.35,
+    "denseFloor": 0.35,
+    "denseWeight": 0.65
+  },
+  "gates": {
+    "minDense": 0.54,
+    "minMargin": 0.12,
+    "minScore": 0.5
+  },
+  "indexBuildId": "a4910f23211508dc6019cf92",
+  "maxSelected": 1,
+  "modelArtifactDigest": "e0212ab3d16d50b523d1606ab23b4c4d46ad991d62cc9296b11d514315143474",
+  "modelId": "BAAI/bge-small-zh-v1.5",
+  "modelRevision": "18e2da9",
+  "normalized": true,
+  "notes": "Hybrid 阈值只用 paraphraseFamily 隔离的 dev split 选择，并由 held-out split 验证；变更 model artifact digest、index buildId 或 sourceDigest 后必须重新校准。",
+  "pooling": "CLS",
+  "rollout": {
+    "bm25OnlyFallbackAllowed": false,
+    "developerDiagnosticLauncher": "shadow",
+    "directProcessDefault": "off",
+    "legacyFallbackAllowedInOn": false,
+    "onRequiresCalibratedPolicy": true,
+    "ordinarySourceLauncher": "on",
+    "releaseDefault": "off",
+    "runtimeDownloadAllowed": false
+  },
+  "schemaVersion": 1,
+  "sourceDigest": "92af78295bc6c02b6a17b098c9b7633cc6743df29d54c6cbac2fabb4f6a40135",
+  "tokenizerVersion": "nfkc-cjk-kana-unigram-bigram-latin-word-v1",
+  "topK": 3
+}

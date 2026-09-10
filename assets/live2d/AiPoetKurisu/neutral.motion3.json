@@ -1,0 +1,27 @@
+{
+	"Version": 3,
+	"Meta": {
+		"Duration": 4.3,
+		"Fps": 30.0,
+		"Loop": true,
+		"AreBeziersRestricted": true,
+		"CurveCount": 1,
+		"TotalSegmentCount": 1,
+		"TotalPointCount": 2,
+		"UserDataCount": 0,
+		"TotalUserDataSize": 0
+	},
+	"Curves": [
+		{
+			"Target": "Parameter",
+			"Id": "Param16",
+			"Segments": [
+				0,
+				1,
+				0,
+				4.3,
+				1
+			]
+		}
+	]
+}

@@ -1,0 +1,84 @@
+diff --git a/GPT_SoVITS/AR/models/t2s_lightning_module.py b/GPT_SoVITS/AR/models/t2s_lightning_module.py
+index fd357b9..769c1f2 100644
+--- a/GPT_SoVITS/AR/models/t2s_lightning_module.py
++++ b/GPT_SoVITS/AR/models/t2s_lightning_module.py
+@@ -1,6 +1,7 @@
+ # modified from https://github.com/yangdongchao/SoundStorm/blob/master/soundstorm/s1/AR/models/t2s_lightning_module.py
+ # reference: https://github.com/lifeiteng/vall-e
+ import os
++import re
+ import sys
+
+ now_dir = os.getcwd()
+@@ -33,6 +34,31 @@ class Text2SemanticLightningModule(LightningModule):
+                     )["weight"],
+                 )
+             )
++        if is_train:
++            freeze_first_layers = int(os.environ.get("AMADEUS_GPT_FREEZE_FIRST_LAYERS", "0") or 0)
++            if freeze_first_layers > 0:
++                frozen_tensors = 0
++                frozen_parameters = 0
++                for name, parameter in self.model.named_parameters():
++                    layer_match = re.match(r"h\.layers\.(\d+)\.", name)
++                    freeze_parameter = name.startswith(
++                        (
++                            "bert_proj.",
++                            "ar_text_embedding.",
++                            "ar_text_position.",
++                            "ar_audio_embedding.",
++                            "ar_audio_position.",
++                        )
++                    ) or (layer_match is not None and int(layer_match.group(1)) < freeze_first_layers)
++                    if freeze_parameter:
++                        parameter.requires_grad = False
++                        frozen_tensors += 1
++                        frozen_parameters += parameter.numel()
++                print(
++                    "AMADEUS partial GPT fine-tuning: "
++                    f"froze embeddings and transformer layers [0,{freeze_first_layers}); "
++                    f"{frozen_tensors} tensors / {frozen_parameters} parameters"
++                )
+         if is_train:
+             self.automatic_optimization = False
+             self.save_hyperparameters()
+@@ -118,9 +144,11 @@ class Text2SemanticLightningModule(LightningModule):
+     # torch.save(pred_semantic.detach().cpu(), save_path)
+
+     def configure_optimizers(self):
+-        model_parameters = self.model.parameters()
+-        parameters_names = []
+-        parameters_names.append([name_param_pair[0] for name_param_pair in self.model.named_parameters()])
++        trainable_named_parameters = [
++            (name, parameter) for name, parameter in self.model.named_parameters() if parameter.requires_grad
++        ]
++        model_parameters = [parameter for _, parameter in trainable_named_parameters]
++        parameters_names = [[name for name, _ in trainable_named_parameters]]
+         lm_opt = ScaledAdam(
+             model_parameters,
+             lr=0.01,
+diff --git a/GPT_SoVITS/AR/modules/lr_schedulers.py b/GPT_SoVITS/AR/modules/lr_schedulers.py
+index 707a911..6a0b7de 100644
+--- a/GPT_SoVITS/AR/modules/lr_schedulers.py
++++ b/GPT_SoVITS/AR/modules/lr_schedulers.py
+@@ -1,6 +1,7 @@
+ # modified from https://github.com/yangdongchao/SoundStorm/blob/master/soundstorm/s1/AR/modules/lr_schedulers.py
+ # reference: https://github.com/lifeiteng/vall-e
+ import math
++import os
+
+ import torch
+ from matplotlib import pyplot as plt
+@@ -55,7 +56,11 @@ class WarmupCosineLRSchedule(torch.optim.lr_scheduler._LRScheduler):
+             coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+             lr = self.end_lr + coeff * (self.peak_lr - self.end_lr)
+
+-        self.lr = lr = self.end_lr = 0.002  ###锁定用线性###不听话，直接锁定！
++        # Preserve the upstream fixed rate unless an isolated AMADEUS
++        # training run explicitly asks for a different value. Previously the
++        # YAML rate was silently overwritten with 0.002 for every experiment.
++        locked_lr = os.environ.get("AMADEUS_GPT_SOVITS_LOCKED_LR", "").strip()
++        self.lr = lr = self.end_lr = float(locked_lr) if locked_lr else 0.002
+         self.set_lr(lr)
+         self.lr = lr
+         self._current_step += 1

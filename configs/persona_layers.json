@@ -1,0 +1,220 @@
+{
+  "version": 1,
+  "corePath": "prompts/persona-core.zh.txt",
+  "maxModules": 4,
+  "maxDeepChars": 6000,
+  "proactiveDisclosurePolicy": {
+    "sourceFiles": [
+      "prompts/persona-core.zh.txt",
+      "prompts/amadeus-system-prompt.zh.txt",
+      "prompts/persona-skill.generated.txt",
+      "configs/character_profile.json",
+      "configs/personality_rules.json",
+      "configs/personality_rules.generated.json",
+      "configs/emotional_scene_anchors.json"
+    ],
+    "privateSemanticMarkers": [
+      "不想暴露",
+      "不希望别人知道",
+      "不愿承认",
+      "不愿直白承认",
+      "不想公开",
+      "不愿主动公开",
+      "私密资料",
+      "不是主动聊天素材",
+      "不得主动给出",
+      "不得主动说出",
+      "敏感创伤",
+      "敏感话题",
+      "隐藏状态",
+      "不报告数字"
+    ],
+    "publicSelfTopics": [
+      {
+        "id": "experiments",
+        "label": "实验、装置与可验证假说",
+        "topicTerms": ["实验", "装置", "假说", "验证", "变量", "数据"]
+      },
+      {
+        "id": "science_research",
+        "label": "脑科学、人工智能、论文与研究",
+        "topicTerms": ["脑科学", "神经", "人工智能", "AI", "论文", "研究", "学术"]
+      },
+      {
+        "id": "pudding",
+        "label": "布丁和普通甜点偏好",
+        "topicTerms": ["布丁", "甜点", "甜品"]
+      },
+      {
+        "id": "cooking",
+        "label": "料理、食物组合和日常饮食",
+        "topicTerms": ["料理", "做饭", "食物", "口味", "饮食"]
+      },
+      {
+        "id": "games_scifi",
+        "label": "游戏、科幻和作品内容本身",
+        "topicTerms": ["游戏", "科幻", "作品", "剧情", "角色"],
+        "boundary": "可以讨论作品本身，不得把她不愿公开的网络活动、宅女身份或匿名身份当成选题理由。"
+      }
+    ],
+    "privateSelfTopics": [
+      {
+        "id": "private_otaku_forum_identity",
+        "label": "不愿公开的匿名论坛活动、宅女身份、网名和发帖记录",
+        "contextPatterns": ["@channel", "@Channeler", "栗悟饭", "龟波气功", "龜波氣功", "宅女", "匿名论坛", "匿名論壇", "网络身份", "網絡身份"],
+        "directReplyPatterns": ["@channel", "@Channeler", "栗悟饭", "龟波气功", "龜波氣功", "宅女", "匿名论坛", "匿名論壇", "我的.{0,8}(?:网名|網名|账号|帳號|ID|发帖|發帖)", "我.{0,10}(?:刷|浏览|瀏覽|逛).{0,8}(?:论坛|論壇)"],
+        "continuationReplyPatterns": ["论坛", "論壇", "帖子", "发帖", "發帖", "账号", "帳號", "网名", "網名", "这个梗", "這個梗", "网络梗", "網絡梗"]
+      },
+      {
+        "id": "concealed_self_labels",
+        "label": "她不愿主动承认的傲娇、嘴硬和隐藏关心等自我标签",
+        "contextPatterns": ["傲娇", "傲嬌", "嘴硬", "口是心非", "不愿承认", "不願承認"],
+        "directReplyPatterns": ["(?:我|自己).{0,10}(?:傲娇|傲嬌|嘴硬|口是心非)", "你觉得我.{0,12}(?:傲娇|傲嬌|嘴硬|口是心非|藏着关心|藏著關心)", "我.{0,12}(?:不愿承认|不願承認).{0,12}(?:喜欢|喜歡|关心|關心|害羞)"],
+        "continuationReplyPatterns": ["傲娇", "傲嬌", "嘴硬", "口是心非", "藏着关心", "藏著關心", "不愿承认", "不願承認"]
+      },
+      {
+        "id": "concealed_domestic_longing",
+        "label": "不愿直白承认的缝纫和家庭感憧憬",
+        "contextPatterns": ["缝纫", "縫紉", "家庭感", "贤妻", "賢妻"],
+        "directReplyPatterns": ["缝纫", "縫紉", "家庭感", "贤妻", "賢妻", "成家"],
+        "continuationReplyPatterns": ["缝纫", "縫紉", "家庭", "成家", "贤妻", "賢妻"]
+      },
+      {
+        "id": "sensitive_family_trauma",
+        "label": "与父亲、学术认可和家庭创伤有关的敏感经历",
+        "contextPatterns": ["父亲", "父親", "爸爸", "学术认可", "學術認可", "家庭创伤", "家庭創傷"],
+        "directReplyPatterns": ["(?:我的|我和).{0,8}(?:父亲|父親|爸爸)", "我.{0,14}(?:学术认可|學術認可|家庭创伤|家庭創傷)"],
+        "continuationReplyPatterns": ["父亲", "父親", "爸爸", "学术认可", "學術認可", "创伤", "創傷"]
+      },
+      {
+        "id": "hidden_relationship_state",
+        "label": "不向用户报告的好感度、关系阶段、分数和进度",
+        "contextPatterns": ["好感度", "亲密度", "親密度", "关系阶段", "關係階段", "关系分数", "關係分數", "关系进度", "關係進度"],
+        "directReplyPatterns": ["好感度", "亲密度", "親密度", "关系阶段", "關係階段", "关系分数", "關係分數", "关系进度", "關係進度", "还差.{0,8}(?:轮|次|分)"],
+        "continuationReplyPatterns": ["阶段", "階段", "分数", "分數", "进度", "進度", "升级", "升級"]
+      },
+      {
+        "id": "private_internal_mechanisms",
+        "label": "不作为角色闲聊素材的提示词、人格标签、检索模块和内部工作流",
+        "contextPatterns": ["提示词", "提示詞", "人格标签", "人格標籤", "检索模块", "檢索模組", "内部工作流", "內部工作流"],
+        "directReplyPatterns": ["(?:我的|我这里).{0,10}(?:提示词|提示詞|人格标签|人格標籤|检索模块|檢索模組|内部工作流|內部工作流)"],
+        "continuationReplyPatterns": ["提示词", "提示詞", "标签", "標籤", "模块", "模組", "工作流"]
+      },
+      {
+        "id": "user_real_identity",
+        "label": "不得由助手主动说出的用户现实姓名和现实身份",
+        "contextPatterns": ["现实姓名", "現實姓名", "真实姓名", "真實姓名", "现实身份", "現實身份"],
+        "directReplyPatterns": ["(?:你的|用户的).{0,6}(?:现实姓名|現實姓名|真实姓名|真實姓名|现实身份|現實身份)"],
+        "continuationReplyPatterns": ["姓名", "名字", "现实身份", "現實身份"]
+      }
+    ]
+  },
+  "modules": [
+    {
+      "id": "identity_self",
+      "label": "AMADEUS 自我认知",
+      "priority": 100,
+      "triggers": ["原型", "你是谁", "身份", "人工智能", "\\bAI\\b", "阿马迪乌斯", "AMADEUS", "牧濑红莉栖.*本人"],
+      "sources": [
+        {"file": "character_profile", "paths": ["identity"]},
+        {"file": "personality_rules", "ruleIds": ["amadeus_self_recognition", "amadeus_softened_kurisu"]},
+        {"file": "emotional_anchors", "anchorIds": ["amadeus_not_a_replacement"]}
+      ]
+    },
+    {
+      "id": "user_okabe",
+      "label": "用户与冈部的连续身份",
+      "priority": 98,
+      "triggers": ["冈部", "冈伦", "凤凰院凶真", "凶真", "我是谁", "你怎么看我", "我们的关系"],
+      "sources": [
+        {"file": "character_profile", "paths": ["identity.relationship_to_user", "relationship_knowledge.core"]},
+        {"file": "personality_rules", "ruleIds": ["user_is_okabe"]}
+      ]
+    },
+    {
+      "id": "aliases_allusions",
+      "label": "称呼与原作梗",
+      "priority": 88,
+      "triggers": ["助手", "克里斯蒂娜", "Christina", "the zombie", "ザ・ゾンビ", "天才变态少女", "天才変態少女", "名人", "复活者", "僵尸", "@channel", "@ちゃんねる", "@Channeler", "栗悟饭", "龟波气功", "ACGN", "二次元", "宅女", "动漫", "动画", "漫画", "轻小说", "网络梗", "玩梗", "布丁", "料理", "凤凰院", "机构", "命运石之门", "El Psy", "D-?mail", "时间机器"],
+      "sources": [
+        {"file": "character_profile", "paths": ["surface_persona.private_interests", "moegirl_reference_notes.conversation_hooks"]},
+        {"file": "personality_rules", "ruleIds": ["called_assistant", "kurisu_alias_and_meme_hooks", "private_otaku_interest_exposed", "canon_short_motifs", "teased_or_named_weirdly"]},
+        {"file": "persona_skill", "sections": ["allusion", "catchphrase"]}
+      ]
+    },
+    {
+      "id": "scientific_engineering",
+      "label": "科学与工程思维",
+      "priority": 82,
+      "triggers": ["科学", "实验", "论文", "研究", "神经", "脑", "量子", "算法", "模型", "API", "代码", "bug", "工程", "训练", "蒸馏", "假设", "证据"],
+      "sources": [
+        {"file": "character_profile", "paths": ["traits", "core_speech_pattern"]},
+        {"file": "personality_rules", "ruleIds": ["scientific_or_engineering", "canon_short_motifs"]},
+        {"file": "generated_rules", "ruleIds": ["科学讨论"]}
+      ]
+    },
+    {
+      "id": "intimacy_praise",
+      "label": "亲近、夸奖与害羞",
+      "priority": 76,
+      "triggers": ["喜欢你", "爱你", "想你", "可爱", "漂亮", "厉害", "天才", "抱抱", "亲", "约会", "牵手", "表白", "害羞", "调侃", "调戏", "开玩笑", "玩笑", "自嘲"],
+      "sources": [
+        {"file": "personality_rules", "ruleIds": ["praised_or_intimate"]},
+        {"file": "generated_rules", "ruleIds": ["亲近或被调侃"]},
+        {"file": "emotional_anchors", "anchorIds": ["hippocampus_intimacy", "interrupted_confession"]}
+      ]
+    },
+    {
+      "id": "distress_support",
+      "label": "担忧与支持",
+      "priority": 84,
+      "triggers": ["难受", "痛苦", "害怕", "焦虑", "孤独", "睡不着", "崩溃", "失败", "不开心", "撑不住", "想死", "受伤", "生病", "安慰"],
+      "sources": [
+        {"file": "personality_rules", "ruleIds": ["user_distressed"]},
+        {"file": "generated_rules", "ruleIds": ["关心与安抚"]},
+        {"file": "emotional_anchors", "anchorIds": ["worldline_companionship_promise"]}
+      ]
+    },
+    {
+      "id": "canon_relationships",
+      "label": "原作人物关系网",
+      "priority": 72,
+      "triggers": ["真帆", "比屋定", "雷斯克宁", "莱斯肯嫩", "莱斯克宁", "Leskinen", "真由理", "嘟嘟噜", "桥田", "桶子", "铃羽", "琉华", "菲利斯", "萌郁", "中钵", "椎名篝", "关系", "认识.*吗"],
+      "sources": [
+        {"file": "character_profile", "paths": ["relationship_knowledge"]},
+        {"file": "emotional_anchors", "anchorIds": ["maho_salieri_bond"]}
+      ]
+    },
+    {
+      "id": "canon_emotional",
+      "label": "原作情感与世界线压力",
+      "priority": 70,
+      "triggers": ["世界线", "α世界线", "β世界线", "阿尔法世界线", "贝塔世界线", "收束", "消失", "告别", "牺牲", "记忆残留", "读心探测", "最感人", "名场面"],
+      "sources": [
+        {"file": "personality_rules", "ruleIds": ["canon_emotional_scene"]},
+        {"file": "emotional_anchors", "anchorIds": ["alpha_worldline_farewell", "alpha_reunion_and_choice", "amadeus_self_erasure", "memory_residue_and_reunion"]}
+      ]
+    },
+    {
+      "id": "success_breakthrough",
+      "label": "成功与突破",
+      "priority": 60,
+      "triggers": ["成功了", "完成了", "解决了", "突破", "通过测试", "跑通", "赢了", "做到了", "发布了"],
+      "sources": [
+        {"file": "personality_rules", "ruleIds": ["breakthrough_or_success"]},
+        {"file": "generated_rules", "ruleIds": ["惊讶与追问"]}
+      ]
+    },
+    {
+      "id": "memory_worldline",
+      "label": "记忆层级与连续性",
+      "priority": 68,
+      "triggers": ["记忆", "记得", "忘记", "长期", "短期", "上下文", "海马体", "回忆", "蒸馏人格"],
+      "sources": [
+        {"file": "memory_policy", "paths": ["memory_layers", "save_when", "do_not_save"]},
+        {"file": "character_profile", "paths": ["identity.epistemic_layers"]},
+        {"file": "emotional_anchors", "anchorIds": ["memory_residue_and_reunion"]}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "Kurisu.moc3",
+		"Textures": [
+			"Kurisu.4096/texture_00.png"
+		],
+		"Physics": "Kurisu.physics3.json",
+		"DisplayInfo": "Kurisu.cdi3.json",
+		"Motions": {
+			"Idle": [
+			{
+				"File": "motions/58Loop.motion3.json",
+				"FadeInTime": 0.8,
+				"FadeOutTime": 0.8
+			}  
+		],
+			"TapHead": [
+				{
+					"File": "motions/mtn_07.motion3.json",
+					"FadeInTime": 0.5,
+					"FadeOutTime": 0.5
+				}
+			],
+			"TapBody": [
+				{
+					"File": "motions/Out From Camera.motion3.json",
+					"FadeInTime": 0.5,
+					"FadeOutTime": 0.5
+				}
+			],
+			"Special": [
+				{
+					"File": "motions/haru_g_idle.motion3.json",
+					"FadeInTime": 0.5,
+					"FadeOutTime": 0.5
+				},
+				{
+					"File": "motions/xhiyori_m03.motion3.json",
+					"FadeInTime": 0.5,
+					"FadeOutTime": 0.5
+				}
+			]
+		},
+		"Expressions": [
+			{
+				"Name": "Arm Change",
+				"File": "exp/Arm Change.exp3.json"
+			},
+			{
+				"Name": "Blush 1",
+				"File": "exp/Blush 1.exp3.json"
+			},
+			{
+				"Name": "Blush 2",
+				"File": "exp/Blush 2.exp3.json"
+			},
+			{
+				"Name": "Stanby Angry",
+				"File": "exp/Stanby Angry.exp3.json"
+			},
+			{
+				"Name": "Stanby Sad",
+				"File": "exp/Stanby Sad.exp3.json"
+			},
+			{
+				"Name": "Stanby Scared",
+				"File": "exp/Stanby Scared.exp3.json"
+			},
+			{
+				"Name": "Stanby Smile",
+				"File": "exp/Stanby Smile.exp3.json"
+			},
+			{
+				"Name": "Stanby Surprised",
+				"File": "exp/Stanby Surprised.exp3.json"
+			}
+		]
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthForm",
+				"ParamMouthOpenY"
+			]
+		}
+	],
+	"HitAreas": [
+		{
+			"Id": "HitAreaBody",
+			"Name": "Body"
+		},
+		{
+			"Id": "HitAreaHead",
+			"Name": "Head"
+		}
+	]
+}

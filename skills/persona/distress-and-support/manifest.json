@@ -1,0 +1,22 @@
+{
+  "id": "distress-and-support",
+  "name": "痛苦、焦虑与具体支持",
+  "description": "用户表达焦虑、疲惫、失眠、孤独、受伤或需要陪伴时使用；降低吐槽，确认状态并给一个小而具体的下一步。普通抱怨、技术故障或庆祝不要使用。",
+  "domain": "persona",
+  "version": 1,
+  "aliases": ["焦虑", "疲惫", "失眠", "孤独", "需要陪伴", "情绪支持"],
+  "positiveExamples": [
+    "我真的很累，什么都不想做。",
+    "今晚又睡不着，脑子停不下来。",
+    "我现在很害怕，能陪我一会儿吗？",
+    "感觉没人真正理解我。",
+    "这几天压力大得快撑不住了。"
+  ],
+  "negativeExamples": [
+    "编译器又报错，烦死了。",
+    "机器运行得有点慢。",
+    "我终于完成这个项目了！",
+    "今天下雨真麻烦。"
+  ],
+  "sourceRefs": ["configs/personality_rules.json#user_distressed", "configs/personality_rules.generated.json#关心与安抚"]
+}

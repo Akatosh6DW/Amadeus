@@ -1,0 +1,38 @@
+{
+  "emotionclarity_v7_retrained_short": {
+    "label": "EmotionClarity V7（短句增强默认）",
+    "description": "当前默认：中长句保持 V6，32 字符以内的短句和中短句使用清洗样本从 EmotionLite 重训的 GPT E2；保留 V6 处理更长语句。",
+    "gptModel": ".runtime-assets/voice/emotiondetail_v4-e2.ckpt",
+    "sovitsModel": ".runtime-assets/voice/emotiondetail_v4_e2_s328.pth",
+    "bootstrapGptModel": ".runtime-assets/voice/emotionlite-bootstrap.ckpt",
+    "bootstrapSovitsModel": ".runtime-assets/voice/emotionlite-bootstrap.pth",
+    "refAudio": ".runtime-assets/voice/references/audio/CRS_0659.wav",
+    "refText": ".runtime-assets/voice/references/text/calm_normal_CRS_0659.txt",
+    "styleMap": ".runtime-assets/voice/presets/emotionclarity_v7_retrained_short/style_map.json",
+    "gptModelRoutes": {
+      "short": ".runtime-assets/voice/weights/emotionclean_v2_l_emotionlite_lr0021-e2.ckpt"
+    },
+    "gptRouteShortMaxChars": 32,
+    "gptRouteLongMinChars": 60
+  },
+  "emotionclarity_v6": {
+    "label": "EmotionClarity V6（清晰推荐）",
+    "description": "保留 V4-E2 原版音色权重与 EmotionLite 引导链，修复长文本漏读门槛，并替换 calm/soft subtle 的不稳定参考；兼顾清晰度、原作音色和情绪强度。",
+    "gptModel": ".runtime-assets/voice/emotiondetail_v4-e2.ckpt",
+    "sovitsModel": ".runtime-assets/voice/emotiondetail_v4_e2_s328.pth",
+    "bootstrapGptModel": ".runtime-assets/voice/emotionlite-bootstrap.ckpt",
+    "bootstrapSovitsModel": ".runtime-assets/voice/emotionlite-bootstrap.pth",
+    "refAudio": ".runtime-assets/voice/references/audio/CRS_0659.wav",
+    "refText": ".runtime-assets/voice/references/text/calm_normal_CRS_0659.txt",
+    "styleMap": ".runtime-assets/voice/presets/emotionclarity_v6/style_map.json"
+  },
+  "custom": {
+    "label": "自定义路径",
+    "description": "手动填写权重、参考音频和 style map。",
+    "gptModel": "",
+    "sovitsModel": "",
+    "refAudio": "",
+    "refText": "",
+    "styleMap": ""
+  }
+}

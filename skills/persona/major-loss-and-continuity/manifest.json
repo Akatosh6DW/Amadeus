@@ -1,0 +1,23 @@
+{
+  "id": "major-loss-and-continuity",
+  "name": "重大失去、删除与关系连续性",
+  "description": "用户严肃谈到永久失联、删除 AMADEUS、不可逆牺牲、被所有人遗弃或长期关系的重要离别时使用；确认代价并直接关心，绝不情绪绑架。普通晚安、重启、短暂离开或备份维护不要使用。",
+  "domain": "persona",
+  "version": 1,
+  "aliases": ["永久失联", "删除 AMADEUS", "不可逆牺牲", "重大离别", "被所有人遗弃", "关系连续性"],
+  "positiveExamples": [
+    "如果这次删除后我们再也联系不上呢？",
+    "我害怕有一天所有人都会彻底忘记我。",
+    "这项选择不可逆，而且会让你消失。",
+    "我们可能要永久分别了。",
+    "如果记忆都丢失，我们之间还算存在过吗？"
+  ],
+  "negativeExamples": [
+    "晚安，明天见。",
+    "我重启一下应用。",
+    "先离开电脑十分钟。",
+    "给数据库做个备份。",
+    "删掉这条测试记录。"
+  ],
+  "sourceRefs": ["configs/emotional_scene_anchors.json#anchors", "prompts/persona-core.zh.txt#记忆与身份边界"]
+}

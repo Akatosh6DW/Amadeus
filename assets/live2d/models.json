@@ -1,0 +1,390 @@
+{
+  "defaultId": "aipoet-kurisu",
+  "models": [
+    {
+      "id": "aipoet-kurisu",
+      "label": "AMADEUS 经典版（当前）",
+      "description": "当前正在使用的半身模型，保持为默认选项。",
+      "modelUrl": "/assets/live2d/AiPoetKurisu/kurisu.model3.json",
+      "fullScaleMultiplier": 0.9,
+      "supportsNativeExpressions": true,
+      "interactionSummary": "表情文件负责情绪；轻触和对话动作调用经典动作组；眼睛、头部与身体参数持续独立驱动。",
+      "lipSync": {
+        "openMultiplier": 1.2,
+        "formMultiplier": 1.12,
+        "openSmoothing": 0.5,
+        "formSmoothing": 0.34
+      },
+      "eyeVisibilityCompensation": {
+        "sustainedDelayMs": 220,
+        "minimumVisibleOpening": 0.42,
+        "closeThreshold": 0.32,
+        "families": {
+          "default": [[0, 0, 0, 0], [0.14, 0.06, 0, 0], [0.42, 0.5, -0.12, 0], [0.56, 0.9, -0.04, 0], [0.68, 1, 0, 0]],
+          "smile": [[0, 0, 0, 0], [0.18, 0.08, 0, 0], [0.42, 0.52, -0.08, 0], [0.58, 0.92, -0.03, 0], [0.72, 1, 0, 0]],
+          "coldGlance": [[0, 0, 0, 0], [0.16, 0.08, 0, 0], [0.42, 0.56, -0.1, 0], [0.54, 0.9, -0.03, 0], [0.66, 1, 0, 0]]
+        }
+      },
+      "headTurn": {
+        "maxYaw": 78,
+        "auxiliaryMax": 25,
+        "bodyMax": 2.2,
+        "pointerSwitchThreshold": 0.3,
+        "springFrequency": 5.6,
+        "springDamping": 0.86
+      },
+      "hiddenParameters": [
+        "AY", "BB", "DZH", "KLSTN", "Tucao", "TX", "TC", "close", "tc",
+        "logo", "music", "guan_yu_zuo_zhe_", "zuo_zhe", "bj"
+      ],
+      "fixedParameters": {
+        "logo": 0.01,
+        "music": 0,
+        "guan_yu_zuo_zhe_": 0,
+        "zuo_zhe": 0,
+        "hu_dong": 1,
+        "amadeus": 1,
+        "connect_select": 1,
+        "xl": 1,
+        "bj": 0
+      },
+      "parameterAliases": {
+        "blush": ["ParamCheek"],
+        "eyeSmile": ["ParamEyeLSmile", "ParamEyeRSmile"],
+        "browLY": ["ParamBrowLY"],
+        "browRY": ["ParamBrowRY"],
+        "browLForm": ["ParamBrowLForm"],
+        "browRForm": ["ParamBrowRForm"]
+      },
+      "expressionMap": {
+        "neutral": "",
+        "thinking": "",
+        "focused": "",
+        "skeptical": "",
+        "awkward": "",
+        "annoyed": "",
+        "furious": "",
+        "teasing": "",
+        "amused": "",
+        "laughing": "",
+        "shy": "",
+        "flustered": "",
+        "affectionate": "",
+        "concerned": "",
+        "protective": "",
+        "excited": "",
+        "startled": "",
+        "proud": "",
+        "melancholic": ""
+      },
+      "motionMap": {
+        "boot": "random1",
+        "tap": "random2",
+        "recoil": "surprise",
+        "explain": "random3",
+        "perk": "joy",
+        "lean": "",
+        "happy": "",
+        "shy": "",
+        "angry": "anger",
+        "startled": "surprise",
+        "sad": "sadness",
+        "proud": "joy",
+        "focused": "unhappy"
+      }
+    },
+    {
+      "id": "aipoet-kurisu-daily",
+      "label": "经典版：日常服",
+      "description": "保留经典版脸部、表情和动作；白衬衫、红领带与滑落到上臂的棕色外套。",
+      "modelUrl": "/assets/live2d/AiPoetKurisuDaily/kurisu-daily.model3.json",
+      "fullScaleMultiplier": 0.9,
+      "supportsNativeExpressions": true,
+      "interactionSummary": "表情文件负责情绪；轻触和对话动作调用经典动作组；眼睛、头部与身体参数持续独立驱动。",
+      "lipSync": {
+        "openMultiplier": 1.2,
+        "formMultiplier": 1.12,
+        "openSmoothing": 0.5,
+        "formSmoothing": 0.34
+      },
+      "eyeVisibilityCompensation": {
+        "sustainedDelayMs": 220,
+        "minimumVisibleOpening": 0.42,
+        "closeThreshold": 0.32,
+        "families": {
+          "default": [[0, 0, 0, 0], [0.14, 0.06, 0, 0], [0.42, 0.5, -0.12, 0], [0.56, 0.9, -0.04, 0], [0.68, 1, 0, 0]],
+          "smile": [[0, 0, 0, 0], [0.18, 0.08, 0, 0], [0.42, 0.52, -0.08, 0], [0.58, 0.92, -0.03, 0], [0.72, 1, 0, 0]],
+          "coldGlance": [[0, 0, 0, 0], [0.16, 0.08, 0, 0], [0.42, 0.56, -0.1, 0], [0.54, 0.9, -0.03, 0], [0.66, 1, 0, 0]]
+        }
+      },
+      "headTurn": {
+        "maxYaw": 78,
+        "auxiliaryMax": 25,
+        "bodyMax": 2.2,
+        "pointerSwitchThreshold": 0.3,
+        "springFrequency": 5.6,
+        "springDamping": 0.86
+      },
+      "hiddenParameters": [
+        "AY", "BB", "DZH", "KLSTN", "Tucao", "TX", "TC", "close", "tc",
+        "logo", "music", "guan_yu_zuo_zhe_", "zuo_zhe", "bj"
+      ],
+      "fixedParameters": {
+        "logo": 0.01,
+        "music": 0,
+        "guan_yu_zuo_zhe_": 0,
+        "zuo_zhe": 0,
+        "hu_dong": 1,
+        "amadeus": 1,
+        "connect_select": 1,
+        "xl": 1,
+        "bj": 0
+      },
+      "parameterAliases": {
+        "blush": ["ParamCheek"],
+        "eyeSmile": ["ParamEyeLSmile", "ParamEyeRSmile"],
+        "browLY": ["ParamBrowLY"],
+        "browRY": ["ParamBrowRY"],
+        "browLForm": ["ParamBrowLForm"],
+        "browRForm": ["ParamBrowRForm"]
+      },
+      "expressionMap": {
+        "neutral": "",
+        "thinking": "",
+        "focused": "",
+        "skeptical": "",
+        "awkward": "",
+        "annoyed": "",
+        "furious": "",
+        "teasing": "",
+        "amused": "",
+        "laughing": "",
+        "shy": "",
+        "flustered": "",
+        "affectionate": "",
+        "concerned": "",
+        "protective": "",
+        "excited": "",
+        "startled": "",
+        "proud": "",
+        "melancholic": ""
+      },
+      "motionMap": {
+        "boot": "random1",
+        "tap": "random2",
+        "recoil": "surprise",
+        "explain": "random3",
+        "perk": "joy",
+        "lean": "",
+        "happy": "",
+        "shy": "",
+        "angry": "anger",
+        "startled": "surprise",
+        "sad": "sadness",
+        "proud": "joy",
+        "focused": "unhappy"
+      },
+      "baseModelId": "aipoet-kurisu",
+      "armPoseMode": "endpoints",
+      "garmentRigUrl": "/assets/live2d/AiPoetKurisuDaily/jacket-rig.json"
+    },
+    {
+      "id": "community-kurisu-upper",
+      "label": "精细版：实验服半身",
+      "description": "接近经典形象的实验服半身模型，带手臂切换、脸红和多组原生表情动作。",
+      "modelUrl": "/assets/live2d/CommunityKurisuUpper/Kurisu.model3.json",
+      "scaleMultiplier": 0.92,
+      "fullScaleMultiplier": 0.92,
+      "offsetX": 15,
+      "displayBounds": [0, 0, 1, 0.6],
+      "supportsNativeExpressions": true,
+      "interactionSummary": "上半身取景；脸红、愤怒和微笑使用原生表情；身体点击、受惊和明显开心才调用原生动作，其余对话使用连续头身参数，避免动作含义混乱。",
+      "lipSync": {
+        "openMultiplier": 1.46,
+        "formMultiplier": 1.08,
+        "openSmoothing": 0.44,
+        "formSmoothing": 0.3
+      },
+      "eyeVisibilityCompensation": {
+        "sustainedDelayMs": 240,
+        "minimumVisibleOpening": 0.4,
+        "closeThreshold": 0.3,
+        "families": {
+          "default": [[0, 0, 0, 0], [0.16, 0.08, 0, 0], [0.4, 0.48, -0.08, -0.12], [0.54, 0.88, -0.03, -0.05], [0.7, 1, 0, 0]],
+          "smile": [[0, 0, 0, 0], [0.2, 0.1, 0, 0], [0.4, 0.52, -0.06, -0.14], [0.58, 0.92, -0.02, -0.04], [0.74, 1, 0, 0]],
+          "coldGlance": [[0, 0, 0, 0], [0.18, 0.1, 0, 0], [0.4, 0.54, -0.07, -0.12], [0.54, 0.9, -0.02, -0.04], [0.7, 1, 0, 0]]
+        }
+      },
+      "headTurn": {
+        "maxYaw": 30,
+        "auxiliaryMax": 0,
+        "bodyMax": 1.8,
+        "pointerSwitchThreshold": 0.3,
+        "springFrequency": 4.8,
+        "springDamping": 0.88
+      },
+      "expressionMap": {
+        "neutral": "",
+        "thinking": "Stanby Sad",
+        "focused": "Stanby Sad",
+        "skeptical": "Stanby Angry",
+        "awkward": "Stanby Sad",
+        "annoyed": "Stanby Angry",
+        "furious": "Stanby Angry",
+        "teasing": "Stanby Smile",
+        "amused": "Stanby Smile",
+        "laughing": "Stanby Smile",
+        "shy": "Blush 1",
+        "flustered": "Blush 2",
+        "affectionate": "Blush 1",
+        "concerned": "Stanby Sad",
+        "protective": "Stanby Angry",
+        "excited": "Stanby Surprised",
+        "startled": "Stanby Surprised",
+        "proud": "Stanby Smile",
+        "melancholic": "Stanby Sad"
+      },
+      "parameterAliases": {
+        "blush": ["ParamCheek", "ParamBlush"],
+        "eyeSmile": ["ParamEyeLSmile", "ParamEyeRSmile"],
+        "pupilScale": ["EyeballSize", "ParamEyeBallForm"],
+        "browLY": ["ParamBrowLY"],
+        "browRY": ["ParamBrowRY"],
+        "browLForm": ["ParamBrowLForm"],
+        "browRForm": ["ParamBrowRForm"]
+      },
+      "motionMap": {
+        "boot": "Idle",
+        "tap": "TapBody",
+        "recoil": "TapHead",
+        "perk": "Special",
+        "happy": "Special",
+        "startled": "TapHead",
+        "proud": "Special"
+      }
+    },
+    {
+      "id": "neural-cloud-original",
+      "label": "精细版：时之盟约（原服装）",
+      "description": "更高细节的全身模型，包含手臂、手部、腿部和多组原生动作。",
+      "modelUrl": "/assets/live2d/NeuralCloudKurisu/original/kurisu-original.model3.json",
+      "scaleMultiplier": 0.98,
+      "fullScaleMultiplier": 0.92,
+      "displayBounds": [0.347, 0.413, 0.32, 0.587],
+      "supportsNativeExpressions": false,
+      "interactionSummary": "人物有效区域取景；解释、关心、害羞、恼怒、开心和受惊分别调用原生全身动作，参数层补充眼神与口型。",
+      "lipSync": {
+        "openMultiplier": 1.52,
+        "formMultiplier": 1.04,
+        "openSmoothing": 0.43,
+        "formSmoothing": 0.28
+      },
+      "eyeVisibilityCompensation": {
+        "sustainedDelayMs": 250,
+        "minimumVisibleOpening": 0.4,
+        "closeThreshold": 0.3,
+        "families": {
+          "default": [[0, 0, 0, 0], [0.16, 0.1, 0, 0], [0.4, 0.5, -0.06, 0], [0.54, 0.9, -0.02, 0], [0.7, 1, 0, 0]],
+          "smile": [[0, 0, 0, 0], [0.2, 0.12, 0, 0], [0.4, 0.54, -0.05, 0], [0.58, 0.94, -0.02, 0], [0.74, 1, 0, 0]],
+          "coldGlance": [[0, 0, 0, 0], [0.18, 0.12, 0, 0], [0.4, 0.56, -0.05, 0], [0.54, 0.92, -0.02, 0], [0.72, 1, 0, 0]]
+        }
+      },
+      "headTurn": {
+        "maxYaw": 30,
+        "auxiliaryMax": 0,
+        "bodyMax": 1.8,
+        "pointerSwitchThreshold": 0.3,
+        "springFrequency": 4.8,
+        "springDamping": 0.88
+      },
+      "hiddenParts": ["Part32"],
+      "parameterAliases": {
+        "blush": ["ParamBlush"],
+        "eyeSmile": ["ParamEyeSmile"],
+        "browLY": ["ParamParamBrowLY", "ParamBrowLY"],
+        "browRY": ["ParamParamBrowRY", "ParamBrowRY"],
+        "browLForm": ["ParamBrowLForm"],
+        "browRForm": ["ParamBrowRForm"]
+      },
+      "motionMap": {
+        "boot": "Idle",
+        "tap": "TapBody",
+        "recoil": "Startled",
+        "explain": "Explain",
+        "perk": "Happy",
+        "lean": "Concerned",
+        "happy": "Happy",
+        "shy": "Shy",
+        "angry": "Angry",
+        "startled": "Startled",
+        "sad": "Concerned",
+        "proud": "Explain",
+        "focused": "Explain"
+      }
+    },
+    {
+      "id": "neural-cloud-maid",
+      "label": "精细版：Celeb Maid（女仆装）",
+      "description": "同一角色的女仆服装模型，带物理效果和多组全身动作。",
+      "modelUrl": "/assets/live2d/NeuralCloudKurisu/maid/kurisu-maid.model3.json",
+      "scaleMultiplier": 0.86,
+      "fullScaleMultiplier": 0.86,
+      "displayBounds": [0.382, 0.424, 0.313, 0.576],
+      "supportsNativeExpressions": false,
+      "interactionSummary": "人物有效区域取景；托盘与手臂跟随原生全身动作，情绪参数控制眼神、眉形、脸红与口型。",
+      "lipSync": {
+        "openMultiplier": 1.44,
+        "formMultiplier": 0.94,
+        "formOffset": 0.12,
+        "openSmoothing": 0.42,
+        "formSmoothing": 0.28
+      },
+      "eyeVisibilityCompensation": {
+        "sustainedDelayMs": 250,
+        "minimumVisibleOpening": 0.4,
+        "closeThreshold": 0.3,
+        "families": {
+          "default": [[0, 0, 0, 0], [0.16, 0.1, 0, 0], [0.4, 0.5, -0.06, 0], [0.54, 0.9, -0.02, 0], [0.7, 1, 0, 0]],
+          "smile": [[0, 0, 0, 0], [0.2, 0.12, 0, 0], [0.4, 0.54, -0.05, 0], [0.58, 0.94, -0.02, 0], [0.74, 1, 0, 0]],
+          "coldGlance": [[0, 0, 0, 0], [0.18, 0.12, 0, 0], [0.4, 0.56, -0.05, 0], [0.54, 0.92, -0.02, 0], [0.72, 1, 0, 0]]
+        }
+      },
+      "headTurn": {
+        "maxYaw": 30,
+        "auxiliaryMax": 0,
+        "bodyMax": 1.8,
+        "pointerSwitchThreshold": 0.3,
+        "springFrequency": 4.8,
+        "springDamping": 0.88
+      },
+      "hiddenParts": ["Background"],
+      "fixedParameters": {
+        "Bg_Hide": 1
+      },
+      "parameterAliases": {
+        "blush": ["Exp_blush", "Exp_flush"],
+        "eyeSmile": ["ParamEyeSmile"],
+        "browLY": ["ParamBrowLY"],
+        "browRY": ["ParamBrowRY"],
+        "browLForm": ["ParamBrowLForm"],
+        "browRForm": ["ParamBrowRForm"],
+        "worry": ["xw_exp_worry"]
+      },
+      "motionMap": {
+        "boot": "Idle",
+        "tap": "TapBody",
+        "recoil": "Startled",
+        "explain": "Explain",
+        "perk": "Happy",
+        "lean": "Concerned",
+        "happy": "Happy",
+        "shy": "Shy",
+        "angry": "Angry",
+        "startled": "Startled",
+        "sad": "Concerned",
+        "proud": "Explain",
+        "focused": "Concerned"
+      }
+    }
+  ]
+}

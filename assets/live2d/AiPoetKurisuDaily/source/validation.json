@@ -1,0 +1,331 @@
+{
+  "modelId": "aipoet-kurisu-daily",
+  "version": 2,
+  "originalMocSha256": "89d5eebcdf36fd6d1706db07bbe721830fd890676288dd31b92af4c3c524a4fb",
+  "originalTextureSha256": "3c2ecfdd289000014882b55bb937360cda4e450724079b92c4f9b06e8d5b2728",
+  "dailyTextureSha256": "ca24eb4e22480b38c250a78f2a74d585f2229e39e14430034026fec084a94eae",
+  "jacketTextureSha256": "06280f404e62c3026a16769e5825c876a43d5d7819b4964ddf1f0ccaf5468a2f",
+  "baseAtlasAlphaRetained": true,
+  "changedPixelsOutsideClothingMask": 0,
+  "independentJacketAlphaAndGrids": true,
+  "newGridDrawables": [
+    "ArtMesh68",
+    "ArtMesh69",
+    "ArtMesh71",
+    "ArtMesh82",
+    "ArtMesh83",
+    "ArtMesh84",
+    "ArtMesh85"
+  ],
+  "faceAndHairGeometryUntouched": true,
+  "headRenderComparison": {
+    "region": [
+      0,
+      0,
+      800,
+      420
+    ],
+    "poses": [
+      {
+        "pose": "neutral",
+        "changedPixels": 0,
+        "maximumChannelDifference": 0
+      },
+      {
+        "pose": "crossed",
+        "changedPixels": 0,
+        "maximumChannelDifference": 0
+      },
+      {
+        "pose": "left-talk",
+        "changedPixels": 0,
+        "maximumChannelDifference": 0
+      },
+      {
+        "pose": "right-blink",
+        "changedPixels": 1,
+        "maximumChannelDifference": 1
+      },
+      {
+        "pose": "body-left",
+        "changedPixels": 0,
+        "maximumChannelDifference": 0
+      },
+      {
+        "pose": "body-right-crossed",
+        "changedPixels": 0,
+        "maximumChannelDifference": 0
+      }
+    ],
+    "note": "One blink-render edge pixel differs by 1 in one RGB channel; face source pixels and geometry remain identical. Shirt collar below this region is deliberately recolored."
+  },
+  "relatedTestsPassed": 71,
+  "subtestsPassed": 155,
+  "app": {
+    "selectionPersisted": true,
+    "activeRig": "aipoet-kurisu",
+    "restArmPose": 0,
+    "crossedArmPose": 0.9911720752716064,
+    "faceChecks": [
+      {
+        "emotion": "neutral",
+        "samePlan": true,
+        "sameTarget": true
+      },
+      {
+        "emotion": "affectionate",
+        "samePlan": true,
+        "sameTarget": true
+      },
+      {
+        "emotion": "shy",
+        "samePlan": true,
+        "sameTarget": true
+      },
+      {
+        "emotion": "annoyed",
+        "samePlan": true,
+        "sameTarget": true
+      },
+      {
+        "emotion": "startled",
+        "samePlan": true,
+        "sameTarget": true
+      }
+    ],
+    "javascriptErrors": [],
+    "productionPage": {
+      "profile": "aipoet-kurisu-daily",
+      "garmentLayers": 8,
+      "textures": 2,
+      "rigUrl": "/assets/live2d/AiPoetKurisuDaily/jacket-rig.json"
+    }
+  },
+  "jacketRigSha256": "6e696d553cab96d5ab608240746ee33f63fecc3653980fba60cc9a164d6cad37",
+  "handFit": {
+    "revision": 3,
+    "uniformScale": 0.74,
+    "rightWristReference": [
+      592,
+      850
+    ],
+    "rightCuffTarget": [
+      583,
+      873
+    ],
+    "leftWristReference": [
+      233,
+      843
+    ],
+    "leftCuffTarget": [
+      221,
+      844
+    ],
+    "drawOrder": "hand before cuff; wrist root under rim",
+    "motionBinding": "same current affine fit for hand anchors and cuff",
+    "elbowClosure": "Param16 bends the lower upper-arm grid into the crossed elbow; neutral sleeve seam unchanged",
+    "visualChecks": [
+      "crossed neutral body",
+      "crossed body left",
+      "crossed body right"
+    ],
+    "tests": "exact hand scale and anchor placement; cuff overlay order; neutral grid unchanged; hand and cuff follow affine motion; repeated updates do not accumulate scale"
+  },
+  "shirtLayerFix": {
+    "revision": 4,
+    "cause": "Retained white shoulders shared the jacket foreground slots and covered torso seams/pocket during motion.",
+    "shirtUnderlayer": "ArtMesh70",
+    "retainedSources": [
+      "ArtMesh82",
+      "ArtMesh83"
+    ],
+    "relativeOrder": [
+      "ArtMesh70",
+      "ArtMesh79",
+      "ArtMesh78",
+      "ArtMesh82",
+      "ArtMesh83"
+    ],
+    "jacketSlotsRetainWhiteShoulders": false,
+    "continuousMotionFrames": 24,
+    "headComparisonBeforeAfter": [
+      {
+        "frame": 0,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 1,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 2,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 3,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 4,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 5,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 6,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 7,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 8,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 9,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 10,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 11,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 12,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 13,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 14,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 15,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 16,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 17,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 18,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 19,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 20,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 21,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 22,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      },
+      {
+        "frame": 23,
+        "changedPixels": 0,
+        "maxChannelDifference": 0
+      }
+    ],
+    "comparisonArtifact": "data/qa_runs/kurisu_shirt_layers/shirt-layer-motion-comparison.gif"
+  },
+  "bodyCoupling": {
+    "revision": 5,
+    "bodySource": "ArtMesh78",
+    "bodyInfluence": 0.9,
+    "armInfluence": 0.1,
+    "affected": [
+      "ArtMesh68",
+      "ArtMesh69",
+      "ArtMesh70",
+      "ArtMesh71",
+      "ArtMesh82",
+      "ArtMesh83",
+      "ArtMesh84",
+      "ArtMesh85"
+    ],
+    "handCoordinateTransfer": "inverse authored motion -> wrist scaling/placement -> mixed body/arm motion",
+    "continuousComparisonFrames": 24,
+    "crossedChecks": [
+      "front",
+      "body left",
+      "body right"
+    ],
+    "comparisonArtifact": "data/qa_runs/kurisu_shirt_layers/shirt-jacket-link-comparison.gif",
+    "headChangedPixelsAcross24Frames": 0,
+    "productionPageVerified": true
+  },
+  "innerEdgeFix": {
+    "revision": 6,
+    "cause": "Generated sleeve inner-edge tips were kept in the foreground sleeve silhouette.",
+    "method": "Convex local-UV mesh cutouts on ArtMesh82/83; shared position/UV interpolation and pose topology.",
+    "bodyInfluence": 0.9,
+    "comparisonPoseCount": 33,
+    "headChangedPixels": 0,
+    "headComparisonRegion": [
+      0,
+      0,
+      800,
+      550
+    ],
+    "unchangedTextureHashes": {
+      "assets/live2d/AiPoetKurisuDaily/source/v2/continuous-sleeves-generated.png": "e53722cbbad80df16ad19daa1d9743e358905b6ea06a530f2fdb832b1a2dc2e7",
+      "assets/live2d/AiPoetKurisuDaily/source/v2/continuous-left.png": "d4c1c472371ebae271d828e7de2f3ca17aa0585aa8e4e8c71d6f55bc289adc23",
+      "assets/live2d/AiPoetKurisuDaily/source/v2/continuous-right.png": "b93e73dbd083e890e188d7ba556aec0dff4f6b628635b29528dbf6bf60295c35",
+      "assets/live2d/AiPoetKurisuDaily/jacket-layers.png": "06280f404e62c3026a16769e5825c876a43d5d7819b4964ddf1f0ccaf5468a2f"
+    },
+    "runtimeSha256": "198a960e9cc958ff414bd25a626c3332f22cacc304d313e6e622abf96ebbb41b",
+    "productionPage": {
+      "profile": "aipoet-kurisu-daily",
+      "garmentLayers": 8,
+      "textures": 2,
+      "rigUrl": "/assets/live2d/AiPoetKurisuDaily/jacket-rig.json"
+    },
+    "javascriptErrors": [],
+    "comparisonArtifact": "data/qa_runs/kurisu_inner_edge_fix/comparison.png",
+    "pixelDifferences": "data/qa_runs/kurisu_inner_edge_fix/pixel-differences.json"
+  }
+}

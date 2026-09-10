@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "modelId": "BAAI/bge-small-zh-v1.5",
+  "modelRevision": "18e2da9",
+  "dimension": 512,
+  "maxLength": 512,
+  "pooling": "CLS",
+  "normalized": true,
+  "modelFile": "onnx/model_quantized.onnx",
+  "modelSha256": "99A6E522710C00220C89F8C52E0CC5AA09D4CBB1C34C0E932EAB3A9DFDC65DF3",
+  "tokenizerFile": "tokenizer.json",
+  "tokenizerSha256": "3D09C84EBD10306706A79A8276B3AB736A40D8EC03251C7639F4E52C3A1A4F8E",
+  "externalData": [
+    {
+      "file": "onnx/model_quantized.onnx_data",
+      "sha256": "952623481CA8BEEA884E3D3C9ECAF8A3C7BF1D0C21DE29E970CD31AF9D37A90B"
+    }
+  ],
+  "provenance": {
+    "baseModel": "https://huggingface.co/BAAI/bge-small-zh-v1.5",
+    "onnxRepository": "https://huggingface.co/onnx-community/bge-small-zh-v1.5-ONNX",
+    "onnxRevision": "18e2da9",
+    "license": "mit"
+  },
+  "runtimeContract": {
+    "providers": [
+      "CPUExecutionProvider"
+    ],
+    "inputs": [
+      "input_ids",
+      "attention_mask",
+      "token_type_ids"
+    ],
+    "output": "last_hidden_state[:,0,:]"
+  }
+}

@@ -1,0 +1,4 @@
+-r requirements.txt
+-r requirements-context-skill.txt
+# Camera capture only; image understanding uses the configured conversation API.
+opencv-python-headless==4.11.0.86

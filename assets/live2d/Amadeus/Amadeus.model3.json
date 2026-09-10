@@ -1,0 +1,57 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "kurisu.moc3",
+		"Textures": [
+			"kurisu.2048/texture_00_clean.png",
+			"kurisu.2048/texture_01.png",
+			"kurisu.2048/texture_02_clean.png"
+		],
+		"Physics": "kurisu.physics3.json",
+		"Expressions": [
+			{
+				"File": "fix.exp3.json",
+				"Name": "fix"
+			},
+			{
+				"File": "shy.exp3.json",
+				"Name": "shy"
+			},
+			{
+				"File": "thinking.exp3.json",
+				"Name": "thinking"
+			},
+			{
+				"File": "annoyed.exp3.json",
+				"Name": "annoyed"
+			},
+			{
+				"File": "amused.exp3.json",
+				"Name": "amused"
+			},
+			{
+				"File": "concerned.exp3.json",
+				"Name": "concerned"
+			},
+			{
+				"File": "excited.exp3.json",
+				"Name": "excited"
+			}
+		]
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		}
+	]
+}

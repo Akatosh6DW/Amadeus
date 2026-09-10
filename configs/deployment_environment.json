@@ -1,0 +1,24 @@
+{
+  "formatVersion": 1,
+  "python": {"desktop": "3.11", "voice": "3.10"},
+  "pipIndex": "https://pypi.org/simple",
+  "condaChannel": "conda-forge",
+  "miniforgeInstaller": "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Windows-x86_64.exe",
+  "gptSovits": {
+    "repository": "https://github.com/RVC-Boss/GPT-SoVITS.git",
+    "commit": "bf81cdb14a38b674b6e9996dabc97340bc9978d2",
+    "modelSource": "HF"
+  },
+  "torch": {
+    "version": "2.7.0",
+    "cudaMinimum": "12.8",
+    "cudaIndex": "https://download.pytorch.org/whl/cu128",
+    "cpuIndex": "https://download.pytorch.org/whl/cpu"
+  },
+  "voiceConstraints": "requirements-voice-constraints.txt",
+  "rhubarb": {
+    "directory": "Rhubarb-Lip-Sync-1.14.0-Windows",
+    "url": "https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.14.0/Rhubarb-Lip-Sync-1.14.0-Windows.zip"
+  },
+  "webView2Installer": "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+}

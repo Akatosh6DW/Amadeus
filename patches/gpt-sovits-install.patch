@@ -1,0 +1,52 @@
+--- a/install.ps1
++++ b/install.ps1
+@@ -52,7 +52,10 @@
+         [string[]]$Args
+     )
+ 
+-    $output = & conda install -y -q -c conda-forge @Args 2>&1
++    $previous = $ErrorActionPreference
++    $ErrorActionPreference = 'Continue'
++    $output = & conda install -y -q --override-channels -c conda-forge @Args 2>&1
++    $ErrorActionPreference = $previous
+     $exitCode = $LASTEXITCODE
+ 
+     if ($exitCode -ne 0) {
+@@ -79,7 +82,10 @@
+         [string[]]$Args
+     )
+     
++    $previous = $ErrorActionPreference
++    $ErrorActionPreference = 'Continue'
+     $output = & pip install @Args 2>&1
++    $ErrorActionPreference = $previous
+     $exitCode = $LASTEXITCODE
+     
+     if ($exitCode -ne 0) {
+@@ -112,6 +118,7 @@
+     try {
+         $params = @{
+             Uri = $Uri
++            UseBasicParsing = $true
+         }
+ 
+         if ($OutFile) {
+@@ -209,15 +216,15 @@
+ switch ($Device) {
+     "CU128" {
+         Write-Info "Installing PyTorch For CUDA 12.8..."
+-        Invoke-Pip torch torchcodec --index-url "https://download.pytorch.org/whl/cu128"
++        Invoke-Pip torch torchaudio --index-url "https://download.pytorch.org/whl/cu128"
+     }
+     "CU126" {
+         Write-Info "Installing PyTorch For CUDA 12.6..."
+-        Invoke-Pip torch torchcodec --index-url "https://download.pytorch.org/whl/cu126"
++        Invoke-Pip torch torchaudio --index-url "https://download.pytorch.org/whl/cu126"
+     }
+     "CPU" {
+         Write-Info "Installing PyTorch For CPU..."
+-        Invoke-Pip torch torchcodec --index-url "https://download.pytorch.org/whl/cpu"
++        Invoke-Pip torch torchaudio --index-url "https://download.pytorch.org/whl/cpu"
+     }
+ }
+ Write-Success "PyTorch Installed"

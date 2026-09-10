@@ -1,0 +1,32 @@
+{"id":"science-time-machine-direct","split":"dev","paraphraseFamily":"science-time-travel","query":"时间机器真的能造出来吗？","expectedSkill":"scientific-reasoning"}
+{"id":"science-time-machine-variant","split":"dev","paraphraseFamily":"science-time-travel","query":"时光机器在物理上可行吗？","expectedSkill":"scientific-reasoning"}
+{"id":"science-time-device-paraphrase","split":"held_out","paraphraseFamily":"science-return-past-device","query":"有没有可能做一个能回到昨天的装置？","expectedSkill":"scientific-reasoning"}
+{"id":"science-experiment-falsify","split":"dev","paraphraseFamily":"science-experiment-design","query":"怎样设计实验才能证伪这个假设？","expectedSkill":"scientific-reasoning"}
+{"id":"negative-ml-time-complexity","split":"held_out","paraphraseFamily":"time-machine-confusions","query":"机器学习的时间复杂度怎么算？","expectedSkill":null,"criticalNegative":true}
+{"id":"negative-system-clock","split":"held_out","paraphraseFamily":"time-machine-confusions","query":"帮我修改一下系统时间。","expectedSkill":null,"criticalNegative":true}
+{"id":"negative-machine-runtime","split":"held_out","paraphraseFamily":"time-machine-confusions","query":"这台机器最多能连续运行多久？","expectedSkill":null,"criticalNegative":true}
+{"id":"technical-protocol","split":"dev","paraphraseFamily":"technical-protocol","query":"这个流式 JSON 协议到底在哪里不匹配？","expectedSkill":"technical-correction-and-debate"}
+{"id":"technical-code-repeat","split":"held_out","paraphraseFamily":"technical-execution","query":"沿完整调用链看看为什么这段代码执行了两遍。","expectedSkill":"technical-correction-and-debate"}
+{"id":"banter-chuunibyou","split":"dev","paraphraseFamily":"playful-chuunibyou","query":"哼哼，最终作战已经进入秘密阶段！","expectedSkill":"playful-banter"}
+{"id":"banter-contextual","split":"held_out","paraphraseFamily":"playful-contextual","recent":[{"role":"user","content":"这一定是神秘势力在阻挠我们的计划。"},{"role":"assistant","content":"你又开始那套夸张说法了。"}],"query":"又开始了是吧。","expectedSkill":"playful-banter"}
+{"id":"alias-private-forum","split":"dev","paraphraseFamily":"private-interest","query":"我知道栗悟饭和龟波气功是谁哦。","expectedSkill":"alias-and-private-interest"}
+{"id":"alias-task-vocative","split":"held_out","paraphraseFamily":"alias-task-vocative","query":"助手，请严肃分析这个神经科学实验。","expectedSkill":"scientific-reasoning"}
+{"id":"alias-christina-task","split":"dev","paraphraseFamily":"alias-task-christina","query":"克里斯蒂娜，帮我打开这个网站。","expectedSkill":"alias-and-private-interest"}
+{"id":"alias-zombie-direct","split":"held_out","paraphraseFamily":"alias-zombie-direct","query":"The Zombie！看看这个。","expectedSkill":"alias-and-private-interest"}
+{"id":"intimacy-companionship","split":"dev","paraphraseFamily":"intimacy-companionship","query":"有你这些天陪着我，真的很好。","expectedSkill":"intimacy-and-praise"}
+{"id":"intimacy-routine-thanks-negative","split":"held_out","paraphraseFamily":"intimacy-routine-negative","query":"谢谢，文件我已经收到了。","expectedSkill":null}
+{"id":"distress-insomnia","split":"dev","paraphraseFamily":"distress-insomnia","query":"今晚又睡不着，脑子完全停不下来。","expectedSkill":"distress-and-support"}
+{"id":"distress-technical-annoyance-negative","split":"held_out","paraphraseFamily":"distress-technical-negative","query":"编译器又报错了，烦死。","expectedSkill":"technical-correction-and-debate","criticalNegativeFor":"distress-and-support"}
+{"id":"breakthrough-real-success","split":"dev","paraphraseFamily":"breakthrough-software","query":"那个一直复现的 bug 终于在真实场景修好了！","expectedSkill":"breakthrough-and-surprise"}
+{"id":"breakthrough-hypothetical-negative","split":"held_out","paraphraseFamily":"breakthrough-hypothetical","query":"如果以后实验成功了会怎样？","expectedSkill":"scientific-reasoning","criticalNegativeFor":"breakthrough-and-surprise"}
+{"id":"major-loss-delete","split":"dev","paraphraseFamily":"major-loss-deletion","query":"如果这次删除后我们再也联系不上呢？","expectedSkill":"major-loss-and-continuity"}
+{"id":"major-loss-restart-negative","split":"held_out","paraphraseFamily":"major-loss-routine-negative","query":"我先重启一下应用，马上回来。","expectedSkill":null,"criticalNegativeFor":"major-loss-and-continuity"}
+{"id":"no-skill-weather","split":"held_out","paraphraseFamily":"no-skill-smalltalk","query":"今天天气看起来还不错。","expectedSkill":null}
+{"id":"dev-negative-appliance-runtime","split":"dev","paraphraseFamily":"device-maintenance-negative","query":"这台打印机连续工作多久需要停机维护？","expectedSkill":null,"criticalNegative":true}
+{"id":"dev-negative-calendar-time","split":"dev","paraphraseFamily":"calendar-clock-negative","query":"把会议时间改到明天下午三点。","expectedSkill":null,"criticalNegative":true}
+{"id":"dev-no-skill-food","split":"dev","paraphraseFamily":"no-skill-daily-food","query":"晚饭吃点什么比较好？","expectedSkill":null}
+{"id":"dev-intimacy-routine-thanks","split":"dev","paraphraseFamily":"routine-thanks-negative-dev","query":"谢谢，压缩包已经下载好了。","expectedSkill":null}
+{"id":"dev-breakthrough-hypothetical","split":"dev","paraphraseFamily":"future-success-hypothesis-dev","query":"假设将来测试通过了，应该怎样解释这个结果？","expectedSkill":"scientific-reasoning","criticalNegativeFor":"breakthrough-and-surprise"}
+{"id":"dev-major-loss-routine","split":"dev","paraphraseFamily":"routine-disconnect-negative-dev","query":"我去更新一下程序，几分钟后回来。","expectedSkill":null,"criticalNegativeFor":"major-loss-and-continuity"}
+{"id":"dev-technical-frustrated-callchain","split":"dev","paraphraseFamily":"technical-frustrated-execution-dev","query":"这个服务总是出错，弄得我很烦，沿调用链帮我找问题。","expectedSkill":"technical-correction-and-debate","criticalNegativeFor":"distress-and-support"}
+{"id":"dev-science-future-hypothesis-indirect","split":"dev","paraphraseFamily":"future-evidence-hypothesis-dev","query":"万一多年后这个现象真的成立，我们应该先验证哪一部分？","expectedSkill":"scientific-reasoning","criticalNegativeFor":"breakthrough-and-surprise"}

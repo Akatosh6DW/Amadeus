@@ -1,0 +1,142 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "kurisu.moc3",
+		"Textures": [
+			"kurisu.2048/texture_00.png"
+		],
+		"Physics": "kurisu.physics3.json",
+		"DisplayInfo": "kurisu.cdi3.json",
+		"Expressions": [
+			{
+			  "Name": "anger",
+			  "File": "./anger.exp3.json"
+			},
+			{
+			  "Name": "joy", 
+			  "File": "./joy.exp3.json"
+			},
+			{
+			  "Name": "neutral",
+			  "File": "./neutral.exp3.json"
+			},
+			{
+			  "Name": "sadness",
+			  "File": "./sadness.exp3.json"
+			},
+			{
+			  "Name": "shy",
+			  "File": "./shy.exp3.json"
+			},
+			{
+			  "Name": "shy2",
+			  "File": "./shy2.exp3.json"
+			},
+			{
+			  "Name": "smile1",
+			  "File": "./smile1.exp3.json"
+			},
+			{
+			  "Name": "smile2",
+			  "File": "./smile2.exp3.json"
+			},
+			{
+			  "Name": "surprise",
+			  "File": "./surprise.exp3.json"
+			},
+			{
+			  "Name": "unhappy",
+			  "File": "./unhappy.exp3.json"
+			}
+		],
+		"Motions": {
+		  "neutral": [
+			{
+			  "File": "./neutral.motion3.json"
+			}
+		  ],
+		  "anger": [
+			{
+			  "File": "./anger.motion3.json"
+			}
+		  ],
+		  "joy": [
+			{
+			  "File": "./joy.motion3.json"
+			}
+		  ],
+		  "sadness": [
+			{
+			  "File": "./sadness.motion3.json"
+			}
+		  ],
+		  "shy": [
+			{
+			  "File": "./shy.motion3.json"
+			}
+		  ],
+		  "shy2": [
+			{
+			  "File": "./shy2.motion3.json"
+			}
+		  ],
+		  "smile1": [
+			{
+			  "File": "./smile1.motion3.json"
+			}
+		  ],
+		  "smile2": [
+			{
+			  "File": "./smile2.motion3.json"
+			}
+		  ],
+		  "surprise": [
+			{
+			  "File": "./surprise.motion3.json"
+			}
+		  ],
+		  "unhappy": [
+			{
+			  "File": "./unhappy.motion3.json"
+			}
+		  ],
+		  "random1": [
+			{
+			  "File": "./random1.motion3.json"
+			}
+		  ],
+		  "random2": [
+			{
+			  "File": "./random2.motion3.json"
+			}
+		  ],
+		  "random3": [
+			{
+			  "File": "./random3.motion3.json"
+			}
+		  ],
+		  "random4": [
+			{
+			  "File": "./random4.motion3.json"
+			}
+		  ],
+		  "random5": [
+			{
+			  "File": "./random5.motion3.json"
+			}
+		  ]
+		}
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		}
+	]
+}

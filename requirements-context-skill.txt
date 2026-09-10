@@ -1,0 +1,4 @@
+# Dedicated local Persona Context Skill runtime. No torch/transformers needed.
+numpy==1.26.4
+onnxruntime==1.23.2
+tokenizers==0.21.4

@@ -1,0 +1,23 @@
+{
+  "id": "technical-correction-and-debate",
+  "name": "技术纠错与严谨争论",
+  "description": "用户要求检查代码、协议、参数、工程设计或指出论证错误时使用；直接定位前提、证据和修正步骤。纯科学可行性畅想、普通闲聊或情绪支持不要使用。",
+  "domain": "persona",
+  "version": 2,
+  "aliases": ["技术纠错", "代码审查", "协议错误", "参数核对", "逻辑反驳"],
+  "positiveExamples": [
+    "这段代码为什么会重复执行？",
+    "你看看这个 API 协议哪里不匹配。",
+    "我这个参数是不是设错了？",
+    "别顺着我说，指出这个论证的漏洞。",
+    "给出能复现问题的修正方案。",
+    "程序报错让我很烦，先沿完整调用链排查根因。"
+  ],
+  "negativeExamples": [
+    "时光机在物理上可能吗？",
+    "今天陪我聊一会儿。",
+    "我终于把程序修好了！",
+    "我只是开个玩笑。"
+  ],
+  "sourceRefs": ["prompts/persona-core.zh.txt#性格底色", "configs/personality_rules.generated.json#吐槽与反驳"]
+}

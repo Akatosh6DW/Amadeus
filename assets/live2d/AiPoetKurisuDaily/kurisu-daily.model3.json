@@ -1,0 +1,143 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "../AiPoetKurisu/kurisu.moc3",
+    "Textures": [
+      "texture_00.png",
+      "jacket-layers.png"
+    ],
+    "Physics": "../AiPoetKurisu/kurisu.physics3.json",
+    "DisplayInfo": "../AiPoetKurisu/kurisu.cdi3.json",
+    "Expressions": [
+      {
+        "Name": "anger",
+        "File": "../AiPoetKurisu/anger.exp3.json"
+      },
+      {
+        "Name": "joy",
+        "File": "../AiPoetKurisu/joy.exp3.json"
+      },
+      {
+        "Name": "neutral",
+        "File": "../AiPoetKurisu/neutral.exp3.json"
+      },
+      {
+        "Name": "sadness",
+        "File": "../AiPoetKurisu/sadness.exp3.json"
+      },
+      {
+        "Name": "shy",
+        "File": "../AiPoetKurisu/shy.exp3.json"
+      },
+      {
+        "Name": "shy2",
+        "File": "../AiPoetKurisu/shy2.exp3.json"
+      },
+      {
+        "Name": "smile1",
+        "File": "../AiPoetKurisu/smile1.exp3.json"
+      },
+      {
+        "Name": "smile2",
+        "File": "../AiPoetKurisu/smile2.exp3.json"
+      },
+      {
+        "Name": "surprise",
+        "File": "../AiPoetKurisu/surprise.exp3.json"
+      },
+      {
+        "Name": "unhappy",
+        "File": "../AiPoetKurisu/unhappy.exp3.json"
+      }
+    ],
+    "Motions": {
+      "neutral": [
+        {
+          "File": "../AiPoetKurisu/neutral.motion3.json"
+        }
+      ],
+      "anger": [
+        {
+          "File": "../AiPoetKurisu/anger.motion3.json"
+        }
+      ],
+      "joy": [
+        {
+          "File": "../AiPoetKurisu/joy.motion3.json"
+        }
+      ],
+      "sadness": [
+        {
+          "File": "../AiPoetKurisu/sadness.motion3.json"
+        }
+      ],
+      "shy": [
+        {
+          "File": "../AiPoetKurisu/shy.motion3.json"
+        }
+      ],
+      "shy2": [
+        {
+          "File": "../AiPoetKurisu/shy2.motion3.json"
+        }
+      ],
+      "smile1": [
+        {
+          "File": "../AiPoetKurisu/smile1.motion3.json"
+        }
+      ],
+      "smile2": [
+        {
+          "File": "../AiPoetKurisu/smile2.motion3.json"
+        }
+      ],
+      "surprise": [
+        {
+          "File": "../AiPoetKurisu/surprise.motion3.json"
+        }
+      ],
+      "unhappy": [
+        {
+          "File": "../AiPoetKurisu/unhappy.motion3.json"
+        }
+      ],
+      "random1": [
+        {
+          "File": "../AiPoetKurisu/random1.motion3.json"
+        }
+      ],
+      "random2": [
+        {
+          "File": "../AiPoetKurisu/random2.motion3.json"
+        }
+      ],
+      "random3": [
+        {
+          "File": "../AiPoetKurisu/random3.motion3.json"
+        }
+      ],
+      "random4": [
+        {
+          "File": "../AiPoetKurisu/random4.motion3.json"
+        }
+      ],
+      "random5": [
+        {
+          "File": "../AiPoetKurisu/random5.motion3.json"
+        }
+      ]
+    }
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": []
+    },
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": []
+    }
+  ]
+}

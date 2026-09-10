@@ -1,0 +1,17 @@
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.txt text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.moc3 binary
+
+# Developer voice assets are distributed as versioned GitHub Release bundles,
+# not committed to ordinary Git history. These rules protect accidental manual
+# additions of model/audio binaries elsewhere in the repository.
