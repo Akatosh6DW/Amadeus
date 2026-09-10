@@ -25,8 +25,15 @@ if (-not $ready) {
     Write-Host "Preparing AMADEUS for use. Missing components will download automatically."
     Write-Host "First launch needs Internet access and several GB of downloads. Keep this window open."
     $bootstrap = Join-Path $PSScriptRoot "bootstrap_deploy.ps1"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrap -Backend $Backend -NoLaunch
-    if ($LASTEXITCODE -ne 0) {
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrap -Backend $Backend -NoLaunch
+        $preparationExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($preparationExit -ne 0) {
         throw "Preparation failed. Correct the error above, then run start.cmd again."
     }
 }

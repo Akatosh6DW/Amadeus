@@ -15,8 +15,15 @@ function Invoke-AmadeusDeployment {
     # user's default policy. Bypass applies only to this child process.
     $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $bootstrap, "-Backend", $Backend)
     if ($NoLaunch) { $arguments += "-NoLaunch" }
-    & powershell.exe @arguments
-    if ($LASTEXITCODE -ne 0) { throw "AMADEUS deployment failed with exit code $LASTEXITCODE. Rerun the same command to retry." }
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & powershell.exe @arguments
+        $deploymentExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($deploymentExit -ne 0) { throw "AMADEUS deployment failed with exit code $deploymentExit. Rerun the same command to retry." }
 }
 if (Test-Path -LiteralPath $bootstrap -PathType Leaf) {
     # Resume an interrupted installation; existing user data stays in place.

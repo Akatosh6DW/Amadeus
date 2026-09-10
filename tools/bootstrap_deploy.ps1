@@ -52,7 +52,7 @@ function Invoke-Native {
         # Native progress/warnings are display output, never a caller's return
         # value. PowerShell 5 must use the exit code to decide native failure.
         $ErrorActionPreference = "Continue"
-        & $command @Arguments 2>&1 | Out-Host
+        & $command @Arguments 2>&1 | ForEach-Object { $_.ToString() } | Out-Host
         $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorAction
