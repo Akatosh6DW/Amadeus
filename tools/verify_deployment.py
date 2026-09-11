@@ -48,10 +48,13 @@ def voice_model_status(root: Path) -> dict:
     required = (
         "chinese-hubert-base/pytorch_model.bin", "chinese-hubert-base/config.json",
         "chinese-roberta-wwm-ext-large/pytorch_model.bin", "chinese-roberta-wwm-ext-large/config.json",
-        "chinese-roberta-wwm-ext-large/vocab.txt",
         "gsv-v4-pretrained/s2Gv4.pth", "gsv-v4-pretrained/vocoder.pth",
     )
     missing = [name for name in required if not (base_models / name).is_file()]
+    tokenizer = base_models / "chinese-roberta-wwm-ext-large"
+    # The upstream bundle ships the fast tokenizer JSON; legacy bundles use vocab.txt.
+    if not any((tokenizer / name).is_file() for name in ("tokenizer.json", "vocab.txt")):
+        missing.append("chinese-roberta-wwm-ext-large/vocab.txt")
     return {"ok": not missing, "missing": missing}
 
 
