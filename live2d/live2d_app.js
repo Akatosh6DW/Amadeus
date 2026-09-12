@@ -3,8 +3,8 @@
 const MODEL_REGISTRY_URL = "/assets/live2d/models.json";
 const FALLBACK_MODEL_PROFILE = {
   id: "aipoet-kurisu",
-  label: "AMADEUS 经典版（当前）",
-  description: "当前正在使用的半身模型，保持为默认选项。",
+  label: "标准实验服",
+  description: "经典半身模型的标准实验服，与日常服共用脸部、表情和动作。",
   modelUrl: "/assets/live2d/AiPoetKurisu/kurisu.model3.json",
   supportsNativeExpressions: true,
   hiddenParameters: [],
