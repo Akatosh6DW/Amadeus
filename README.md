@@ -2,6 +2,12 @@
 
 面向 Windows 的 Live2D 桌面助手，支持文字对话、长期记忆、Todo 与日程、主动提醒、日语情绪语音、口型同步，以及按需截图、摄像头和网页工具。
 
+## 直接使用 Release
+
+只想使用助手时，打开 [V1.0.0 试发版](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.0)，下载 `AMADEUS-v1.0.0-setup.zip`，解压后双击 `install-release.cmd`。安装器会自动下载、校验、合并安装包并配置 WebView2；完成后打开 `AMADEUS.exe`。Release 已包含 Python、声音权重和运行环境，没有开发者模式或测试模式入口。
+
+默认安装到 `%USERPROFILE%\Apps\Amadeus`。首次使用在“设置 → API”填写自己的 Key；网址和模型已预填。仓库尚为私有时，需要具有仓库访问权并先登录 GitHub CLI 或 Git Credential Manager；仓库公开后不需要登录。需要修改代码或开发功能时，使用下面的源码部署流程。
+
 ## 拉取后启动
 
 下载并解压源码，或用 Git 拉取后，双击根目录的 **`start.cmd`** 即可。首次启动会自动下载安装缺少的环境和声音资源，准备完成后打开界面；以后仍双击同一个文件。无需先运行其他安装脚本，也无需手动安装 Python。
@@ -81,6 +87,8 @@ conda activate .\.conda\gpt-sovits
 python -X utf8 tools\gpt_sovits_tts_server.py
 conda deactivate
 ```
+
+`server.py` 只启动后端服务。日常调试完整桌面界面用 `.\start.cmd`（首次也会安装环境）或 `.\run_amadeus.ps1`（环境已准备好）；在编辑器中选择上述项目 Python 解释器后即可修改和运行源码。
 
 首次准备源码运行环境使用 `tools\bootstrap_deploy.ps1 -Backend auto -NoLaunch`；它创建可复用的项目环境并校验部署资源。开发时保持桌面和语音解释器分开，避免把语音依赖安装进桌面环境；`conda run --prefix .\.conda\amadeus-desktop ...` 可在脚本或编辑器中无需激活环境直接运行。
 

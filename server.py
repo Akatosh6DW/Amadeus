@@ -6882,6 +6882,22 @@ def local_path(value: Any) -> Path:
     return (ROOT / path).resolve()
 
 
+def gpt_sovits_model_route_arguments(settings: dict[str, Any]) -> list[str]:
+    """Build the child-process arguments for optional GPT model routes."""
+    arguments: list[str] = []
+    raw_routes = settings.get("gptSovitsGptModelRoutes")
+    if isinstance(raw_routes, dict):
+        for route, model_path in sorted(raw_routes.items()):
+            arguments.extend(["--gpt-model-route", f"{route}={local_path(model_path)}"])
+    arguments.extend([
+        "--gpt-route-short-max-chars",
+        str(settings.get("gptSovitsGptRouteShortMaxChars") or 32),
+        "--gpt-route-long-min-chars",
+        str(settings.get("gptSovitsGptRouteLongMinChars") or 60),
+    ])
+    return arguments
+
+
 def vision_base_url(settings: dict[str, Any]) -> str:
     return "https://api.deepseek.com"
 
@@ -7259,17 +7275,7 @@ def start_gpt_sovits_service(raw_settings: dict[str, Any] | None = None, wait_se
         ]
         if str(settings.get("gptSovitsStyleMap") or "").strip():
             command.extend(["--style-map", str(local_path(settings.get("gptSovitsStyleMap")))])
-        if not RELEASE_MODE:
-            for route, model_path in sorted(
-                (settings.get("gptSovitsGptModelRoutes") or {}).items()
-            ):
-                command.extend(["--gpt-model-route", f"{route}={local_path(model_path)}"])
-            command.extend([
-                "--gpt-route-short-max-chars",
-                str(settings.get("gptSovitsGptRouteShortMaxChars") or 32),
-                "--gpt-route-long-min-chars",
-                str(settings.get("gptSovitsGptRouteLongMinChars") or 60),
-            ])
+        command.extend(gpt_sovits_model_route_arguments(settings))
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         GPT_SOVITS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         log_file = GPT_SOVITS_LOG_PATH.open("ab")
@@ -37725,7 +37731,15 @@ def call_upstream(
         if continuation is not None or current_attachments or has_current_visual_evidence
         else recalled_screen_capture_results(user_message)
     )
-    visual_focus_mode = has_typed_visual_evidence(visual_focus_results) and not native_visual_chat_enabled(settings)
+    native_visual_inputs = (
+        conversation_image_inputs(body, settings)
+        if native_visual_chat_enabled(settings) else []
+    )
+    # Provider capability alone does not mean this request actually delivered
+    # pixels.  Test doubles, unavailable captures, and metadata-only uploads
+    # still need the typed evidence route so stale persona/memory/attachment
+    # context cannot compete with the current observation.
+    visual_focus_mode = has_typed_visual_evidence(visual_focus_results) and not native_visual_inputs
     current_attachment_kinds = {
         str(item.get("kind") or "file")
         for item in current_attachments
@@ -43958,6 +43972,12 @@ def ensure_turn_contract_completion(
         )
     )
     visual_terminal_boundary = bool(candidate.get("visualGroundingTerminalBoundary"))
+    grounding_terminal_boundary = bool(candidate.get("groundingGateTerminalBoundary"))
+    evidence_limited_precision_audited = bool(
+        candidate.get("evidenceLimitedPrecisionAudited")
+        and not candidate.get("webSynthesisUnverified")
+        and not candidate.get("toolGroundingUnverified")
+    )
     visual_grounding_audit = (
         candidate.get("visualGroundingAudit")
         if isinstance(candidate.get("visualGroundingAudit"), dict)
@@ -43984,6 +44004,21 @@ def ensure_turn_contract_completion(
             "turnCompleteProvided": True,
             "turnContractVerification": "visual_fail_closed_boundary",
         })
+    elif grounding_terminal_boundary:
+        # The grounding gate owns this fact-free report.  A generic model audit
+        # has no access to the failed evidence receipt and could reintroduce the
+        # discarded claim, so preserve the typed safe outcome as-is.
+        candidate.update({
+            "completedActs": list(contract.required_acts),
+            "completedActsProvided": True,
+            "standalone": True,
+            "standaloneProvided": True,
+            "dependsOnUndeliveredPrefix": False,
+            "dependsOnUndeliveredPrefixProvided": True,
+            "turnComplete": True,
+            "turnCompleteProvided": True,
+            "turnContractVerification": "grounding_fail_closed_boundary",
+        })
     elif verified_visual_answer:
         # The exact bilingual text already passed the dedicated visual audit.
         # A generic contract rewrite cannot see that evidence packet and must
@@ -43998,6 +44033,21 @@ def ensure_turn_contract_completion(
             "turnComplete": True,
             "turnCompleteProvided": True,
             "turnContractVerification": "verified_visual_grounding",
+        })
+    elif evidence_limited_precision_audited:
+        # The evidence-limited precision pass is the semantic owner of this
+        # web answer.  Re-auditing it with the generic contract prompt would
+        # lose its source scope and spend another model call for the same text.
+        candidate.update({
+            "completedActs": list(contract.required_acts),
+            "completedActsProvided": True,
+            "standalone": True,
+            "standaloneProvided": True,
+            "dependsOnUndeliveredPrefix": False,
+            "dependsOnUndeliveredPrefixProvided": True,
+            "turnComplete": True,
+            "turnCompleteProvided": True,
+            "turnContractVerification": "evidence_limited_precision_audit",
         })
     elif trusted_local:
         candidate.update({
@@ -44033,12 +44083,17 @@ def ensure_turn_contract_completion(
         contract,
         text_mutated=text_mutated and not trusted_local,
     )
-    if trusted_local:
-        # Local simulation and other server-owned routes have no upstream
-        # model available for semantic audit or rewrite. Their completion
-        # metadata was established above from the backend-owned contract; do
-        # not turn a presentation-only bilingual heuristic into a call to an
-        # empty API endpoint.
+    if (
+        trusted_local
+        or visual_terminal_boundary
+        or grounding_terminal_boundary
+        or verified_visual_answer
+        or evidence_limited_precision_audited
+    ):
+        # Local simulation and typed server-owned outcomes have no need for a
+        # generic semantic rewrite. Their completion metadata was established
+        # above from backend or dedicated evidence; do not turn a presentation
+        # heuristic into a call that can replace the accepted answer.
         reasons = []
     audit: dict[str, Any] = {}
     semantic_audit_calls = 0

@@ -99,7 +99,7 @@
     "legacyFallbackAllowedInOn": false,
     "onRequiresCalibratedPolicy": true,
     "ordinarySourceLauncher": "on",
-    "releaseDefault": "off",
+    "releaseDefault": "on",
     "runtimeDownloadAllowed": false
   },
   "schemaVersion": 1,

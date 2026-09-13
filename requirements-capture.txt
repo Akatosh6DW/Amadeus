@@ -1,0 +1,6 @@
+# Capture-only desktop runtime used by source deployment and portable builds.
+# Image understanding stays in the configured conversation API; this file has
+# no Torch, Transformers, timm, or OCR model dependencies.
+-r requirements-deploy.txt
+mss==10.2.0
+dxcam==0.3.0

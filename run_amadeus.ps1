@@ -26,7 +26,7 @@ if (Test-Path (Join-Path $nodeBin "node.exe")) {
 
 $previousRuntimeMode = $env:AMADEUS_RUNTIME_MODE
 $previousDataDir = $env:AMADEUS_DATA_DIR
-$desktopArguments = @(".\desktop_live2d.py")
+$desktopArguments = @(('"' + (Join-Path $PSScriptRoot "desktop_live2d.py") + '"'))
 $testDataDir = $null
 if ($TestMode) {
   $runtimeParent = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "data\runtime"))
@@ -39,30 +39,30 @@ if ($TestMode) {
   $desktopArguments += "--test-mode"
 }
 
-Write-Host "Stopping stale AMADEUS desktop/server processes..."
-$amadeusPorts = 5173..5212
-$listeningPids = @()
-try {
-  $listeningPids = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-    Where-Object { $_.LocalAddress -in @("127.0.0.1", "0.0.0.0", "::") -and $amadeusPorts -contains $_.LocalPort } |
-    Select-Object -ExpandProperty OwningProcess -Unique
-} catch {
-  $listeningPids = @()
+function Test-ProcessBelongsToAmadeusInstallation {
+  param($Process, [string]$ProjectRoot)
+  $installationPrefix = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\") + "\"
+  $executable = [string]$Process.ExecutablePath
+  $commandLine = [string]$Process.CommandLine
+  if ($executable -notmatch '\\pythonw?\.exe$') { return $false }
+  if ($commandLine -notmatch '(desktop_live2d|gpt_sovits_tts_server|screen_vision_server|server)\.py') { return $false }
+  # Separate installations must not stop one another. For a shared Python,
+  # require the absolute script path; a relative path cannot prove ownership.
+  if ($executable.StartsWith($installationPrefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  foreach ($script in @("desktop_live2d.py", "server.py", "tools\gpt_sovits_tts_server.py", "tools\screen_vision_server.py")) {
+    $scriptPath = Join-Path $installationPrefix $script
+    if ($commandLine.IndexOf($scriptPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+  }
+  return $false
 }
 
+Write-Host "Stopping stale AMADEUS processes from this installation..."
 $targets = @()
 try {
   $targets = @(
     Get-CimInstance Win32_Process -ErrorAction Stop |
       Where-Object {
-        $cmd = [string]$_.CommandLine
-        $isPython = ([string]$_.ExecutablePath) -match '\\pythonw?\.exe$'
-        $isAmadeusScript = `
-          $cmd -match 'desktop_live2d\.py' -or `
-          $cmd -match '(^|[\\\s"])server\.py($|[\s"])' -or `
-          $cmd -match 'gpt_sovits_tts_server\.py' -or `
-          $cmd -match 'screen_vision_server\.py'
-        ($isPython -and $isAmadeusScript) -or ($listeningPids -contains $_.ProcessId -and $isPython -and $isAmadeusScript)
+        Test-ProcessBelongsToAmadeusInstallation -Process $_ -ProjectRoot $PSScriptRoot
       }
   )
 } catch {

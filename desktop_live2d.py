@@ -803,6 +803,19 @@ def self_test() -> None:
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise SystemExit("missing required files:\n" + "\n".join(missing))
+    if RELEASE_MODE:
+        from server import ARCHITECTURE_FEATURES, build_persona_context_snapshot
+
+        if ARCHITECTURE_FEATURES.persona_context_mode != "on":
+            raise RuntimeError("release Persona Skill is disabled")
+        snapshot = build_persona_context_snapshot(
+            "时间机器真的能造出来吗？", relationship_state={"generation": 0}
+        )
+        if snapshot.fallback_reason or "scientific-reasoning" not in snapshot.provider_module_ids:
+            raise RuntimeError(
+                "release Persona Skill retrieval unavailable: "
+                + str(snapshot.fallback_reason or snapshot.provider_module_ids)
+            )
     print("desktop live2d self-test ok")
 
 

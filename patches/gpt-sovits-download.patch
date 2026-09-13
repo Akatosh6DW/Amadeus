@@ -1,0 +1,38 @@
+--- a/install.ps1
++++ b/install.ps1
+@@ -118,7 +118,15 @@
+         if ($OutFile) {
+             $params["OutFile"] = $OutFile
+         }
+ 
+-        $null = Invoke-WebRequest @params -ErrorAction Stop
++        $helper = $env:AMADEUS_DOWNLOAD_HELPER
++        if ($helper -and $OutFile -and (Test-Path -LiteralPath $helper -PathType Leaf)) {
++            & python -X utf8 $helper --url $Uri --output $OutFile
++            if ($LASTEXITCODE -ne 0) {
++                throw "AMADEUS download helper failed with exit code $LASTEXITCODE"
++            }
++        } else {
++            $null = Invoke-WebRequest @params -ErrorAction Stop
++        }
+ 
+     } catch {
+@@ -131,5 +131,16 @@
+ function Invoke-Unzip {
+     param($ZipPath, $DestPath)
+-    Expand-Archive -Path $ZipPath -DestinationPath $DestPath -Force
+-    Remove-Item $ZipPath -Force
++    $helper = $env:AMADEUS_DOWNLOAD_HELPER
++    if ($helper -and (Test-Path -LiteralPath $helper -PathType Leaf)) {
++        & python -X utf8 $helper --extract --archive $ZipPath --destination $DestPath
++        if ($LASTEXITCODE -ne 0) {
++            throw "AMADEUS archive extraction helper failed with exit code $LASTEXITCODE"
++        }
++    } else {
++        Expand-Archive -Path $ZipPath -DestinationPath $DestPath -Force
++    }
++    Remove-Item -LiteralPath $ZipPath -Force
++    Remove-Item -LiteralPath ($ZipPath + ".part") -Force -ErrorAction SilentlyContinue
++    Remove-Item -LiteralPath ($ZipPath + ".part.meta.json") -Force -ErrorAction SilentlyContinue
++    Remove-Item -LiteralPath ($ZipPath + ".meta.json") -Force -ErrorAction SilentlyContinue
+ }

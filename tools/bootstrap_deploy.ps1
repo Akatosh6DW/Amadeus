@@ -23,6 +23,7 @@ $desktopEnv = Join-Path $root ".conda\amadeus-desktop"
 $voiceEnv = Join-Path $root ".conda\gpt-sovits"
 $gptRoot = Join-Path $root ".sources\GPT-SoVITS"
 $voiceRoot = Join-Path $root ".runtime-assets\voice"
+$downloadHelper = Join-Path $root "tools\download_runtime_file.py"
 $environment = Get-Content -LiteralPath (Join-Path $root "configs\deployment_environment.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($environment.formatVersion -ne 1) { throw "Unsupported deployment environment manifest" }
 $gptRepository = $environment.gptSovits.repository
@@ -232,6 +233,9 @@ function Ensure-BuildTools {
 
 function Ensure-VoiceEnvironment {
     param([string]$Conda, [string]$SelectedBackend)
+    if (-not (Test-Path -LiteralPath $downloadHelper -PathType Leaf)) {
+        throw "Runtime download helper is missing: $downloadHelper"
+    }
     $python = Ensure-CondaEnvironment `
         -Conda $Conda `
         -Prefix $voiceEnv `
@@ -252,7 +256,7 @@ function Ensure-VoiceEnvironment {
     Ensure-BuildTools
     # Use the upstream asset installer with a small, reviewable Windows patch.
     # TorchAudio 2.7 uses its own decoder; TorchCodec is not required by this stack.
-    foreach ($patchName in @("gpt-sovits-install.patch", "gpt-sovits-model-repair.patch")) {
+    foreach ($patchName in @("gpt-sovits-install.patch", "gpt-sovits-model-repair.patch", "gpt-sovits-download.patch")) {
     $installerPatch = Join-Path $root ("patches\" + $patchName)
     $previousErrorAction = $ErrorActionPreference
     try {
@@ -272,9 +276,11 @@ function Ensure-VoiceEnvironment {
     $previousConstraint = $env:PIP_CONSTRAINT
     $previousIndex = $env:PIP_INDEX_URL
     $previousModelRepair = $env:AMADEUS_REPAIR_BASE_MODELS
+    $previousDownloadHelper = $env:AMADEUS_DOWNLOAD_HELPER
     try {
     $env:PIP_CONSTRAINT = Join-Path $root $environment.voiceConstraints
     $env:PIP_INDEX_URL = $environment.pipIndex
+    $env:AMADEUS_DOWNLOAD_HELPER = $downloadHelper
     & $python -X utf8 (Join-Path $root "tools\verify_deployment.py") --project-root $root --models-only > $null
     $env:AMADEUS_REPAIR_BASE_MODELS = $(if ($LASTEXITCODE -eq 0) { "0" } else { "1" })
     Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--index-url", $torchIndex, "torch==$($environment.torch.version)", "torchaudio==$($environment.torch.version)")
@@ -290,6 +296,7 @@ function Ensure-VoiceEnvironment {
         $env:PIP_CONSTRAINT = $previousConstraint
         $env:PIP_INDEX_URL = $previousIndex
         $env:AMADEUS_REPAIR_BASE_MODELS = $previousModelRepair
+        $env:AMADEUS_DOWNLOAD_HELPER = $previousDownloadHelper
     }
 }
 
