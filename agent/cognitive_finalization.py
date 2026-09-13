@@ -10,7 +10,7 @@ from agent.cognitive_brain import CognitiveProtocolError
 
 
 class FinalProjectionAuditRepairError(CognitiveProtocolError):
-    """The final, post-processed candidate needs one bounded semantic repair.
+    """The final, post-processed candidate needs one bounded delivery repair.
 
     The candidate is captured before the finalizer unwinds so a caller can run
     the existing repair route without trusting a later reconstruction of the
@@ -30,5 +30,5 @@ class FinalProjectionAuditRepairError(CognitiveProtocolError):
         super().__init__(json.dumps({
             "code": "final_projection_semantic_repair_required",
             "violations": list(self.report.get("problems") or []),
-            "repair": "最终投影的实际台词未通过独立语义核对；依据原始用户要求、真实回执和当前状态重新分析，必要时补查，再重新生成并复核。",
+            "repair": "最终交付未通过附件或执行结果校验；依据原始用户要求、真实回执和当前状态修正，不能声称交付了不存在的文件。",
         }, ensure_ascii=False))

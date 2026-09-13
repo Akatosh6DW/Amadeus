@@ -221,10 +221,16 @@ def _hybrid_prompt(selected: Sequence[LoadedSkill]) -> str:
             "本轮没有通过高置信本地检索门槛的人格 Skill；只依据 Persona Kernel、"
             "当前对话、关系上下文与任务合同回答。"
         )
-    return "\n\n".join((
-        "[Persona Context Skill: frozen for this turn]",
-        *(item.body.strip() for item in selected),
-    ))
+    parts = ["[Persona Context Skill: frozen for this turn]"]
+    if len(selected) > 1:
+        parts.append(
+            "以下场景指引可以共同使用，各自只作用于本轮符合其适用条件的部分。"
+            "结合当前诉求自然组织成一次回复，不逐份表演或重复反应。"
+            "若指引之间有张力，依据当前情境与用户明确要求决定表达轻重，"
+            "并始终保持基础人格、身份事实和关系边界。"
+        )
+    parts.extend(item.body.strip() for item in selected)
+    return "\n\n".join(parts)
 
 
 def _snapshot_id(

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="/live2d/local_api.js?v=20260910-local-session"></script>
     <title>AMADEUS Live2D</title>
-    <link rel="stylesheet" href="live2d.css?v=20260909-persona-monitor-v1">
+    <link rel="stylesheet" href="live2d.css?v=20260912-crop-frame">
   </head>
   <body>
     <section class="boot-sequence" id="bootSequence" aria-hidden="true">
@@ -48,6 +48,15 @@
       <div class="boot-scanlines" aria-hidden="true"></div>
     </section>
     <canvas id="stage"></canvas>
+    <div class="window-resize-handle" data-window-resize="n" title="拖动缩放窗口" aria-hidden="true"></div>
+    <div class="window-resize-handle" data-window-resize="s" title="拖动缩放窗口" aria-hidden="true"></div>
+    <div class="window-resize-handle" data-window-resize="e" title="拖动缩放窗口" aria-hidden="true"></div>
+    <div class="window-resize-handle" data-window-resize="w" title="拖动缩放窗口" aria-hidden="true"></div>
+    <div class="window-resize-handle" data-window-resize="ne" title="拖动缩放窗口" aria-hidden="true"></div>
+    <div class="window-resize-handle" data-window-resize="nw" title="拖动缩放窗口" aria-hidden="true"></div>
+    <div class="window-resize-handle" data-window-resize="se" title="拖动缩放窗口" aria-hidden="true"></div>
+    <div class="window-resize-handle" data-window-resize="sw" title="拖动缩放窗口" aria-hidden="true"></div>
+
     <div class="window-drag-strip pywebview-drag-region" data-window-drag title="拖动窗口" aria-hidden="true"></div>
     <!-- AMADEUS_RELEASE_STRIP_START:developer-touch-overlay -->
     <div class="dev-touch-overlay hidden" id="devTouchOverlay" aria-hidden="true"></div>
@@ -814,18 +823,7 @@
               <option value="pro">独立 Pro（固定 deepseek-v4-pro）</option>
             </select>
           </label>
-          <label class="field">
-            回复核查模型
-            <select id="cognitiveAuditModelInput">
-              <option value="follow">跟随主模型（默认）</option>
-              <option value="pro">独立 Pro（固定 deepseek-v4-pro）</option>
-            </select>
-          </label>
-          <label class="check-row">
-            <input id="cognitiveSemanticAuditEnabledInput" type="checkbox">
-            <span>启用回复核查（默认关闭，会增加等待时间）</span>
-          </label>
-          <div class="hint">默认全部跟随上方 Model：日常聊天、工具调用、识图、修正与核查。以后更新型号，只需修改 Model 并保存；无需逐项更换。修正完成后仍回到正常对话；核查仅在开启时额外检查回答。独立 Pro 是固定型号的单独选择，不随主模型变化。</div>
+          <div class="hint">默认全部跟随上方 Model：日常聊天、工具调用、识图与修正。以后更新型号，只需修改 Model 并保存；无需逐项更换。修正完成后仍回到正常对话。独立 Pro 是固定型号的单独选择，不随主模型变化。</div>
           <label class="field">
             API Key
             <input id="apiKeyInput" type="password" spellcheck="false" placeholder="留空表示不修改已保存 key">
@@ -889,10 +887,10 @@
             <select id="live2dModelInput"></select>
           </label>
           <div class="hint" id="live2dModelHint">当前模型会保持不变，保存显示设置后才会切换。</div>
+          <fieldset class="background-controls" id="backgroundControls">
           <label class="field">
             背景
             <select id="backgroundPresetInput">
-              <option value="binary">AMADEUS 二进制面板</option>
               <option value="boot">AMADEUS 实验网格</option>
               <option value="grid">深色研究网格</option>
               <option value="solid">纯色深黑</option>
@@ -906,7 +904,30 @@
             </label>
             <button id="chooseBackgroundBtn" type="button">选择图片</button>
           </div>
-          <div class="hint" id="backgroundHint">背景会按 cover 方式铺满窗口，不参与人物缩放和动作。</div>
+          <div class="hint" id="backgroundHint">缩放窗口时保留背景中心；背景独立于人物和对话框。</div>
+          <div class="background-editor hidden" id="backgroundEditorPanel">
+            <div class="background-preview-stage">
+              <div class="background-preview" id="backgroundPreview" tabindex="0" role="group" aria-label="背景取景预览，可拖动白色取景框或使用方向键调整焦点">
+                <img id="backgroundPreviewImage" alt="" draggable="false" hidden>
+                <div class="background-crop-guide current" id="backgroundCurrentGuide"></div>
+                <div class="background-crop-guide narrow" id="backgroundNarrowGuide"></div>
+                <div class="background-crop-guide wide" id="backgroundWideGuide"></div>
+              </div>
+            </div>
+            <div class="background-guide-legend">
+              <span class="narrow" id="backgroundNarrowLabel">最窄</span>
+              <span class="wide" id="backgroundWideLabel">最宽</span>
+            </div>
+            <div class="hint">两条虚线表示最窄、最宽布局的真实裁切范围；白色细框是当前窗口。把重要画面放在两个虚线框都覆盖的位置。</div>
+            <div class="hint" id="backgroundPreviewStatus" aria-live="polite">拖动白色取景框调整焦点；方向键也可移动。</div>
+            <label class="field">
+              背景缩放 <output id="backgroundZoomValue">100%</output>
+              <input id="backgroundZoomInput" type="range" min="100" max="300" step="1">
+            </label>
+            <button id="resetBackgroundViewBtn" type="button">恢复居中与原始大小</button>
+            <div class="hint">每张背景分别记住取景。点击“保存显示设置”后应用；关闭设置放弃未保存调整。</div>
+          </div>
+          </fieldset>
           <label class="field">
             当前皮肤大小 <output id="modelScaleValue">100%</output>
             <input id="modelScaleInput" type="range" min="35" max="240" step="1">
@@ -1413,6 +1434,9 @@
     <!-- AMADEUS_RELEASE_STRIP_START:persona-skill-monitor-script -->
     <script src="persona_skill_monitor.js?v=20260909-v1"></script>
     <!-- AMADEUS_RELEASE_STRIP_END:persona-skill-monitor-script -->
-    <script src="live2d_app.js?v=20260910-all-day-todos-v1"></script>
+    <script src="portrait_framing.js?v=20260911"></script>
+    <script src="window_resize.js?v=20260911"></script>
+    <script src="background_editor.js?v=20260912-crop-frame"></script>
+    <script src="live2d_app.js?v=20260912-crop-frame"></script>
   </body>
 </html>

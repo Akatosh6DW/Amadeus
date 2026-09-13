@@ -10,6 +10,8 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 
+from .proactive_control import PROACTIVE_DIRECTIVE_INSTRUCTION
+
 
 CLAIM_KINDS = (
     "inference", "user_fact", "external_fact", "tool_fact", "tool_completion",
@@ -240,7 +242,7 @@ def final_outcome_contract(
         "requiredFinalContainerFields": ["kind", "cognitive", "outcome", "emotion", "proactiveDirective", "speechUnits"],
         "presentationContract": {
             "emotion": "首轮最终容器必须给出合法情绪标签，按实际回复表达选择；不要留给后置分类器补填。speechUnits 可覆盖顶层情绪。",
-            "proactiveDirective": "没有主动交互状态变更时填写 unchanged。",
+            "proactiveDirective": PROACTIVE_DIRECTIVE_INSTRUCTION,
             "voiceIntensity": {"type": "string", "enum": ["subtle", "normal", "strong"], "rule": "轻声使用 subtle；不要输出数字。emotionIntensity 才是连续数值。"},
             "voice": "情绪与说话方式分别表达：平静的安慰可以是 neutral 情绪，同时轻柔发声。用户明确要求轻声、温柔等表达时，在顶层或对应 speechUnits 显式给 voiceStyle、voiceTone、voiceIntensity，且与实际台词及情绪一致。轻柔发声可用 soft / gentle / subtle；不要为了轻声强行改成害羞或亲昵。",
         },

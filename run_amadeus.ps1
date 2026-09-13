@@ -83,6 +83,18 @@ if ($TestMode) {
   # The previous test backend keeps its log handles open until process
   # shutdown. Rebuild the isolated profile only after stale AMADEUS processes
   # have stopped; otherwise a second -TestMode launch fails with file-in-use.
+  # Keep only connection preferences; chat, memory and task state still reset.
+  # Keys remain in the ignored local data directory, never in source defaults.
+  $testConnectionSettings = @{}
+  $testSettingsPath = Join-Path $testDataDir "settings.json"
+  if (Test-Path -LiteralPath $testSettingsPath) {
+    $previousTestSettings = Get-Content -LiteralPath $testSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($key in @("apiEndpoint", "apiModel", "apiKey", "apiNetworkMode", "apiProxyUrl")) {
+      if ($null -ne $previousTestSettings.PSObject.Properties[$key]) {
+        $testConnectionSettings[$key] = $previousTestSettings.$key
+      }
+    }
+  }
   $removed = $false
   for ($attempt = 1; $attempt -le 5 -and -not $removed; $attempt++) {
     try {
@@ -101,6 +113,13 @@ if ($TestMode) {
     "interactive test mode`n",
     $utf8NoBom
   )
+  if ($testConnectionSettings.Count -gt 0) {
+    [System.IO.File]::WriteAllText(
+      $testSettingsPath,
+      ($testConnectionSettings | ConvertTo-Json -Depth 4),
+      $utf8NoBom
+    )
+  }
   Write-Host "AMADEUS test mode: clean isolated data at $testDataDir"
 }
 

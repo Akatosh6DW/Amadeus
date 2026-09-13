@@ -45,6 +45,10 @@ def resolve_runtime_paths(
     explicit_mode = str(os.environ.get("AMADEUS_RUNTIME_MODE") or "").strip().lower()
     if explicit_mode and explicit_mode not in {"development", "test", "release"}:
         raise RuntimeError(f"Unsupported AMADEUS_RUNTIME_MODE: {explicit_mode}")
+    if release_mode and explicit_mode and explicit_mode != "release":
+        raise RuntimeError(
+            "AMADEUS_RUNTIME_MODE cannot override a packaged release; use release."
+        )
     mode: RuntimeMode = (
         explicit_mode  # type: ignore[assignment]
         if explicit_mode

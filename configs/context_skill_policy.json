@@ -9,55 +9,55 @@
     "k1": 1.2
   },
   "calibration": {
-    "casesSha256": "1dd7bb8171dbe379aa29a83aa5ad9df77ccd002bbcfeefdd715f336241790739",
+    "casesSha256": "9dee9de61fa927e2e763fc165001225f3d7701929296f8367654f51444d0f5d2",
     "metrics": {
       "dev": {
-        "caseCount": 19,
+        "caseCount": 24,
         "criticalFalsePositiveCount": 0,
         "criticalNegativeCount": 6,
-        "exactAccuracy": 1.0,
-        "expectedPositiveCount": 14,
-        "falseNegativeCount": 0,
+        "exactAccuracy": 0.958333,
+        "expectedPositiveCount": 25,
+        "falseNegativeCount": 1,
         "falsePositiveCount": 0,
         "noSkillAccuracy": 1.0,
         "noSkillCorrectCount": 5,
         "noSkillCount": 5,
         "precision": 1.0,
-        "predictedPositiveCount": 14,
-        "recall": 1.0,
-        "truePositiveCount": 14
+        "predictedPositiveCount": 24,
+        "recall": 0.96,
+        "truePositiveCount": 24
       },
       "heldOut": {
-        "caseCount": 13,
+        "caseCount": 18,
         "criticalFalsePositiveCount": 0,
-        "criticalNegativeCount": 6,
-        "exactAccuracy": 1.0,
-        "expectedPositiveCount": 7,
-        "falseNegativeCount": 0,
+        "criticalNegativeCount": 8,
+        "exactAccuracy": 0.944444,
+        "expectedPositiveCount": 15,
+        "falseNegativeCount": 1,
         "falsePositiveCount": 0,
         "noSkillAccuracy": 1.0,
-        "noSkillCorrectCount": 6,
-        "noSkillCount": 6,
+        "noSkillCorrectCount": 7,
+        "noSkillCount": 7,
         "precision": 1.0,
-        "predictedPositiveCount": 7,
-        "recall": 1.0,
-        "truePositiveCount": 7
+        "predictedPositiveCount": 14,
+        "recall": 0.933333,
+        "truePositiveCount": 14
       },
       "overall": {
-        "caseCount": 32,
+        "caseCount": 42,
         "criticalFalsePositiveCount": 0,
-        "criticalNegativeCount": 12,
-        "exactAccuracy": 1.0,
-        "expectedPositiveCount": 21,
-        "falseNegativeCount": 0,
+        "criticalNegativeCount": 14,
+        "exactAccuracy": 0.952381,
+        "expectedPositiveCount": 40,
+        "falseNegativeCount": 2,
         "falsePositiveCount": 0,
         "noSkillAccuracy": 1.0,
-        "noSkillCorrectCount": 11,
-        "noSkillCount": 11,
+        "noSkillCorrectCount": 12,
+        "noSkillCount": 12,
         "precision": 1.0,
-        "predictedPositiveCount": 21,
-        "recall": 1.0,
-        "truePositiveCount": 21
+        "predictedPositiveCount": 38,
+        "recall": 0.95,
+        "truePositiveCount": 38
       }
     },
     "releaseGate": {
@@ -70,27 +70,27 @@
       "minimumHeldOutRecall": 0.8,
       "passed": true
     },
-    "toolSchemaVersion": 1
+    "toolSchemaVersion": 2
   },
   "calibrationStatus": "calibrated",
   "fusion": {
-    "bm25Scale": 2.0,
-    "bm25Weight": 0.35,
+    "bm25Scale": 3.0,
+    "bm25Weight": 0.5,
     "denseFloor": 0.35,
-    "denseWeight": 0.65
+    "denseWeight": 0.5
   },
   "gates": {
     "minDense": 0.54,
-    "minMargin": 0.12,
+    "minMargin": 0.1,
     "minScore": 0.5
   },
   "indexBuildId": "a4910f23211508dc6019cf92",
-  "maxSelected": 1,
+  "maxSelected": 3,
   "modelArtifactDigest": "e0212ab3d16d50b523d1606ab23b4c4d46ad991d62cc9296b11d514315143474",
   "modelId": "BAAI/bge-small-zh-v1.5",
   "modelRevision": "18e2da9",
   "normalized": true,
-  "notes": "Hybrid 阈值只用 paraphraseFamily 隔离的 dev split 选择，并由 held-out split 验证；变更 model artifact digest、index buildId 或 sourceDigest 后必须重新校准。",
+  "notes": "Hybrid 阈值只用 paraphraseFamily 隔离的 dev split 选择，并由 held-out split 验证；多选时每项须通过绝对分数门槛，minMargin 比较入选组与首个未选项；按完整 Skill 集合计算误选与漏选。模型、索引、来源或选择规则变化后必须重新校准。",
   "pooling": "CLS",
   "rollout": {
     "bm25OnlyFallbackAllowed": false,
@@ -105,5 +105,5 @@
   "schemaVersion": 1,
   "sourceDigest": "92af78295bc6c02b6a17b098c9b7633cc6743df29d54c6cbac2fabb4f6a40135",
   "tokenizerVersion": "nfkc-cjk-kana-unigram-bigram-latin-word-v1",
-  "topK": 3
+  "topK": 4
 }

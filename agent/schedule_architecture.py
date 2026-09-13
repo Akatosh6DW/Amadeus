@@ -254,7 +254,7 @@ def ground_schedule_temporal_precision(
 
     daily_timed_commands = tuple(
         command for command in intent.commands
-        if command.recurrence_rule == "daily" and bool(command.due_at)
+        if command.recurrence_rule == "daily" and bool(command.due_at or command.time_spec)
     )
     if not daily_timed_commands or _EXACT_CLOCK_EVIDENCE.search(
         str(evidence_text or "")
@@ -276,6 +276,28 @@ def ground_schedule_temporal_precision(
     )
 
 
+SCHEDULE_TIME_PROMPT = (
+    "[日程时间决策：语义由你判断，日期和时差由后端计算]\n"
+    "先结合本轮时间快照、相邻用户原话和真实待办判断用户指的是哪一次发生；不要只按‘明天’字面加一天。"
+    "尤其跨过午夜后尚未睡觉，正在洗漱、准备入睡、要求叫醒等语境中的‘明早/明天早上’，"
+    "通常指这次睡醒的最近一个早晨，应选择 next_clock。用户明确说日历日期、隔一天或不是这次睡醒时，"
+    "按 calendar 保留其日历意思；不要把所有深夜请求都改成今天。确实无法区分才用 clarification 简短确认日期。\n"
+    "新建或修改有钟点的提醒优先用 timeSpec，省略 dueAt；它是同一个 todo_manage 调用的参数，无需额外查询工具："
+    "{kind:'next_clock',clock:'HH:MM',reason:'简短时间理解依据'} 表示从本轮快照起最近一次该钟点；"
+    "{kind:'calendar',dayOffset:1,clock:'HH:MM'} 表示日历上的明天，或用 date:'YYYY-MM-DD' 指定明确日期；"
+    "{kind:'after',seconds:3600} 表示从本轮快照起一小时后；"
+    "{kind:'existing_date',clock:'HH:MM'} 表示保留真实目标任务的当地日期，只修改钟点。"
+    "timezone 沿用任务/本轮本地时区，用户明确要求其他时区才改变；reason 只简述依据，不写推理过程。\n"
+    "用户说‘改成九点’等只改钟点时用 existing_date，禁止从今天重新计算原任务的‘明天’；"
+    "用户纠正日期或给出新的时间关系时重新选择 calendar/next_clock/after。"
+    "没有指定钟点的任务继续用 dueDate 或无日期的全天任务，不填 timeSpec，不猜默认钟点。"
+    "scheduleIntent.commands、认知计划与 calls 必须使用同一个 timeSpec；不要再手算另一个 dueAt。\n"
+    "成功回复以实际回执 timeFacts 为准，明确说出当地月日和钟点，可同时说今天/明天；"
+    "不要只重复‘明天九点’让日期歧义延续。涉及还能睡多久或多久后提醒，使用 timeFacts.secondsUntilDue/"
+    "hoursUntilDue；不得另按用户的‘明天’重新心算。保留你自己的人格语气，不需要固定模板。"
+)
+
+
 SCHEDULE_INTENT_PROMPT = (
     "[统一日程语义协议：模型判断，后端授权和执行]\n"
     "每次输出顶层 scheduleIntent。普通无关对话必须是 "
@@ -295,7 +317,7 @@ SCHEDULE_INTENT_PROMPT = (
     "commands 使用 todo_manage 的参数结构；一项真实变更对应一个 command，写操作必须 "
     "commitIntent=true。信息足够时，同一个输出必须同时给出 kind=tool_use 和对应 calls；"
     "每天重复的任务用 recurrenceRule=daily；未要求重复的任务不设重复规则。"
-    "只有用户指定具体钟点或上下文已有明确时间时，dueAt 才设为带时区 ISO-8601 时间。"
+    "只有用户指定具体钟点或上下文已有明确时间时才使用 timeSpec；dueAt 保留兼容明确的带时区 ISO-8601 时间。"
     "没有指定具体钟点（包括只说早上、下午）时，直接建立全天任务，dueAt 为空，"
     "不得猜成8点或午夜，也不要为此追问时间或填写 exactClockTime。"
     "全天任务若指定了日期或开始日期，用 dueDate=YYYY-MM-DD 保留日期，否则 dueDate 为空；"
@@ -305,4 +327,4 @@ SCHEDULE_INTENT_PROMPT = (
     "信息不足时 kind=clarification，missingFields 写最少缺失字段，不得声称已写入。"
     "查询日程时 kind=query 并调用 todo_search/todo_list。"
     "只有后端返回 accepted actionReceipt 才代表真实完成。"
-)
+) + "\n" + SCHEDULE_TIME_PROMPT

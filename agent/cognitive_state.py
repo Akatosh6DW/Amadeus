@@ -9,6 +9,7 @@ architecture.  SQLite writes are left inside the caller's transaction.
 from __future__ import annotations
 
 import copy
+from agent.cognitive_answer_scope import apply_answer_scope
 from agent.cognitive_context import MAX_RECALL_QUERY_LENGTH, normalize_recall_scope
 from agent.fingerprints import runtime_fingerprint
 from agent.cognitive_tools import normalized_tool_plan, selected_tool_step, tool_plan_identity, project_durable_tool_progress
@@ -705,6 +706,23 @@ def _evidence_refs(patch: Mapping[str, Any], evidence: Any, operation: str) -> l
     return refs
 
 
+def belief_evidence_problem(item: Mapping[str, Any]) -> tuple[str, str] | None:
+    """One eligibility rule for generation hints and belief-update validation.
+
+    Eligibility only describes readable evidence, not whether it supports a
+    particular claim. That interpretation remains the model's responsibility.
+    """
+    if item.get("ok") is not True:
+        return "evidence_not_successful", "evidence must have ok=true"
+    if not isinstance(item.get("body"), str) or not item["body"].strip():
+        return "evidence_body_missing", "successful evidence needs readable body"
+    if str(item.get("fetchStatus", "")).strip().lower() not in _EVIDENCE_OK_STATUSES:
+        return "evidence_not_fetched", "evidence fetch did not succeed"
+    if str(item.get("sourceType", "")).strip().lower() not in _EVIDENCE_SOURCE_TYPES:
+        return "evidence_source_invalid", "evidence sourceType is not allowed"
+    return None
+
+
 def _validate_external_evidence(
     patch: Mapping[str, Any], evidence: Any, operation: str
 ) -> list[str]:
@@ -716,22 +734,32 @@ def _validate_external_evidence(
         if item is None:
             violations.append({"code": "evidence_ref_missing", "ref": ref, "message": "evidence reference is not present"})
             continue
-        problem = None
-        if item.get("ok") is not True:
-            problem = ("evidence_not_successful", "evidence must have ok=true")
-        elif not isinstance(item.get("body"), str) or not item["body"].strip():
-            problem = ("evidence_body_missing", "successful evidence needs readable body")
-        elif str(item.get("fetchStatus", "")).strip().lower() not in _EVIDENCE_OK_STATUSES:
-            problem = ("evidence_not_fetched", "evidence fetch did not succeed")
-        elif str(item.get("sourceType", "")).strip().lower() not in _EVIDENCE_SOURCE_TYPES:
-            problem = ("evidence_source_invalid", "evidence sourceType is not allowed")
+        problem = belief_evidence_problem(item)
         if problem:
             violations.append({"code": problem[0], "ref": ref, "message": problem[1],
                                "sourceType": item.get("sourceType"), "fetchStatus": item.get("fetchStatus"),
                                "bodyError": str(item.get("bodyError") or "")[:240]})
     if violations:
         first = violations[0]
+        readable_candidates = []
+        seen = set()
+        for ref, item in reversed(list(items.items())):
+            if belief_evidence_problem(item) is not None:
+                continue
+            stable_ref = str(item.get("sourceUid") or item.get("canonicalUrl") or item.get("url") or ref)
+            if stable_ref in seen:
+                continue
+            seen.add(stable_ref)
+            readable_candidates.append({
+                "id": stable_ref if stable_ref in items else ref,
+                "sourceType": item.get("sourceType"), "title": str(item.get("title") or item.get("name") or "")[:160],
+                "bodyExcerpt": item["body"][:1200], "fetchStatus": item.get("fetchStatus"),
+                "historical": bool(item.get("historical")), "observedAt": item.get("observedAt"),
+            })
+            if len(readable_candidates) >= 4:
+                break
         raise _error(first["code"], operation, first["message"], ref=first["ref"], violations=violations,
+                     readableCandidates=readable_candidates,
                      repair="这些引用不能验证新认识。逐项核对实际正文：仅在其他可读正文完整支持命题时移除无效引用，否则缩小命题或改查新来源。不要重复已有成功查询，也不要把摘要当正文。")
     return refs
 
@@ -1882,10 +1910,17 @@ def stage_revision(
                 if ident not in invalidated:
                     invalidated.append(ident)
 
+    try:
+        apply_answer_scope(working['context'], directive.get('answerScope'), user_message=user_message, turn_id=turn,
+            original_goal=str((working.get('lastDecisionDigest') or {}).get('userRequest')
+                              or (working.get('task') or {}).get('goal') or user_message))
+    except ValueError as exc:
+        raise _error('invalid_answer_scope', message=str(exc)) from exc
+
     combined_directive: dict[str, Any] = {}
     if isinstance(prior_directive, Mapping):
         combined_directive.update(copy.deepcopy(dict(prior_directive)))
-    for key in ("interactionAct", "understoodGoal", "questionRelation"):
+    for key in ("interactionAct", "understoodGoal", "questionRelation", "answerScope"):
         if key in directive:
             combined_directive[key] = copy.deepcopy(directive[key])
     metadata["directive"] = combined_directive

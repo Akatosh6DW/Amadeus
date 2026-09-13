@@ -13,12 +13,13 @@ const FALLBACK_MODEL_PROFILE = {
   parameterAliases: { blush: ["ParamCheek"] },
   motionMap: {},
 };
-const MODEL_BINARY_BACKGROUND_URL = "/assets/live2d/Amadeus/kurisu.2048/background_binary_panel.png";
 const BOOT_BACKGROUND_URL = "/assets/boot/amadeus_background_frame084_outpaint_grid_v5.png";
 const BACKGROUND_PRESETS = new Set([
-  "binary", "boot", "grid", "solid", "custom",
+  "boot", "grid", "solid", "custom",
 ]);
+const BACKGROUND_IMAGE_PRESETS = new Map();
 const BACKGROUND_PRESET_ALIASES = {
+  "binary": "grid",
   "original-watch": "grid",
   "original-clockwork": "grid",
   "original-clock-array": "grid",
@@ -131,11 +132,9 @@ const PROACTIVE_FREQUENCY_PROFILES = Object.freeze({
 });
 
 const DEFAULT_SETTINGS = {
-  apiEndpoint: "",
-  apiModel: "",
+  apiEndpoint: "https://api.deepseek.com/chat/completions",
+  apiModel: "deepseek-v4-flash-vision-exp",
   cognitiveRepairModel: "follow",
-  cognitiveAuditModel: "follow",
-  cognitiveSemanticAuditEnabled: false,
   apiKey: "",
   apiKeySet: false,
   visionEnabled: true,
@@ -160,8 +159,9 @@ const DEFAULT_SETTINGS = {
   modelOffsetY: 0,
   modelTransforms: {},
   live2dModelId: "aipoet-kurisu",
-  backgroundPreset: "binary",
+  backgroundPreset: "grid",
   customBackgroundPath: "",
+  backgroundViews: {},
   voiceEnabled: true,
   lipSyncEnabled: true,
   ttsProvider: "gpt-sovits",
@@ -188,14 +188,14 @@ const DEFAULT_SETTINGS = {
   alignSpokenJa: true,
   autoStartGptSovits: true,
   debugDirectSpeech: false,
-  permissionReadScreen: false,
-  permissionReadCamera: false,
+  permissionReadScreen: true,
+  permissionReadCamera: true,
   cameraIndex: 0,
-  permissionReadSystemTime: false,
-  permissionWebSearch: false,
-  permissionFileRead: false,
-  permissionFileWrite: false,
-  permissionOpenBrowser: false,
+  permissionReadSystemTime: true,
+  permissionWebSearch: true,
+  permissionFileRead: true,
+  permissionFileWrite: true,
+  permissionOpenBrowser: true,
   agentFileWorkspace: "data\\agent-workspace",
   webSearchProvider: "duckduckgo",
   webSearchApiKey: "",
@@ -245,7 +245,11 @@ const NON_CHEST_TOUCH_TIME_CREDIT_MS = 30000;
 const dom = {};
 let app;
 let backgroundLayer;
+let backgroundImageState = null;
 let backgroundRevision = 0;
+let backgroundDraft = null;
+let backgroundEditor;
+let windowAspectRatios = { lite: [0.55, 0.95], full: [1.15, 1.90] };
 let model;
 let coreModel;
 let modelGarmentRig = null;
@@ -1274,8 +1278,6 @@ function bindDom() {
     apiEndpointInput: document.getElementById("apiEndpointInput"),
     apiModelInput: document.getElementById("apiModelInput"),
     cognitiveRepairModelInput: document.getElementById("cognitiveRepairModelInput"),
-    cognitiveAuditModelInput: document.getElementById("cognitiveAuditModelInput"),
-    cognitiveSemanticAuditEnabledInput: document.getElementById("cognitiveSemanticAuditEnabledInput"),
     apiKeyInput: document.getElementById("apiKeyInput"),
     visionEnabledInput: document.getElementById("visionEnabledInput"),
     visionApiKeyInput: document.getElementById("visionApiKeyInput"),
@@ -1300,6 +1302,8 @@ function bindDom() {
     customBackgroundPathInput: document.getElementById("customBackgroundPathInput"),
     backgroundFileRow: document.getElementById("backgroundFileRow"),
     backgroundHint: document.getElementById("backgroundHint"),
+    backgroundControls: document.getElementById("backgroundControls"),
+    backgroundEditorPanel: document.getElementById("backgroundEditorPanel"),
     chooseBackgroundBtn: document.getElementById("chooseBackgroundBtn"),
     resetModelTransformBtn: document.getElementById("resetModelTransformBtn"),
     alwaysOnTopInput: document.getElementById("alwaysOnTopInput"),
@@ -1384,6 +1388,7 @@ function bindDom() {
 function bindEvents() {
   window.addEventListener("resize", () => {
     fitModel();
+    backgroundEditor?.refresh();
     applyChatWindowHeight(state.chatWindowHeight, { persist: false });
   });
   window.addEventListener("pointermove", event => {
@@ -1391,6 +1396,11 @@ function bindEvents() {
     pointer.y = clamp((event.clientY / Math.max(1, window.innerHeight) - 0.5) * 2, -1, 1);
   });
   bindWindowDragRegions();
+  window.AmadeusWindowResize.bind({
+    getMode: () => settings.layoutMode,
+    onFinish: persistResizedWindow,
+    onError: error => toast(`窗口缩放失败：${error.message}`),
+  });
 
   dom.settingsBtn.addEventListener("click", openSettings);
   dom.newConversationBtn?.addEventListener("click", () => {
@@ -1693,6 +1703,29 @@ dom.devVoiceReferenceMappingFitInput?.addEventListener("change", handleDeveloper
   dom.resetModelTransformBtn?.addEventListener("click", resetSelectedModelTransform);
   dom.backgroundPresetInput?.addEventListener("change", previewBackgroundSelection);
   dom.chooseBackgroundBtn?.addEventListener("click", chooseCustomBackground);
+  backgroundEditor = window.AmadeusBackgroundEditor.mount({
+    frame: document.getElementById("backgroundPreview"), image: document.getElementById("backgroundPreviewImage"),
+    guides: { narrow: document.getElementById("backgroundNarrowGuide"), wide: document.getElementById("backgroundWideGuide"), current: document.getElementById("backgroundCurrentGuide") },
+    narrowLabel: document.getElementById("backgroundNarrowLabel"), wideLabel: document.getElementById("backgroundWideLabel"),
+    zoomInput: document.getElementById("backgroundZoomInput"), zoomValue: document.getElementById("backgroundZoomValue"),
+    resetButton: document.getElementById("resetBackgroundViewBtn"), status: document.getElementById("backgroundPreviewStatus"),
+    getViewport: () => {
+      const ranges = Object.values(windowAspectRatios);
+      const minRatio = Math.min(...ranges.map(range => range[0]));
+      const maxRatio = Math.max(...ranges.map(range => range[1]));
+      return { width: Number(dom.windowWidthInput?.value) || window.innerWidth,
+        height: Number(dom.windowHeightInput?.value) || window.innerHeight, minRatio, maxRatio };
+    },
+    onChange: view => {
+      if (!backgroundDraft) return;
+      const key = window.AmadeusBackgroundEditor.viewKey(backgroundDraft.backgroundPreset, backgroundDraft.customBackgroundPath);
+      backgroundDraft.backgroundViews = { ...backgroundDraft.backgroundViews, [key]: view };
+    },
+  });
+  for (const input of [dom.layoutModeInput, dom.windowWidthInput, dom.windowHeightInput]) {
+    input?.addEventListener("input", () => backgroundEditor.refresh());
+    input?.addEventListener("change", () => backgroundEditor.refresh());
+  }
 
   window.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
@@ -1718,6 +1751,18 @@ dom.devVoiceReferenceMappingFitInput?.addEventListener("change", handleDeveloper
     }
     setChatCollapsed(!dom.hud.classList.contains("collapsed"));
   });
+}
+
+async function persistResizedWindow(result, mode) {
+  const update = { windowWidth: result.width, windowHeight: result.height,
+    [mode + "WindowWidth"]: result.width, [mode + "WindowHeight"]: result.height };
+  Object.assign(settings, update);
+  if (document.activeElement !== dom.windowWidthInput) dom.windowWidthInput.value = result.width;
+  if (document.activeElement !== dom.windowHeightInput) dom.windowHeightInput.value = result.height;
+  const response = await fetch("/api/settings", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: update }) });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) throw new Error(data.error || "窗口大小保存失败");
 }
 
 function bindWindowDragRegions() {
@@ -2189,12 +2234,12 @@ function normalizeProactiveControl(value) {
   const paused = String(raw.status || "").toLowerCase() === "paused";
   return {
     status: paused ? "paused" : "allowed",
-    resumeMode: paused && String(raw.resumeMode || "") === "next_user_message"
-      ? "next_user_message"
-      : "",
+    resumeMode: paused ? "model_decides" : "",
     reason: paused ? String(raw.reason || "") : "",
     updatedAt: String(raw.updatedAt || ""),
     sourceTurnId: String(raw.sourceTurnId || ""),
+    sourceUserMessage: paused ? String(raw.sourceUserMessage || "") : "",
+    sourceRequestStartedAtMs: Math.max(0, Number(raw.sourceRequestStartedAtMs) || 0),
   };
 }
 
@@ -2208,6 +2253,12 @@ function applyProactiveControl(value, { persistState = true } = {}) {
   proactiveState.control = control;
   state.proactiveControl = { ...control };
   if (control.status === "paused") {
+    // A terminal unanswered-sequence sign-off may finish its own sentence.
+    // User-requested quiet cancels in-flight chatter, but never a due reminder.
+    if (control.reason !== "unanswered_sequence_complete"
+        && speechState.kind === "proactive" && speechState.deliveryPriority !== "scheduled_reminder") {
+      interruptCurrentSpeech();
+    }
     proactiveRequestGeneration += 1;
     proactiveRequestAbortController?.abort();
     proactiveRequestAbortController = null;
@@ -2899,6 +2950,8 @@ async function loadSettings() {
     const response = await fetch("/api/settings");
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    registerBackgroundImages(data.backgroundPresets);
+    if (data.windowAspectRatios?.lite && data.windowAspectRatios?.full) windowAspectRatios = data.windowAspectRatios;
     settings = normalizeSettings(data.settings);
   } catch (error) {
     console.warn(error);
@@ -3044,24 +3097,64 @@ function resetSelectedModelTransform() {
     : "已恢复这套皮肤的默认大小和位置，保存显示设置后生效");
 }
 
+function registerBackgroundImages(presets) {
+  for (const id of BACKGROUND_IMAGE_PRESETS.keys()) BACKGROUND_PRESETS.delete(id);
+  BACKGROUND_IMAGE_PRESETS.clear();
+  dom.backgroundPresetInput?.querySelector("optgroup[data-local-backgrounds]")?.remove();
+  const group = document.createElement("optgroup");
+  group.label = "LAB 背景";
+  group.dataset.localBackgrounds = "true";
+  for (const item of Array.isArray(presets) ? presets : []) {
+    if (!item || !/^local-[a-z0-9-]+$/.test(item.id) || typeof item.url !== "string") continue;
+    BACKGROUND_IMAGE_PRESETS.set(item.id, item.url);
+    BACKGROUND_PRESETS.add(item.id);
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.label || item.id;
+    group.appendChild(option);
+  }
+  if (group.children.length) dom.backgroundPresetInput?.appendChild(group);
+}
+
+function newBackgroundDraft() {
+  return { backgroundPreset: settings.backgroundPreset, customBackgroundPath: settings.customBackgroundPath,
+    backgroundViews: window.AmadeusBackgroundEditor.normalizeViews(settings.backgroundViews) };
+}
+
+function backgroundImageUrl(source) {
+  const preset = source.backgroundPreset;
+  if (preset === "boot") return BOOT_BACKGROUND_URL;
+  if (preset === "custom" && source.customBackgroundPath) return source.previewUrl || `/api/background-image?v=${backgroundRevision}`;
+  return BACKGROUND_IMAGE_PRESETS.get(preset) || "";
+}
+
+function backgroundView(source) {
+  const key = window.AmadeusBackgroundEditor.viewKey(source.backgroundPreset, source.customBackgroundPath);
+  return window.AmadeusBackgroundEditor.normalizeView(source.backgroundViews?.[key]);
+}
+
 function updateBackgroundControls() {
-  const preset = BACKGROUND_PRESETS.has(settings.backgroundPreset) ? settings.backgroundPreset : "binary";
+  const source = backgroundDraft || settings;
+  const preset = BACKGROUND_PRESETS.has(source.backgroundPreset) ? source.backgroundPreset : "grid";
   if (dom.backgroundPresetInput) dom.backgroundPresetInput.value = preset;
-  if (dom.customBackgroundPathInput) dom.customBackgroundPathInput.value = settings.customBackgroundPath || "";
+  if (dom.customBackgroundPathInput) dom.customBackgroundPathInput.value = source.customBackgroundPath || "";
   dom.backgroundFileRow?.classList.toggle("hidden", preset !== "custom");
   if (dom.backgroundHint) {
     dom.backgroundHint.textContent = preset === "custom"
-      ? (settings.customBackgroundPath ? "自定义图片会按 cover 方式铺满窗口。" : "请先选择一张 PNG、JPG、JPEG 或 WebP 图片。")
-      : "背景会按 cover 方式铺满窗口，不参与人物缩放和动作。";
+      ? (source.customBackgroundPath ? "在下方预览中调整取景，保存后应用。" : "请先选择一张 PNG、JPG、JPEG 或 WebP 图片。")
+      : "拖动白色取景框选择画面；窗口缩放时尽量保留所选位置，并保持铺满。";
   }
+  const url = backgroundImageUrl(source);
+  dom.backgroundEditorPanel?.classList.toggle("hidden", !url);
+  backgroundEditor?.setSource(url, backgroundView(source));
 }
 
 function previewBackgroundSelection() {
-  settings.backgroundPreset = BACKGROUND_PRESETS.has(dom.backgroundPresetInput?.value)
+  backgroundDraft ||= newBackgroundDraft();
+  backgroundDraft.backgroundPreset = BACKGROUND_PRESETS.has(dom.backgroundPresetInput?.value)
     ? dom.backgroundPresetInput.value
-    : "binary";
+    : "grid";
   updateBackgroundControls();
-  drawPixiBackground();
 }
 
 async function chooseCustomBackground() {
@@ -3071,10 +3164,14 @@ async function chooseCustomBackground() {
   }
   try {
     const result = await window.pywebview.api.chooseBackgroundFile();
-    if (!result?.ok || !result.path) return;
-    settings.customBackgroundPath = result.path;
-    settings.backgroundPreset = "custom";
-    backgroundRevision += 1;
+    if (!result?.ok || !result.path) {
+      if (result?.error) toast(result.error);
+      return;
+    }
+    backgroundDraft ||= newBackgroundDraft();
+    backgroundDraft.customBackgroundPath = result.path;
+    backgroundDraft.backgroundPreset = "custom";
+    backgroundDraft.previewUrl = result.previewUrl || "";
     updateBackgroundControls();
     toast("背景图片已选择，保存显示设置后应用");
   } catch (error) {
@@ -5562,16 +5659,23 @@ async function saveSettings(update, message = "设置已保存", applyWindow = f
   const optimisticSettings = normalizeSettings({ ...settings, ...update });
   settings = optimisticSettings;
   fillSettingsForm();
-  const response = await fetch("/api/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings: update }),
-  });
-  const data = await response.json();
-  if (!response.ok || data.ok === false) {
+  let response, data;
+  try {
+    response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: update }),
+    });
+    data = await response.json();
+  } catch (error) {
     settings = previousSettings;
     fillSettingsForm();
-    throw new Error(data.error || `HTTP ${response.status}`);
+    throw error;
+  }
+  if (!response.ok || !data || data.ok === false) {
+    settings = previousSettings;
+    fillSettingsForm();
+    throw new Error(data?.error || `HTTP ${response.status}`);
   }
   settings = normalizeSettings({ ...optimisticSettings, ...(data.settings || {}) });
   applySettingsToUi();
@@ -6187,7 +6291,7 @@ function startTodoReminderPolling() {
 
 async function pollTodoReminders() {
   if (
-    proactiveOutreachPaused() || todoReminderInFlight || bootSequenceActive || chatRequestInFlight
+    todoReminderInFlight || bootSequenceActive || chatRequestInFlight
     || proactiveInteractionInFlight || touchState.requestInFlight
     || speechState.pending || isSpeaking(performance.now())
   ) return;
@@ -6258,6 +6362,8 @@ function normalizeSpeechProsody(value) {
 
 function normalizeSettings(raw) {
   const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
+  delete merged.cognitiveSemanticAuditEnabled;
+  delete merged.cognitiveAuditModel;
   const requestedBackgroundPreset = String(merged.backgroundPreset || "");
   const backgroundPreset = BACKGROUND_PRESET_ALIASES[requestedBackgroundPreset] || requestedBackgroundPreset;
   const modelTransforms = {};
@@ -6282,10 +6388,10 @@ function normalizeSettings(raw) {
   );
   return {
     ...merged,
+    apiEndpoint: String(merged.apiEndpoint || "").trim() || DEFAULT_SETTINGS.apiEndpoint,
+    apiModel: String(merged.apiModel || "").trim() || DEFAULT_SETTINGS.apiModel,
     useResponseFormat: Boolean(merged.useResponseFormat),
     cognitiveRepairModel: merged.cognitiveRepairModel === "pro" ? "pro" : "follow",
-    cognitiveAuditModel: merged.cognitiveAuditModel === "pro" ? "pro" : "follow",
-    cognitiveSemanticAuditEnabled: Boolean(merged.cognitiveSemanticAuditEnabled),
     apiKeySet: Boolean(merged.apiKeySet),
     alwaysOnTop: Boolean(merged.alwaysOnTop),
     hudCollapsed: Boolean(merged.hudCollapsed),
@@ -6301,8 +6407,9 @@ function normalizeSettings(raw) {
     modelOffsetY: clamp(toNumber(merged.modelOffsetY, DEFAULT_SETTINGS.modelOffsetY), -1200, 1200),
     modelTransforms,
     live2dModelId: String(merged.live2dModelId || DEFAULT_SETTINGS.live2dModelId),
-    backgroundPreset: BACKGROUND_PRESETS.has(backgroundPreset) ? backgroundPreset : "binary",
+    backgroundPreset: BACKGROUND_PRESETS.has(backgroundPreset) ? backgroundPreset : "grid",
     customBackgroundPath: String(merged.customBackgroundPath || ""),
+    backgroundViews: window.AmadeusBackgroundEditor.normalizeViews(merged.backgroundViews),
     voiceEnabled: Boolean(merged.voiceEnabled),
     lipSyncEnabled: Boolean(merged.lipSyncEnabled),
     ttsProvider: String(merged.ttsProvider || DEFAULT_SETTINGS.ttsProvider),
@@ -6373,8 +6480,6 @@ function fillSettingsForm() {
   dom.apiEndpointInput.value = settings.apiEndpoint || "";
   dom.apiModelInput.value = settings.apiModel || "";
   dom.cognitiveRepairModelInput.value = settings.cognitiveRepairModel;
-  dom.cognitiveAuditModelInput.value = settings.cognitiveAuditModel;
-  dom.cognitiveSemanticAuditEnabledInput.checked = settings.cognitiveSemanticAuditEnabled;
   dom.apiKeyInput.value = settings.apiKeySet ? SAVED_API_KEY_MASK : "";
   dom.apiKeyInput.placeholder = "API key";
   if (dom.visionEnabledInput) dom.visionEnabledInput.checked = settings.visionEnabled !== false;
@@ -6611,8 +6716,6 @@ async function saveApiSettings() {
       apiEndpoint: dom.apiEndpointInput.value.trim(),
       apiModel: dom.apiModelInput.value.trim(),
       cognitiveRepairModel: dom.cognitiveRepairModelInput.value,
-      cognitiveAuditModel: dom.cognitiveAuditModelInput.value,
-      cognitiveSemanticAuditEnabled: dom.cognitiveSemanticAuditEnabledInput.checked,
       apiKey: !visibleApiKey || visibleApiKey === SAVED_API_KEY_MASK ? "__KEEP__" : visibleApiKey,
       visionEnabled: dom.visionEnabledInput?.checked ?? true,
       visionApiKey: !visibleVisionKey || visibleVisionKey === SAVED_API_KEY_MASK ? "__KEEP__" : visibleVisionKey,
@@ -6648,19 +6751,38 @@ async function testApiConnection() {
 }
 
 async function saveDisplaySettings() {
+  const draft = backgroundDraft;
+  const update = collectDisplaySettings();
+  const buttonText = dom.saveDisplayBtn.textContent;
+  dom.settingsModal.inert = true;
+  dom.backgroundControls.inert = true;
+  dom.saveDisplayBtn.disabled = true;
+  dom.saveDisplayBtn.textContent = "正在保存…";
   try {
     const previousModelId = activeModelProfile.id;
-    await saveSettings(collectDisplaySettings(), "显示设置已保存", true);
+    await saveSettings(update, "显示设置已保存", true);
+    backgroundRevision += 1;
+    drawPixiBackground();
+    if (!dom.settingsModal.classList.contains("hidden")) backgroundDraft = newBackgroundDraft();
+    updateBackgroundControls();
     if (settings.live2dModelId !== previousModelId) {
       toast("正在切换 Live2D 模型...");
       window.setTimeout(() => window.location.reload(), 120);
     }
   } catch (error) {
+    if (!dom.settingsModal.classList.contains("hidden")) backgroundDraft = draft;
+    updateBackgroundControls();
     toast(`显示设置保存失败：${error.message}`);
+  } finally {
+    dom.settingsModal.inert = false;
+    dom.backgroundControls.inert = false;
+    dom.saveDisplayBtn.disabled = false;
+    dom.saveDisplayBtn.textContent = buttonText;
   }
 }
 
 function collectDisplaySettings() {
+  const background = backgroundDraft || settings;
   const layoutMode = normalizeLayoutMode(dom.layoutModeInput.value);
   const width = toNumber(dom.windowWidthInput.value, settings.windowWidth);
   const height = toNumber(dom.windowHeightInput.value, settings.windowHeight);
@@ -6692,8 +6814,9 @@ function collectDisplaySettings() {
     modelOffsetY: DEV_MODE ? ordinaryTransform.offsetY : transform.offsetY,
     modelTransforms,
     live2dModelId: DEV_MODE ? ordinaryModelId : modelId,
-    backgroundPreset: BACKGROUND_PRESETS.has(dom.backgroundPresetInput?.value) ? dom.backgroundPresetInput.value : "binary",
-    customBackgroundPath: settings.customBackgroundPath || "",
+    backgroundPreset: BACKGROUND_PRESETS.has(dom.backgroundPresetInput?.value) ? dom.backgroundPresetInput.value : "grid",
+    customBackgroundPath: background.customBackgroundPath || "",
+    backgroundViews: window.AmadeusBackgroundEditor.normalizeViews(background.backgroundViews),
     alwaysOnTop: dom.alwaysOnTopInput.checked,
     hudCollapsed: dom.hudCollapsedInput.checked,
   };
@@ -8001,8 +8124,10 @@ async function clearRuntimeCache(mode) {
 }
 
 function openSettings() {
+  backgroundDraft = newBackgroundDraft();
   fillSettingsForm();
   dom.settingsModal.classList.remove("hidden");
+  backgroundEditor?.refresh();
   refreshGptSovitsStatus().catch(error => {
     console.warn("GPT-SoVITS status refresh failed:", error);
   });
@@ -8020,6 +8145,8 @@ function openFirstRunApiSetupIfNeeded() {
 function closeSettings() {
   closeSalieriWindow();
   dom.settingsModal.classList.add("hidden");
+  backgroundDraft = null;
+  updateBackgroundControls();
 }
 
 function closeSalieriWindow() {
@@ -8031,56 +8158,31 @@ function activateSettingsTab(tab) {
   if (tab !== "memory") closeSalieriWindow();
   dom.settingsTabs.forEach(button => button.classList.toggle("active", button.dataset.tab === tab));
   dom.tabPages.forEach(page => page.classList.toggle("active", page.dataset.page === tab));
+  backgroundEditor?.refresh();
 }
 
 function fitModel() {
-  if (!model) return;
   drawPixiBackground();
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  const natural = modelNaturalBounds();
-  const display = modelDisplayBounds(natural);
+  if (!model) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  const display = modelDisplayBounds(modelNaturalBounds());
   const transform = modelTransformFor(activeModelProfile?.id);
-  if (
-    modelFitReference.layoutMode !== settings.layoutMode
-    || modelFitReference.width <= 0
-    || modelFitReference.height <= 0
-  ) {
+  const full = settings.layoutMode === "full";
+  // Framing follows the window/layout only. The overlay conversation panel
+  // can move, resize or collapse without shrinking or displacing the model.
+  const portraitWidth = full ? Math.max(360, w - Math.min(460, Math.max(380, w * 0.38))) : w;
+  const area = { x: 12, y: 12, width: Math.max(1, portraitWidth - 24), height: Math.max(1, h - 24) };
+  if (modelFitReference.layoutMode !== settings.layoutMode || modelFitReference.width <= 0 || modelFitReference.height <= 0) {
     modelFitReference = { width: w, height: h, layoutMode: settings.layoutMode };
   }
-  const offsetScaleX = w / Math.max(1, modelFitReference.width);
-  const offsetScaleY = h / Math.max(1, modelFitReference.height);
-  const offsetX = (transform.offsetX + toNumber(activeModelProfile?.offsetX, 0)) * offsetScaleX;
-  const offsetY = (transform.offsetY + toNumber(activeModelProfile?.offsetY, 0)) * offsetScaleY;
-  if (settings.layoutMode === "full") {
-    const chatWidth = Math.min(460, Math.max(380, w * 0.38));
-    const videoWidth = Math.max(360, w - chatWidth);
-    const portraitHeight = h * 1.12;
-    const baseScale = Math.min((videoWidth * 0.86) / display.width, portraitHeight / display.height);
-    const profileScale = clamp(toNumber(activeModelProfile?.fullScaleMultiplier, activeModelProfile?.scaleMultiplier || 1), 0.5, 2);
-    const scale = clamp(baseScale * transform.scale * profileScale, 0.12, 3.05);
-    model.scale.set(scale);
-    const scaledWidth = display.width * scale;
-    modelHome = {
-      x: (videoWidth - scaledWidth) * 0.5 - display.x * scale + offsetX,
-      y: h - (display.y + display.height) * scale + offsetY,
-      scale,
-    };
-    model.x = modelHome.x;
-    model.y = modelHome.y;
-    return;
-  }
-  const visibleHeight = h * 1.02;
-  const baseScale = Math.min((w * 0.94) / display.width, (visibleHeight / display.height) * 1.08);
-  const profileScale = clamp(toNumber(activeModelProfile?.scaleMultiplier, 1), 0.5, 2);
-  const scale = clamp(baseScale * transform.scale * profileScale, 0.08, 2.2);
-  model.scale.set(scale);
-  const scaledWidth = display.width * scale;
-  modelHome = {
-    x: (w - scaledWidth) * 0.5 - display.x * scale + offsetX,
-    y: h - (display.y + display.height) * scale + offsetY,
-    scale,
-  };
+  const offsetX = (transform.offsetX + toNumber(activeModelProfile?.offsetX, 0)) * w / modelFitReference.width;
+  const offsetY = (transform.offsetY + toNumber(activeModelProfile?.offsetY, 0)) * h / modelFitReference.height;
+  const profileScale = clamp(toNumber(full ? activeModelProfile?.fullScaleMultiplier : activeModelProfile?.scaleMultiplier,
+    full ? activeModelProfile?.scaleMultiplier || 1 : 1), 0.5, 2);
+  const baseScale = Math.min(area.width / display.width, area.height / display.height);
+  modelHome = window.AmadeusPortraitFraming.fitPortrait(display, area,
+    baseScale * transform.scale * profileScale, offsetX, offsetY);
+  model.scale.set(modelHome.scale);
   model.x = modelHome.x;
   model.y = modelHome.y;
 }
@@ -8124,19 +8226,29 @@ function drawPixiBackground() {
   if (!app || !backgroundLayer || !window.PIXI) return;
   const w = window.innerWidth;
   const h = window.innerHeight;
-  backgroundLayer.removeChildren();
+  const preset = BACKGROUND_PRESETS.has(settings.backgroundPreset) ? settings.backgroundPreset : "grid";
+  const imageUrl = backgroundImageUrl(settings);
+  backgroundLayer.x = 0;
+  backgroundLayer.y = 0;
+  backgroundLayer.rotation = 0;
+  // Keep the same image while dragging the window; only its centered crop changes.
+  if (imageUrl && backgroundImageState?.url === imageUrl) {
+    backgroundImageState.fit();
+    return;
+  }
+  backgroundImageState = null;
+  for (const child of backgroundLayer.removeChildren()) child.destroy({ children: true });
   const base = new PIXI.Graphics();
   base.beginFill(settings.backgroundPreset === "solid" ? 0x020505 : 0x071011, 1);
   base.drawRect(0, 0, w, h);
   base.endFill();
   backgroundLayer.addChild(base);
-  const preset = BACKGROUND_PRESETS.has(settings.backgroundPreset) ? settings.backgroundPreset : "binary";
-  if (preset === "binary") {
-    drawBinaryBackgroundPanels(w, h);
-  } else if (preset === "boot") {
+  if (preset === "boot") {
     drawCoverBackgroundImage(BOOT_BACKGROUND_URL, w, h, 0.9);
   } else if (preset === "custom" && settings.customBackgroundPath) {
     drawCoverBackgroundImage(`/api/background-image?v=${backgroundRevision}`, w, h, 1);
+  } else if (BACKGROUND_IMAGE_PRESETS.has(preset)) {
+    drawCoverBackgroundImage(BACKGROUND_IMAGE_PRESETS.get(preset), w, h, 1);
   } else if (preset === "grid") {
     drawResearchGridBackground(w, h);
   }
@@ -8145,42 +8257,35 @@ function drawPixiBackground() {
   backgroundLayer.rotation = 0;
 }
 
-function drawBinaryBackgroundPanels(w, h) {
-  const targetX = 0;
-  const targetY = 0;
-  const targetW = w;
-  const targetH = h;
-  const textureW = 626;
-  const textureH = 1226;
-  const scale = Math.max(targetH / textureH, 0.68);
-  const tileW = textureW * scale;
-  const tileH = textureH * scale;
-  const columns = Math.max(2, Math.ceil(targetW / tileW) + 2);
-  const startX = targetX + targetW * 0.5 - (columns * tileW) * 0.5;
-  for (let index = 0; index < columns; index += 1) {
-    const panel = PIXI.Sprite.from(MODEL_BINARY_BACKGROUND_URL);
-    panel.width = tileW;
-    panel.height = tileH;
-    panel.x = startX + index * tileW;
-    panel.y = targetY + (targetH - tileH) * 0.5;
-    panel.alpha = 0.82;
-    backgroundLayer.addChild(panel);
-  }
-}
-
 function drawCoverBackgroundImage(url, w, h, alpha = 1) {
   const texture = PIXI.Texture.from(url);
   const sprite = new PIXI.Sprite(texture);
+  const base = backgroundLayer.children[0];
+  const shade = new PIXI.Graphics();
+  sprite.anchor.set(0.5);
+  sprite.alpha = alpha;
   const fit = () => {
+    if (sprite.destroyed) return;
+    // An image may finish loading after a resize. Always use the current viewport.
+    w = window.innerWidth;
+    h = window.innerHeight;
     const textureWidth = texture.orig?.width || texture.baseTexture?.realWidth || texture.width || w;
     const textureHeight = texture.orig?.height || texture.baseTexture?.realHeight || texture.height || h;
-    const scale = Math.max(w / Math.max(1, textureWidth), h / Math.max(1, textureHeight));
-    sprite.width = textureWidth * scale;
-    sprite.height = textureHeight * scale;
-    sprite.x = (w - sprite.width) * 0.5;
-    sprite.y = (h - sprite.height) * 0.5;
-    sprite.alpha = alpha;
+    const position = window.AmadeusBackgroundEditor.layout(textureWidth, textureHeight, w, h, backgroundView(settings));
+    sprite.width = position.width;
+    sprite.height = position.height;
+    sprite.x = position.x + position.width * 0.5;
+    sprite.y = position.y + position.height * 0.5;
+    base.clear();
+    base.beginFill(0x071011, 1);
+    base.drawRect(0, 0, w, h);
+    base.endFill();
+    shade.clear();
+    shade.beginFill(0x020606, 0.18);
+    shade.drawRect(0, 0, w, h);
+    shade.endFill();
   };
+  backgroundImageState = { url, fit };
   fit();
   if (!texture.valid && texture.baseTexture && typeof texture.baseTexture.once === "function") {
     texture.baseTexture.once("loaded", () => {
@@ -8188,10 +8293,6 @@ function drawCoverBackgroundImage(url, w, h, alpha = 1) {
     });
   }
   backgroundLayer.addChild(sprite);
-  const shade = new PIXI.Graphics();
-  shade.beginFill(0x020606, 0.18);
-  shade.drawRect(0, 0, w, h);
-  shade.endFill();
   backgroundLayer.addChild(shade);
 }
 
@@ -8234,11 +8335,11 @@ function drawResearchGridBackground(w, h) {
   const grid = new PIXI.Graphics();
   grid.lineStyle(1, 0xec922d, 0.08);
   const step = 36;
-  for (let x = 0; x <= w; x += step) {
+  for (let x = (w * 0.5) % step; x <= w; x += step) {
     grid.moveTo(x, 0);
     grid.lineTo(x, h);
   }
-  for (let y = 0; y <= h; y += step) {
+  for (let y = (h * 0.5) % step; y <= h; y += step) {
     grid.moveTo(0, y);
     grid.lineTo(w, y);
   }
@@ -9757,6 +9858,7 @@ function startSpeech(text, voiceStyle = "calm", meta = {}) {
     preparedTts: meta.preparedTts || null,
     originalAudio: meta.originalAudio || null,
     kind: String(meta.kind || "chat"),
+    deliveryPriority: String(meta.deliveryPriority || ""),
     provider: String(settings.ttsProvider || DEFAULT_SETTINGS.ttsProvider).trim().toLowerCase(),
     generation,
     pipelineSegmentIndex: Math.max(0, Number(meta.pipelineSegmentIndex) || 0),
@@ -12882,6 +12984,11 @@ function commitStreamedAssistantResult(data, playback, userMessage = "") {
 }
 
 function proactiveDeliveryStillCurrent(data) {
+  // A real Todo reminder is authorized separately from unsolicited chat. Keep
+  // normal conversation/playback ordering without letting silence revoke it.
+  if (data?.source === "todo-reminder" && String(data.reminderId || "")) {
+    return !chatRequestInFlight;
+  }
   const isProactive = data?.interactionKind === "proactive"
     || data?.source === "proactive"
     || data?.source === "api-proactive"
@@ -13056,6 +13163,7 @@ async function applyAssistant(data, userMessage = "") {
     preparedTts: data.preparedTts || null,
     originalAudio: data.originalAudio || null,
     kind: messageMeta.kind,
+    deliveryPriority: data.source === "todo-reminder" && data.reminderId ? "scheduled_reminder" : "",
     requestStartedAt: Number(data.clientRequestStartedAt || 0),
     pipelineSpeechSegments: progressivePlan.speechSegments,
     pipelineDisplaySegments: progressivePlan.displaySegments,

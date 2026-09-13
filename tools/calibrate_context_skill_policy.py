@@ -41,10 +41,11 @@ from agent.skill_retrieval import (  # noqa: E402
     cosine_similarity,
     lexical_tokens,
     load_runtime_registry,
+    select_ranked_skill_ids,
 )
 
 
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 MIN_HELD_OUT_PRECISION = 0.95
 MIN_HELD_OUT_NO_SKILL_ACCURACY = 0.95
 MIN_HELD_OUT_RECALL = 0.80
@@ -62,7 +63,7 @@ class CalibrationCase:
     query: str
     recent: tuple[Mapping[str, Any], ...]
     resolution: Mapping[str, Any] | None
-    expected_skill: str | None
+    expected_skills: tuple[str, ...]
     critical_negative: bool
     critical_negative_for: str | None
 
@@ -214,9 +215,15 @@ def load_calibration_cases(path: Path) -> tuple[CalibrationCase, ...]:
         prior_split = family_split.setdefault(family, split)
         if prior_split != split:
             raise CalibrationError(f"paraphrase_family_split_leakage:{family}")
-        expected_raw = raw.get("expectedSkill")
-        expected = None if expected_raw is None else str(expected_raw).strip()
-        if expected_raw is not None and not expected:
+        expected_raw = raw.get("expectedSkills") if "expectedSkills" in raw else (
+            [] if raw.get("expectedSkill") is None else [raw["expectedSkill"]]
+        )
+        if not isinstance(expected_raw, list) or any(
+            not isinstance(value, str) or not value.strip() for value in expected_raw
+        ):
+            raise CalibrationError(f"calibration_case_expected_skill_invalid:{case_id}")
+        expected = tuple(sorted(value.strip() for value in expected_raw))
+        if len(set(expected)) != len(expected) or len(expected) > 3:
             raise CalibrationError(f"calibration_case_expected_skill_invalid:{case_id}")
         recent_raw = raw.get("recent") or []
         if not isinstance(recent_raw, list) or not all(
@@ -231,7 +238,7 @@ def load_calibration_cases(path: Path) -> tuple[CalibrationCase, ...]:
         critical_for = (
             str(critical_for_raw).strip() if critical_for_raw is not None else None
         )
-        if critical_negative and expected is not None:
+        if critical_negative and expected:
             raise CalibrationError(f"critical_negative_must_expect_none:{case_id}")
         if critical_for_raw is not None and not critical_for:
             raise CalibrationError(f"critical_negative_for_invalid:{case_id}")
@@ -242,7 +249,7 @@ def load_calibration_cases(path: Path) -> tuple[CalibrationCase, ...]:
             query=query,
             recent=tuple(dict(item) for item in recent_raw),
             resolution=dict(resolution_raw) if resolution_raw is not None else None,
-            expected_skill=expected,
+            expected_skills=expected,
             critical_negative=critical_negative,
             critical_negative_for=critical_for,
         ))
@@ -252,11 +259,11 @@ def load_calibration_cases(path: Path) -> tuple[CalibrationCase, ...]:
     held_out = tuple(item for item in cases if item.split == "held_out")
     if not dev or not held_out:
         raise CalibrationError("calibration_split_missing")
-    if not any(item.expected_skill is not None for item in dev):
+    if not any(item.expected_skills for item in dev):
         raise CalibrationError("calibration_dev_positive_missing")
-    if not any(item.expected_skill is not None for item in held_out):
+    if not any(item.expected_skills for item in held_out):
         raise CalibrationError("calibration_held_out_positive_missing")
-    if not any(item.expected_skill is None for item in held_out):
+    if not any(not item.expected_skills for item in held_out):
         raise CalibrationError("calibration_held_out_no_skill_missing")
     return tuple(cases)
 
@@ -292,7 +299,12 @@ def _prepare_cases(
     if any(not item for item in queries):
         raise CalibrationError("calibration_query_empty")
     try:
-        raw_vectors = embedder.embed(queries)
+        # Production encodes one query per turn. Quantized ONNX inference can
+        # depend on batch padding, so calibrate using that same batch shape.
+        batches = tuple(embedder.embed((query,)) for query in queries)
+        if any(len(batch) != 1 for batch in batches):
+            raise CalibrationError("calibration_embedding_batch_shape_invalid")
+        raw_vectors = tuple(batch[0] for batch in batches)
     except Exception as error:
         raise CalibrationError(
             f"calibration_embedding_failed:{type(error).__name__}"
@@ -338,8 +350,8 @@ def _prepare_cases(
 def _prediction_for_point(
     prepared: _PreparedCase,
     point: GridPoint,
-    top_k: int,
-) -> str | None:
+    max_selected: int,
+) -> tuple[str, ...]:
     ranked: list[tuple[float, str, float]] = []
     for item in prepared.candidates:
         bm25_normalized = item.bm25_score / (item.bm25_score + point.bm25_scale)
@@ -359,44 +371,36 @@ def _prediction_for_point(
             raise CalibrationError("calibration_candidate_non_finite")
         ranked.append((fused, item.skill_id, item.embedding_score))
     ranked.sort(key=lambda item: (-item[0], item[1]))
-    ranked = ranked[:top_k]
-    if not ranked:
-        return None
-    top_score, top_id, top_dense = ranked[0]
-    second_score = ranked[1][0] if len(ranked) > 1 else 0.0
-    if top_dense < point.min_dense:
-        return None
-    if top_score < point.min_score:
-        return None
-    if top_score - second_score < point.min_margin:
-        return None
-    return top_id
+    return select_ranked_skill_ids(
+        ranked, min_dense=point.min_dense, min_score=point.min_score,
+        min_margin=point.min_margin, max_selected=max_selected,
+    )[0]
 
 
 def _metrics(
-    predictions: Sequence[tuple[CalibrationCase, str | None]],
+    predictions: Sequence[tuple[CalibrationCase, tuple[str, ...]]],
 ) -> dict[str, Any]:
-    expected_positive = sum(item.expected_skill is not None for item, _ in predictions)
-    predicted_positive = sum(predicted is not None for _, predicted in predictions)
+    expected_positive = sum(len(item.expected_skills) for item, _ in predictions)
+    predicted_positive = sum(len(predicted) for _, predicted in predictions)
     correct_positive = sum(
-        item.expected_skill is not None and predicted == item.expected_skill
+        len(set(item.expected_skills).intersection(predicted))
         for item, predicted in predictions
     )
-    no_skill_count = sum(item.expected_skill is None for item, _ in predictions)
+    no_skill_count = sum(not item.expected_skills for item, _ in predictions)
     no_skill_correct = sum(
-        item.expected_skill is None and predicted is None
+        not item.expected_skills and not predicted
         for item, predicted in predictions
     )
-    exact_correct = sum(item.expected_skill == predicted for item, predicted in predictions)
+    exact_correct = sum(set(item.expected_skills) == set(predicted) for item, predicted in predictions)
     critical_count = sum(
         item.critical_negative or item.critical_negative_for is not None
         for item, _ in predictions
     )
     critical_false_positive = 0
     for item, predicted in predictions:
-        hit = item.critical_negative and predicted is not None
+        hit = item.critical_negative and bool(predicted)
         if item.critical_negative_for is not None:
-            hit = hit or predicted == item.critical_negative_for
+            hit = hit or item.critical_negative_for in predicted
         critical_false_positive += int(hit)
     precision = (
         correct_positive / predicted_positive
@@ -484,62 +488,50 @@ def _point_sort_key(
 
 def _safe_case_report(
     prepared: _PreparedCase,
-    predicted: str | None,
+    predicted: tuple[str, ...],
     result: Any,
     policy: RetrievalPolicy,
 ) -> dict[str, Any]:
     candidates = tuple(result.candidates)
-    top = candidates[0] if candidates else None
-    second_score = candidates[1].fused_score if len(candidates) > 1 else 0.0
-    margin = top.fused_score - second_score if top is not None else None
-    dense_value = top.embedding_score if top is not None else None
-    score_value = top.fused_score if top is not None else None
+    selected_count = len(predicted)
+    boundary_index = max(0, selected_count - 1)
+    boundary = candidates[boundary_index] if len(candidates) > boundary_index else None
+    outside_score = candidates[boundary_index + 1].fused_score if len(candidates) > boundary_index + 1 else 0.0
+    margin = boundary.fused_score - outside_score if boundary is not None else None
     case = prepared.case
-    critical_hit = bool(case.critical_negative and predicted is not None)
+    expected_set, predicted_set = set(case.expected_skills), set(predicted)
+    critical_hit = bool(case.critical_negative and predicted)
     if case.critical_negative_for is not None:
-        critical_hit = critical_hit or predicted == case.critical_negative_for
-    expected_positive = case.expected_skill is not None
-    predicted_positive = predicted is not None
-    correct_positive = bool(expected_positive and predicted == case.expected_skill)
+        critical_hit = critical_hit or case.critical_negative_for in predicted
     return {
         "caseId": case.case_id,
         "split": case.split,
         "paraphraseFamily": case.paraphrase_family,
-        "expectedSkill": case.expected_skill,
-        "predictedSkill": predicted,
-        "correct": predicted == case.expected_skill,
+        "expectedSkills": list(case.expected_skills),
+        "predictedSkills": list(predicted),
+        "correct": predicted_set == expected_set,
         "criticalNegative": case.critical_negative,
         "criticalNegativeFor": case.critical_negative_for,
         "criticalFalsePositive": critical_hit,
         "fallbackReason": result.fallback_reason,
         "metrics": {
-            "truePositive": correct_positive,
-            "falsePositive": bool(predicted_positive and not correct_positive),
-            "falseNegative": bool(expected_positive and not correct_positive),
-            "noSkillCorrect": bool(not expected_positive and predicted is None),
+            "truePositive": len(expected_set & predicted_set),
+            "falsePositive": len(predicted_set - expected_set),
+            "falseNegative": len(expected_set - predicted_set),
+            "noSkillCorrect": not expected_set and not predicted_set,
             "criticalFalsePositive": critical_hit,
         },
         "candidates": [item.diagnostic_dict() for item in candidates],
         "gates": {
-            "minDense": {
-                "value": round(dense_value, 6) if dense_value is not None else None,
-                "minimum": policy.min_dense,
-                "passed": bool(
-                    dense_value is not None and dense_value >= policy.min_dense
-                ),
-            },
-            "minScore": {
-                "value": round(score_value, 6) if score_value is not None else None,
-                "minimum": policy.min_score,
-                "passed": bool(
-                    score_value is not None and score_value >= policy.min_score
-                ),
-            },
+            "minDense": {"minimum": policy.min_dense},
+            "minScore": {"minimum": policy.min_score},
             "minMargin": {
+                "scope": "selected_group_vs_first_excluded",
                 "value": round(margin, 6) if margin is not None else None,
                 "minimum": policy.min_margin,
                 "passed": bool(margin is not None and margin >= policy.min_margin),
             },
+            "maxSelected": policy.max_selected,
         },
     }
 
@@ -565,7 +557,7 @@ def evaluate_calibration(
         raise CalibrationError("calibration_registry_empty")
     skill_ids = {entry.meta.skill_id for entry in registry.entries}
     for case in cases:
-        if case.expected_skill is not None and case.expected_skill not in skill_ids:
+        if not set(case.expected_skills).issubset(skill_ids):
             raise CalibrationError(
                 f"calibration_expected_skill_unknown:{case.case_id}"
             )
@@ -585,7 +577,7 @@ def evaluate_calibration(
     best_key: tuple[Any, ...] | None = None
     for point in points:
         predictions = tuple(
-            (item.case, _prediction_for_point(item, point, base_policy.top_k))
+            (item.case, _prediction_for_point(item, point, base_policy.max_selected))
             for item in dev_prepared
         )
         metrics = _metrics(predictions)
@@ -605,10 +597,10 @@ def evaluate_calibration(
 
     retriever = HybridSkillRetriever(embedder)
     case_reports: list[dict[str, Any]] = []
-    final_predictions: list[tuple[CalibrationCase, str | None]] = []
+    final_predictions: list[tuple[CalibrationCase, tuple[str, ...]]] = []
     for item in prepared:
         result = retriever.retrieve(item.retrieval_query, registry, selected_policy)
-        predicted = result.selected[0].skill_id if result.selected else None
+        predicted = tuple(skill.skill_id for skill in result.selected)
         final_predictions.append((item.case, predicted))
         case_reports.append(
             _safe_case_report(item, predicted, result, selected_policy)
@@ -642,7 +634,7 @@ def evaluate_calibration(
     case_reports.sort(key=lambda item: (item["split"], item["caseId"]))
     return {
         "schemaVersion": REPORT_SCHEMA_VERSION,
-        "calibrator": "persona-context-hybrid-grid-v1",
+        "calibrator": "persona-context-hybrid-multilabel-v2",
         "casesSha256": cases_sha256,
         "bindings": {
             "modelId": registry.model_id,
@@ -656,7 +648,7 @@ def evaluate_calibration(
         "search": {
             "selectionSplit": "dev",
             "gridPointCount": len(points),
-            "selectedPolicy": best_point.policy_dict(),
+            "selectedPolicy": {**best_point.policy_dict(), "maxSelected": base_policy.max_selected, "topK": base_policy.top_k},
         },
         "metrics": {
             "dev": dev_metrics,
@@ -707,6 +699,8 @@ def _calibrated_policy(
     result["modelArtifactDigest"] = bindings["modelArtifactDigest"]
     result["indexBuildId"] = bindings["indexBuildId"]
     result["sourceDigest"] = bindings["sourceDigest"]
+    result["maxSelected"] = selected["maxSelected"]
+    result["topK"] = selected["topK"]
     fusion = result.get("fusion") if isinstance(result.get("fusion"), dict) else {}
     fusion.update(selected["fusion"])
     result["fusion"] = fusion
@@ -721,7 +715,8 @@ def _calibrated_policy(
     }
     result["notes"] = (
         "Hybrid 阈值只用 paraphraseFamily 隔离的 dev split 选择，并由 held-out split 验证；"
-        "变更 model artifact digest、index buildId 或 sourceDigest 后必须重新校准。"
+        "多选时每项须通过绝对分数门槛，minMargin 比较入选组与首个未选项；"
+        "按完整 Skill 集合计算误选与漏选。模型、索引、来源或选择规则变化后必须重新校准。"
     )
     try:
         RetrievalPolicy.from_dict(result)

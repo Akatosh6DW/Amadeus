@@ -6,7 +6,7 @@ import json
 from typing import Any, Mapping, Sequence
 from agent.tool_arguments import TRANSPORT_ARGUMENT_FIELDS, file_tool_argument_error
 from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
-from agent.todo_architecture import TodoTargetRef
+from agent.todo_architecture import TodoCommand, TodoTargetRef
 from tools.safe_web import canonicalize_public_url
 
 
@@ -29,6 +29,14 @@ def canonical_tool_arguments(name: str, value: Any) -> dict[str, Any]:
         return args  # Retain invalid input for diagnostics; never substitute a different target.
     if name in {"get_system_time", "capture_screen", "capture_camera"}:
         return {}
+    if name == "todo_manage":
+        try:
+            operation = TodoCommand.from_mapping(args).to_dict()
+            if operation.get("timeSpec"):
+                operation["timeSpec"].pop("reason", None)  # Explanation is not executable identity.
+            return operation
+        except ValueError:
+            return args  # Invalid timing must remain visible to repair, never become all-day.
     if name == "todo_search":
         try:
             target = TodoTargetRef.from_mapping(args.get("targetRef") or args.get("target_ref") or args)

@@ -20,7 +20,7 @@ import threading
 import time
 import urllib.parse
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from typing import Any
 
@@ -55,6 +55,8 @@ BLOCKED_HOST_SUFFIXES = (
 )
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = threading.Lock()
+SUPPORTED_FRESHNESS = frozenset({"pd", "pw", "pm", "py"})
+DUCKDUCKGO_DATE_FILTER = {"pd": "d", "pw": "w", "pm": "m", "py": "y"}
 
 
 class SafeWebError(RuntimeError):
@@ -589,8 +591,7 @@ class _DuckDuckGoParser(HTMLParser):
         values = dict(attrs)
         classes = set((values.get("class") or "").split())
         if tag == "a" and classes & {"result__a", "result-link"}:
-            if self._current is not None and self._current.get("title"):
-                self.results.append(self._current)
+            self._finish_current()
             href = values.get("href") or ""
             if href.startswith("//"):
                 href = "https:" + href
@@ -606,9 +607,7 @@ class _DuckDuckGoParser(HTMLParser):
         if tag == "a" and self._current is not None and self._capture == "title":
             self._capture = ""
         if tag in {"div", "article"} and self._current is not None and self._current.get("title"):
-            self.results.append(self._current)
-            self._current = None
-            self._capture = ""
+            self._finish_current()
 
     def handle_data(self, data: str) -> None:
         if self._current is not None and self._capture:
@@ -619,13 +618,123 @@ class _DuckDuckGoParser(HTMLParser):
 
     def close(self) -> None:
         super().close()
+        self._finish_current()
+
+    def _finish_current(self) -> None:
         if self._current is not None and self._current.get("title"):
+            hint, published_timestamp = search_result_date_metadata(
+                self._current.get("title", ""),
+                self._current.get("snippet", ""),
+            )
+            if hint:
+                self._current["publishedAt"] = hint
+                self._current["dateEvidence"] = hint
+            if published_timestamp:
+                self._current["publishedTimestamp"] = published_timestamp
             self.results.append(self._current)
-            self._current = None
+        self._current = None
+        self._capture = ""
 
 
-def _search_duckduckgo(query: str, max_results: int, timeout: float) -> list[dict[str, str]]:
-    url = "https://lite.duckduckgo.com/lite/?" + urllib.parse.urlencode({"q": query, "kl": "wt-wt"})
+_MONTH_PATTERN = (
+    r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?"
+)
+_SEARCH_DATE_PATTERNS = (
+    re.compile(r"\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b"),
+    re.compile(r"(?:19|20)\d{2}年\s*\d{1,2}月\s*\d{1,2}日?"),
+    re.compile(rf"\b(?:{_MONTH_PATTERN})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+(?:19|20)\d{{2}}\b", re.I),
+    re.compile(rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_MONTH_PATTERN})\s+(?:19|20)\d{{2}}\b", re.I),
+    re.compile(r"\b(?:today|yesterday|\d+\s+(?:minutes?|hours?|days?|weeks?|months?)\s+ago)\b", re.I),
+    re.compile(r"(?:刚刚|今天|昨日|昨天|\d+\s*(?:分钟|小时|天|周|个月)前)"),
+    re.compile(r"\b\d{1,2}月\s*\d{1,2}日\b"),
+)
+
+
+def search_result_date_metadata(*values: Any) -> tuple[str, str]:
+    """Return a provider-visible date clue and a normalized UTC timestamp."""
+
+    text = re.sub(r"\s+", " ", " ".join(str(value or "") for value in values)).strip()
+    hint = ""
+    for pattern in _SEARCH_DATE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            hint = match.group(0).strip()
+            break
+    if not hint:
+        return "", ""
+    now = datetime.now(timezone.utc)
+    normalized = re.sub(r"(?i)(\d)(?:st|nd|rd|th)\b", r"\1", hint).strip()
+    parsed: datetime | None = None
+    for fmt in (
+        "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%B %d, %Y", "%B %d %Y",
+        "%b %d, %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y",
+    ):
+        try:
+            parsed = datetime.strptime(normalized, fmt).replace(tzinfo=timezone.utc)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        chinese = re.fullmatch(r"((?:19|20)\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日?", normalized)
+        month_day = re.fullmatch(r"(\d{1,2})月\s*(\d{1,2})日", normalized)
+        if chinese:
+            try:
+                parsed = datetime(
+                    int(chinese.group(1)), int(chinese.group(2)), int(chinese.group(3)),
+                    tzinfo=timezone.utc,
+                )
+            except ValueError:
+                parsed = None
+        elif month_day:
+            try:
+                parsed = datetime(now.year, int(month_day.group(1)), int(month_day.group(2)), tzinfo=timezone.utc)
+                if parsed > now + timedelta(days=2):
+                    parsed = parsed.replace(year=now.year - 1)
+            except ValueError:
+                parsed = None
+    if parsed is None:
+        relative = re.fullmatch(
+            r"(\d+)\s*(minutes?|hours?|days?|weeks?|months?)\s+ago",
+            normalized,
+            re.I,
+        )
+        relative_zh = re.fullmatch(r"(\d+)\s*(分钟|小时|天|周|个月)前", normalized)
+        if normalized.casefold() in {"today", "今天", "刚刚"}:
+            parsed = now
+        elif normalized.casefold() in {"yesterday", "昨日", "昨天"}:
+            parsed = now - timedelta(days=1)
+        elif relative:
+            amount = int(relative.group(1))
+            unit = relative.group(2).lower()
+            days = amount * (30 if unit.startswith("month") else 7 if unit.startswith("week") else 1)
+            parsed = now - (timedelta(days=days) if unit.startswith(("day", "week", "month")) else timedelta(
+                hours=amount if unit.startswith("hour") else 0,
+                minutes=amount if unit.startswith("minute") else 0,
+            ))
+        elif relative_zh:
+            amount = int(relative_zh.group(1))
+            unit = relative_zh.group(2)
+            parsed = now - (
+                timedelta(days=amount * (30 if unit == "个月" else 7 if unit == "周" else 1))
+                if unit in {"天", "周", "个月"}
+                else timedelta(hours=amount if unit == "小时" else 0, minutes=amount if unit == "分钟" else 0)
+            )
+    return hint, parsed.isoformat(timespec="seconds") if parsed is not None else ""
+
+
+def _search_duckduckgo(
+    query: str,
+    max_results: int,
+    timeout: float,
+    freshness: str = "",
+) -> list[dict[str, str]]:
+    params = {"q": query, "kl": "wt-wt"}
+    date_filter = DUCKDUCKGO_DATE_FILTER.get(str(freshness or "").strip().lower())
+    if date_filter:
+        params["df"] = date_filter
+    url = "https://lite.duckduckgo.com/lite/?" + urllib.parse.urlencode(params)
     response = safe_http_request(url, timeout=timeout)
     parser = _DuckDuckGoParser()
     content = response["body"].decode("utf-8", errors="replace")
@@ -902,7 +1011,12 @@ def _search_brave(query: str, api_key: str, max_results: int, timeout: float, fr
     ]
 
 
-def _page_read_priority(source: dict[str, Any], query: str, position: int) -> float:
+def _page_read_priority(
+    source: dict[str, Any],
+    query: str,
+    position: int,
+    freshness: str = "",
+) -> float:
     domain = str(source.get("domain") or "").lower()
     title = str(source.get("title") or "").lower()
     score = -position * 0.05
@@ -915,6 +1029,29 @@ def _page_read_priority(source: dict[str, Any], query: str, position: int) -> fl
         score += 0.8
     if any(host in domain for host in ("blog.csdn.net", "zhuanlan.zhihu.com", "tieba.baidu.com")):
         score -= 1.0
+    requested_freshness = str(freshness or "").strip().lower()
+    if requested_freshness in SUPPORTED_FRESHNESS:
+        _, published_timestamp = search_result_date_metadata(
+            source.get("publishedTimestamp"),
+            source.get("publishedAt"),
+            source.get("dateEvidence"),
+            source.get("title"),
+            source.get("snippet"),
+        )
+        try:
+            published = datetime.fromisoformat(published_timestamp)
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (datetime.now(timezone.utc) - published).total_seconds() / 86_400)
+            window_days = {"pd": 1.5, "pw": 8.0, "pm": 32.0, "py": 370.0}[requested_freshness]
+            if age_days <= window_days:
+                score += 0.5 + 2.3 * (1.0 - min(1.0, age_days / window_days))
+            else:
+                score -= 3.2
+        except (TypeError, ValueError):
+            # An unparsed date clue is useful to the reviewer but cannot be
+            # treated as proof that the page falls inside the requested window.
+            pass
     return score
 
 
@@ -954,16 +1091,19 @@ def web_search(
     with _CACHE_LOCK:
         cached = _CACHE.get(cache_key)
         if cached and cached[0] > time.monotonic():
-            return json.loads(json.dumps(cached[1], ensure_ascii=False))
+            cached_result = json.loads(json.dumps(cached[1], ensure_ascii=False))
+            cached_result["cacheHit"] = True
+            return cached_result
     provider_attempts: list[str] = []
     provider_errors: list[dict[str, str]] = []
     effective_provider = provider
+    requested_freshness = str(freshness or "").strip().lower()
     if provider == "wikipedia":
         provider_attempts.append("wikipedia")
         raw_results = _search_wikipedia(clean_query, max_results, timeout, locale)
     elif provider == "brave":
         provider_attempts.append("brave")
-        raw_results = _search_brave(clean_query, api_key, max_results, timeout, freshness)
+        raw_results = _search_brave(clean_query, api_key, max_results, timeout, requested_freshness)
     elif provider == "yahoo":
         provider_attempts.append("yahoo")
         raw_results = _search_yahoo(clean_query, max_results, timeout)
@@ -984,8 +1124,10 @@ def web_search(
         for candidate, search_function in providers:
             provider_attempts.append(candidate)
             try:
-                candidate_results = search_function(
-                    clean_query, max_results, per_provider_timeout
+                candidate_results = (
+                    search_function(clean_query, max_results, per_provider_timeout, requested_freshness)
+                    if candidate == "duckduckgo"
+                    else search_function(clean_query, max_results, per_provider_timeout)
                 )
                 if candidate_results:
                     raw_results = candidate_results
@@ -1007,12 +1149,36 @@ def web_search(
             raise SafeWebError(f"所有搜索线路均失败（{detail or '没有可用结果'}）")
     else:
         raise SafeWebError("暂不支持该搜索服务；请选择 duckduckgo、yahoo、brave 或 wikipedia")
+    date_filter_supported = effective_provider in {"duckduckgo", "brave"}
+    applied_freshness = (
+        requested_freshness
+        if date_filter_supported and requested_freshness in SUPPORTED_FRESHNESS
+        else ""
+    )
+    date_filter = {
+        "requestedFreshness": requested_freshness,
+        "appliedFreshness": applied_freshness,
+        "supported": date_filter_supported,
+        "provider": effective_provider,
+        "parameter": (
+            "df" if effective_provider == "duckduckgo"
+            else "freshness" if effective_provider == "brave"
+            else ""
+        ),
+        "fallbackUnfiltered": bool(requested_freshness and not applied_freshness),
+    }
     sources: list[dict[str, Any]] = []
     for item in raw_results:
         try:
             parsed, _ = validate_public_url(str(item.get("url") or ""))
         except SafeWebError:
             continue
+        date_hint, published_timestamp = search_result_date_metadata(
+            item.get("publishedAt"),
+            item.get("dateEvidence"),
+            item.get("title"),
+            item.get("snippet"),
+        )
         source = {
             "id": f"S{len(sources) + 1}",
             "title": re.sub(r"\s+", " ", html.unescape(str(item.get("title") or parsed.hostname or "网页"))).strip()[:300],
@@ -1021,7 +1187,13 @@ def web_search(
             ),
             "domain": parsed.hostname or "",
             "snippet": re.sub(r"\s+", " ", html.unescape(str(item.get("snippet") or ""))).strip()[:800],
-            "publishedAt": str(item.get("publishedAt") or "")[:80],
+            "publishedAt": str(item.get("publishedAt") or date_hint)[:80],
+            "publishedTimestamp": str(item.get("publishedTimestamp") or published_timestamp)[:80],
+            "dateEvidence": str(item.get("dateEvidence") or date_hint)[:120],
+            "searchProvider": effective_provider,
+            "requestedFreshness": requested_freshness,
+            "appliedFreshness": applied_freshness,
+            "dateFilterSupported": date_filter_supported,
             "fetchStatus": "not_fetched",
         }
         sources.append(source)
@@ -1031,7 +1203,7 @@ def web_search(
         raise SafeWebError("搜索服务没有返回可验证的公网来源")
     read_candidates = sorted(
         enumerate(sources),
-        key=lambda pair: _page_read_priority(pair[1], clean_query, pair[0]),
+        key=lambda pair: _page_read_priority(pair[1], clean_query, pair[0], requested_freshness),
         reverse=True,
     )
     page_timeout = max(3.0, min(float(timeout), 8.0))
@@ -1070,8 +1242,10 @@ def web_search(
         "requestedProvider": provider,
         "providerAttempts": provider_attempts,
         "providerErrors": provider_errors,
+        "dateFilter": date_filter,
         "sources": sources,
         "searchedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "cacheHit": False,
     }
     with _CACHE_LOCK:
         _CACHE[cache_key] = (

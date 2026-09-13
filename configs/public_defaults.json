@@ -1,0 +1,83 @@
+{
+  "alignSpokenJa": true,
+  "alwaysOnTop": false,
+  "apiContextLimit": 65536,
+  "apiEndpoint": "https://api.deepseek.com/chat/completions",
+  "apiModel": "deepseek-v4-flash-vision-exp",
+  "apiNetworkMode": "auto",
+  "autoStartGptSovits": true,
+  "backgroundPreset": "local-sgre-lab-sofa-sunset",
+  "backgroundViews": {
+    "local-sgre-lab-sofa-sunset": {
+      "focusX": 0.42939247168930883,
+      "focusY": 0.5,
+      "zoom": 1
+    }
+  },
+  "cognitiveRepairModel": "follow",
+  "contextSemanticRouterEnabled": true,
+  "fullWindowHeight": 760,
+  "fullWindowWidth": 1040,
+  "gptSovitsGptRouteLongMinChars": 60,
+  "gptSovitsGptRouteShortMaxChars": 32,
+  "gptSovitsModelPreset": "emotionclarity_v7_retrained_short",
+  "gptSovitsTargetLanguage": "日文",
+  "hudCollapsed": true,
+  "layoutMode": "lite",
+  "lipSyncEnabled": true,
+  "liteWindowHeight": 760,
+  "liteWindowWidth": 514,
+  "live2dModelId": "aipoet-kurisu",
+  "modelOffsetX": 0,
+  "modelOffsetY": 0,
+  "modelScale": 1.0,
+  "modelTransforms": {
+    "aipoet-kurisu": {
+      "scale": 1.0,
+      "offsetX": 0,
+      "offsetY": 0
+    },
+    "aipoet-kurisu-daily": {
+      "scale": 1.0,
+      "offsetX": 0,
+      "offsetY": 0
+    }
+  },
+  "permissionFileRead": true,
+  "permissionFileWrite": true,
+  "permissionOpenBrowser": true,
+  "permissionReadCamera": true,
+  "permissionReadScreen": true,
+  "permissionReadSystemTime": true,
+  "permissionWebSearch": true,
+  "proactiveFrequency": "low",
+  "proactiveInteractionsEnabled": true,
+  "proactiveScreenObservationChance": 0.2,
+  "proactiveScreenObservationEnabled": true,
+  "proactiveTopicCategories": [
+    "neuroscience",
+    "ai_technology",
+    "experiments",
+    "games_scifi",
+    "books_research",
+    "daily_science"
+  ],
+  "speechLanguage": "ja-JP",
+  "speechProsody": "natural",
+  "speechRate": 1.0,
+  "ttsDeliveryPostProcessingEnabled": false,
+  "ttsProvider": "gpt-sovits",
+  "ttsSpeaker": "1",
+  "useResponseFormat": true,
+  "visionEnabled": true,
+  "visionModel": "deepseek-v4-flash-vision-exp",
+  "voiceEnabled": true,
+  "voiceLocale": "ja-JP",
+  "voicePitch": 1.18,
+  "webReadTopPages": 2,
+  "webRequestTimeout": 12,
+  "webSearchMaxResults": 5,
+  "webSearchProvider": "duckduckgo",
+  "windowHeight": 760,
+  "windowWidth": 514
+}

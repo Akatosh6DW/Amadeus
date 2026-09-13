@@ -6,13 +6,147 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
+import subprocess
 import tempfile
 import urllib.request
+from urllib.parse import quote, unquote, urlsplit
 import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+GITHUB_AUTH_HOSTS = frozenset({"github.com", "api.github.com"})
+GITHUB_RELEASE_DOWNLOAD_RE = re.compile(
+    r"^/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)$"
+)
+
+
+class _CredentialSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never carry the GitHub bearer header onto a non GitHub host."""
+
+    def redirect_request(self, request, file, code, message, headers, newurl):
+        redirected = super().redirect_request(request, file, code, message, headers, newurl)
+        if redirected and (urlsplit(newurl).hostname or "").lower() not in GITHUB_AUTH_HOSTS:
+            redirected.headers.pop("Authorization", None)
+            redirected.unredirected_hdrs.pop("Authorization", None)
+        return redirected
+
+
+def github_credential() -> str:
+    """Read an existing GitHub credential without persisting or printing it."""
+
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            result = subprocess.run(
+                [gh, "auth", "token", "--hostname", "github.com"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0:
+            value = result.stdout.strip()
+            if value:
+                return value
+
+    # Git Credential Manager is often already configured for a private source
+    # checkout even when GitHub CLI is not installed.  Ask it in memory only;
+    # the noninteractive environment prevents a new prompt during deployment.
+    git = shutil.which("git")
+    if git:
+        child_env = os.environ.copy()
+        child_env["GIT_TERMINAL_PROMPT"] = "0"
+        child_env["GCM_INTERACTIVE"] = "Never"
+        try:
+            result = subprocess.run(
+                [git, "credential", "fill"],
+                input="protocol=https\nhost=github.com\n\n",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                check=False,
+                env=child_env,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0:
+            for line in result.stdout.splitlines():
+                key, separator, value = line.partition("=")
+                if key == "password" and separator and value.strip():
+                    return value.strip()
+    return ""
+
+
+def _github_release_descriptor(url: str) -> tuple[str, str, str, str] | None:
+    parsed = urlsplit(url)
+    if (parsed.hostname or "").lower() != "github.com":
+        return None
+    match = GITHUB_RELEASE_DOWNLOAD_RE.fullmatch(parsed.path)
+    if not match:
+        return None
+    owner, repository, tag, asset_name = (unquote(item) for item in match.groups())
+    if any("/" in item for item in (owner, repository, asset_name)):
+        return None
+    return owner, repository, tag, asset_name
+
+
+def _github_release_asset_url(
+    url: str,
+    credential: str,
+    opener: urllib.request.OpenerDirector,
+) -> str:
+    """Resolve a private release download through GitHub's asset API.
+
+    GitHub release browser URLs may return a 404 for a private repository even
+    when a bearer token is present.  The API release and asset endpoints accept
+    that token, then redirect the actual bytes to a signed CDN URL.  The
+    redirect handler above removes Authorization before that CDN request.
+    """
+
+    descriptor = _github_release_descriptor(url)
+    if descriptor is None:
+        return url
+    owner, repository, tag, asset_name = descriptor
+    release_url = (
+        "https://api.github.com/repos/"
+        f"{quote(owner, safe='')}/{quote(repository, safe='')}/releases/tags/"
+        f"{quote(tag, safe='')}"
+    )
+    release_request = urllib.request.Request(
+        release_url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {credential}",
+            "User-Agent": "AMADEUS-resource-installer",
+        },
+    )
+    with opener.open(release_request, timeout=60) as response:
+        release = json.load(response)
+    assets = release.get("assets") if isinstance(release, dict) else None
+    if not isinstance(assets, list):
+        raise ValueError("GitHub release response did not contain an asset list")
+    for asset in assets:
+        if not isinstance(asset, dict) or str(asset.get("name") or "") != asset_name:
+            continue
+        asset_id = asset.get("id")
+        if isinstance(asset_id, bool) or not isinstance(asset_id, int) or asset_id <= 0:
+            break
+        return (
+            "https://api.github.com/repos/"
+            f"{quote(owner, safe='')}/{quote(repository, safe='')}/releases/assets/{asset_id}"
+        )
+    raise ValueError(f"GitHub release asset was not found: {asset_name}")
 
 
 def sha256(path: Path) -> str:
@@ -85,8 +219,17 @@ def download(bundle: dict, cache: Path) -> Path:
         raise ValueError("The resource release URL has not been configured")
     partial = destination.with_suffix(destination.suffix + ".part")
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": "AMADEUS-resource-installer"})
-        with urllib.request.urlopen(request, timeout=60) as incoming, partial.open("wb") as outgoing:
+        headers = {"User-Agent": "AMADEUS-resource-installer"}
+        opener = urllib.request.build_opener(_CredentialSafeRedirectHandler)
+        host = (urlsplit(url).hostname or "").lower()
+        credential = github_credential() if host in GITHUB_AUTH_HOSTS else ""
+        if credential and host in GITHUB_AUTH_HOSTS:
+            url = _github_release_asset_url(url, credential, opener)
+            headers["Authorization"] = f"Bearer {credential}"
+            if url.startswith("https://api.github.com/") and "/releases/assets/" in url:
+                headers["Accept"] = "application/octet-stream"
+        request = urllib.request.Request(url, headers=headers)
+        with opener.open(request, timeout=60) as incoming, partial.open("wb") as outgoing:
             shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
         if partial.stat().st_size != bundle["bytes"] or sha256(partial) != bundle["sha256"]:
             raise ValueError("Downloaded resource archive checksum mismatch")

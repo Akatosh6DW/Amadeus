@@ -231,10 +231,12 @@ class RetrievalPolicy:
             raise AssetValidationError("policy_schema_mismatch")
         if self.calibrated and not self.model_artifact_digest:
             raise AssetValidationError("policy_model_artifact_digest_missing")
-        if self.max_selected != 1:
-            raise AssetValidationError("policy_max_selected_must_equal_one")
+        if not 1 <= self.max_selected <= 3:
+            raise AssetValidationError("policy_max_selected_out_of_range")
         if not 1 <= self.top_k <= 8:
             raise AssetValidationError("policy_top_k_out_of_range")
+        if self.top_k < self.max_selected:
+            raise AssetValidationError("policy_top_k_below_max_selected")
         if self.bm25_k1 <= 0 or not 0 <= self.bm25_b <= 1:
             raise AssetValidationError("policy_bm25_parameters_invalid")
         if self.bm25_scale <= 0 or not -1 <= self.dense_floor < 1:
@@ -268,6 +270,36 @@ class RetrievalResult:
     selected: tuple[LoadedSkill, ...]
     candidates: tuple[SkillCandidate, ...]
     fallback_reason: str | None
+
+
+def select_ranked_skill_ids(
+    ranked: Sequence[tuple[float, str, float]],
+    *, min_dense: float, min_score: float, min_margin: float, max_selected: int,
+) -> tuple[tuple[str, ...], str | None]:
+    """Choose the smallest relevant group separated from the remaining candidates.
+
+    Rows are (fused score, skill ID, dense score), sorted by descending score.
+    The margin separates the selected group from the first excluded skill;
+    related skills inside that group do not have to defeat one another.
+    Inspect the full ranking so the selection cap cannot hide an ambiguous tie.
+    """
+    if not ranked:
+        return (), "no_candidates"
+    if ranked[0][2] < min_dense:
+        return (), "dense_below_minimum"
+    if ranked[0][0] < min_score:
+        return (), "fused_below_minimum"
+    count = 0
+    for index, (score, _, dense) in enumerate(ranked[:max_selected]):
+        if dense < min_dense or score < min_score:
+            break
+        outside_score = ranked[index + 1][0] if index + 1 < len(ranked) else 0.0
+        if score - outside_score >= min_margin:
+            count = index + 1
+            break
+    if not count:
+        return (), "margin_below_minimum"
+    return tuple(row[1] for row in ranked[:count]), None
 
 
 def sha256_file(path: Path) -> str:
@@ -519,20 +551,18 @@ class HybridSkillRetriever:
             ))
         candidates.sort(key=lambda item: (-item.fused_score, item.skill_id))
         top_candidates = tuple(candidates[:policy.top_k])
-        if not top_candidates:
-            return RetrievalResult((), (), "no_candidates")
-        top = top_candidates[0]
-        second_score = top_candidates[1].fused_score if len(top_candidates) > 1 else 0.0
-        if top.embedding_score < policy.min_dense:
-            return RetrievalResult((), top_candidates, "dense_below_minimum")
-        if top.fused_score < policy.min_score:
-            return RetrievalResult((), top_candidates, "fused_below_minimum")
-        if top.fused_score - second_score < policy.min_margin:
-            return RetrievalResult((), top_candidates, "margin_below_minimum")
-        entry = registry.entry(top.skill_id)
-        if entry is None:
-            raise AssetValidationError("selected_skill_missing")
-        return RetrievalResult((entry.load(),), top_candidates, None)
+        selected_ids, reason = select_ranked_skill_ids(
+            tuple((item.fused_score, item.skill_id, item.embedding_score) for item in candidates),
+            min_dense=policy.min_dense, min_score=policy.min_score,
+            min_margin=policy.min_margin, max_selected=policy.max_selected,
+        )
+        loaded = []
+        for skill_id in selected_ids:
+            entry = registry.entry(skill_id)
+            if entry is None:
+                raise AssetValidationError("selected_skill_missing")
+            loaded.append(entry.load())
+        return RetrievalResult(tuple(loaded), top_candidates, reason)
 
 
 def skill_source_digest(skills_root: Path) -> str:

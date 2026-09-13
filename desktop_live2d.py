@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import base64
+from io import BytesIO
 import os
 import socket
 import subprocess
@@ -19,6 +21,8 @@ from pathlib import Path
 import webview
 
 from desktop_port_selection import choose_available_backend_port
+from desktop_window_geometry import normalize_window_size
+from desktop_window_resize import WindowResizeController, native_rect, set_native_rect
 
 INTERACTIVE_TEST_MODE = "--test-mode" in sys.argv
 if INTERACTIVE_TEST_MODE and (
@@ -199,6 +203,17 @@ def _move_native_window(window, x: int, y: int) -> int:
     return handle
 
 
+def _resize_native_window(window, width: int, height: int) -> None:
+    if sys.platform != "win32":
+        window.resize(width, height)
+        return
+    handle = _native_window_handle(window)
+    if not handle:
+        raise RuntimeError("native_window_unavailable")
+    rect, scale = native_rect(handle)
+    set_native_rect(handle, (rect[0], rect[1], width * scale, height * scale))
+
+
 def _set_window_topmost(window, enabled: bool) -> int:
     """Toggle topmost through Win32; WinForms.TopMost can deadlock from a JS API thread."""
 
@@ -257,6 +272,7 @@ def open_loopback_request(request: str | urllib.request.Request, timeout: float)
 class UserLive2DApi:
     def __init__(self, port: int) -> None:
         self.port = port
+        self.window_resize = WindowResizeController()
 
     def closeApp(self) -> None:
         if webview.windows:
@@ -279,9 +295,10 @@ class UserLive2DApi:
         if not webview.windows:
             return {"ok": False}
         window = webview.windows[0]
-        width = int(settings.get("windowWidth") or window.width)
-        height = int(settings.get("windowHeight") or window.height)
-        window.resize(width, height)
+        width, height = normalize_window_size(
+            int(settings.get("windowWidth") or window.width),
+            int(settings.get("windowHeight") or window.height), settings.get("layoutMode"))
+        _resize_native_window(window, width, height)
         try:
             enabled = bool(settings.get("alwaysOnTop", True))
             handle = _set_window_topmost_with_retry(window, enabled)
@@ -300,6 +317,23 @@ class UserLive2DApi:
         try:
             handle = _set_window_topmost_with_retry(window, bool(enabled))
             return {"ok": True, "onTop": bool(enabled), "nativeHandle": f"0x{handle:x}" if handle else ""}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
+    def beginWindowResize(self, edge: str, mode: str, screenX: float, screenY: float) -> dict:
+        if sys.platform != "win32" or not webview.windows:
+            return {"ok": False, "error": "window_resize_unavailable"}
+        try:
+            handle = _native_window_handle(webview.windows[0])
+            if not handle:
+                raise RuntimeError("native_window_unavailable")
+            return self.window_resize.begin(handle, edge, mode, screenX, screenY)
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
+    def updateWindowResize(self, token: str, screenX: float, screenY: float, finish: bool = False) -> dict:
+        try:
+            return self.window_resize.update(token, screenX, screenY, finish)
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
@@ -355,7 +389,24 @@ class UserLive2DApi:
         )
         if not result:
             return {"ok": False}
-        return {"ok": True, "path": result[0]}
+        try:
+            from PIL import Image, ImageOps
+
+            path = Path(result[0])
+            if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                return {"ok": False, "error": "请选择 PNG、JPG 或 WebP 图片"}
+            with Image.open(path) as original:
+                oriented = ImageOps.exif_transpose(original)
+                transparent = "A" in oriented.getbands() or "transparency" in oriented.info
+                preview = oriented.convert("RGBA" if transparent else "RGB")
+                preview.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+                buffer = BytesIO()
+                preview.save(buffer, format="PNG" if transparent else "JPEG", quality=88)
+            mime = "image/png" if transparent else "image/jpeg"
+            return {"ok": True, "path": str(path),
+                    "previewUrl": f"data:{mime};base64," + base64.b64encode(buffer.getvalue()).decode("ascii")}
+        except (OSError, ValueError) as error:
+            return {"ok": False, "error": f"图片无法读取：{error}"}
 
     def openExternalUrl(self, url: str) -> dict:
         try:
@@ -403,6 +454,8 @@ class UserLive2DApi:
 class Live2DApi(UserLive2DApi):
 
     def openLive2DExpressionCaptureDirectory(self) -> dict:
+        if RELEASE_MODE:
+            return {"ok": False, "error": "not_available_in_release"}
         target = (DATA_DIR / "runtime" / "live2d-expression-captures").resolve()
         try:
             target.mkdir(parents=True, exist_ok=True)
@@ -415,6 +468,8 @@ class Live2DApi(UserLive2DApi):
             return {"ok": False, "path": str(target), "error": str(error)}
 
     def openDeveloperWindow(self) -> dict:
+        if RELEASE_MODE:
+            return {"ok": False, "error": "not_available_in_release"}
         url = f"http://{HOST}:{self.port}/live2d/?dev=1"
         webview.create_window(
             "AMADEUS Developer",
@@ -434,6 +489,8 @@ class Live2DApi(UserLive2DApi):
         return {"ok": True, "url": url}
 
     def chooseMemoryFile(self) -> dict:
+        if RELEASE_MODE:
+            return {"ok": False, "error": "not_available_in_release"}
         if not webview.windows:
             return {"ok": False}
         result = webview.windows[0].create_file_dialog(
@@ -795,12 +852,17 @@ def main() -> None:
     url = f"http://{HOST}:{port}/live2d/{'?dev=1' if dev_mode else '?test=1' if test_mode else ''}"
     settings = load_settings()
 
+    initial_width, initial_height = normalize_window_size(
+        max(760, int(settings.get("windowWidth") or 520)) if dev_mode else int(settings.get("windowWidth") or 520),
+        max(860, int(settings.get("windowHeight") or 760)) if dev_mode else int(settings.get("windowHeight") or 760),
+        settings.get("layoutMode"),
+    )
     window = webview.create_window(
         "AMADEUS Live2D DEV" if dev_mode else "AMADEUS Live2D TEST" if test_mode else "AMADEUS Live2D",
         url=url,
         js_api=UserLive2DApi(port) if release_mode else Live2DApi(port),
-        width=max(760, int(settings.get("windowWidth") or 520)) if dev_mode else int(settings.get("windowWidth") or 520),
-        height=max(860, int(settings.get("windowHeight") or 760)) if dev_mode else int(settings.get("windowHeight") or 760),
+        width=initial_width,
+        height=initial_height,
         min_size=(360, 520),
         frameless=True,
         easy_drag=False,
@@ -813,6 +875,7 @@ def main() -> None:
 
     def apply_initial_topmost() -> None:
         try:
+            _resize_native_window(window, initial_width, initial_height)
             handle = _set_window_topmost_with_retry(window, bool(settings.get("alwaysOnTop", True)))
             write_server_log(
                 "desktop_topmost_initialized",

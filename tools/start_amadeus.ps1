@@ -28,7 +28,7 @@ if (-not $ready) {
     $previousErrorAction = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrap -Backend $Backend -NoLaunch
+        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $bootstrap -Backend $Backend -NoLaunch
         $preparationExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorAction

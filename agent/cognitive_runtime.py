@@ -11,6 +11,7 @@ from urllib.parse import urldefrag, urlsplit, quote
 from agent.visual_grounding import build_visual_evidence_packet
 from agent.cognitive_tools import tool_plan_violations
 from agent.cognitive_outcome import claim_contract_for_evidence, success_criteria_catalog
+from agent.cognitive_state import belief_evidence_problem
 
 
 def evidence_url_key(value: Any) -> str:
@@ -42,7 +43,7 @@ _STRUCTURED_TOOL_FACT_FIELDS = {
                       "numerator", "denominator", "decimalApproximation"),
     "todo_search": ("targetRef", "resolution", "candidates", "count"),
     "todo_list": ("scope", "items", "count", "activeCount", "revision", "unseenCount"),
-    "todo_manage": ("task",),
+    "todo_manage": ("timeFacts", "task"),
     "bookmark_list": ("query", "items", "count"),
     "bookmark_manage": ("bookmark", "destinationKnowledge"),
     "list_directory": ("path", "entries", "truncated"),
@@ -273,15 +274,23 @@ def compact_packet(
         if item.get("sourceType") == "web" and stable in aliases:
             unique_evidence[index] = (stable, item, [ref, *[alias for alias in aliases if alias != stable]])
 
+    current_receipts = []
+    for ref, item, _aliases in unique_evidence:
+        contract = claim_contract_for_evidence(item, evidence_ref=ref, compact=True)
+        if contract["receiptPresent"] and not contract["historical"]:
+            current_receipts.append({"id": ref, "name": item.get("name") or (item.get("receipt") or {}).get("name"),
+                                     "resultStatus": contract["claimRequirements"]["tool_completion"]["required"]["resultStatus"]})
+
     def project_evidence(ref: str, item: Mapping[str, Any], aliases: list[str]) -> dict[str, Any]:
         claim_contract = claim_contract_for_evidence(item, evidence_ref=ref, compact=True)
+        belief_problem = belief_evidence_problem(item)
         return {
             "id": ref, "ok": bool(item.get("ok")), "sourceType": item.get("sourceType"),
             "aliases": aliases,
             "authority": item.get("authority"),
             "actionReceipt": {key: value for key, value in (item.get("receipt", {}).get("actionReceipt") or {}).items()
                               if key in {"actionId", "actionGroupId", "retryOfActionId", "status", "requestedTarget", "resolvedTarget", "error",
-                                         "tool", "action", "taskId", "taskVersionBefore", "taskVersionAfter"}}
+                                         "tool", "action", "taskId", "taskVersionBefore", "taskVersionAfter", "timeFacts", "timeSpec"}}
                              if isinstance(item.get("receipt"), Mapping) else None,
             "executionStatus": item.get("executionStatus"),
             "attempted": ((item.get("receipt") or {}).get("attempted", item.get("executionStatus") != "not_attempted")
@@ -300,6 +309,8 @@ def compact_packet(
             "snippet": str(item.get("snippet") or "")[:500],
             "bodyError": str(item.get("bodyError") or "")[:240],
             "claimContract": claim_contract,
+            "beliefUpdateEligibility": {"allowed": belief_problem is None,
+                                        "reason": belief_problem[0] if belief_problem else "readable_evidence"},
         }
     return {
         "conversationId": state.get("conversationId"),
@@ -320,6 +331,7 @@ def compact_packet(
         "preferences": preferences,
         "experiences": deepcopy(active_experiences[-5:]),
         "evidence": [project_evidence(ref, item, aliases) for ref, item, aliases in unique_evidence[-12:]],
+        "currentToolReceipts": current_receipts,
     }
 
 

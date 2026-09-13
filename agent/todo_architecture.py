@@ -9,10 +9,12 @@ authority to route or authorize a write.  New semantic decisions use
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 import re
 from typing import Any, Literal, Mapping, Sequence
+
+from agent.schedule_time import normalize_time_spec
 
 
 TodoRequestKind = Literal["none", "query", "mutation"]
@@ -346,6 +348,7 @@ class TodoCommand:
     expected_version: int = 0
     commit_intent: bool = False
     provided_fields: tuple[str, ...] = ()
+    time_spec: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "TodoCommand":
@@ -390,6 +393,11 @@ class TodoCommand:
                 raise ValueError("todo_invalid_due_date") from None
         if due_at and due_date:
             raise ValueError("todo_conflicting_due_time")
+        time_spec = normalize_time_spec(value.get("timeSpec"))
+        if time_spec and (due_date or action not in {"create", "update"}):
+            raise ValueError("todo_conflicting_time_spec")
+        if time_spec.get("kind") == "existing_date" and action != "update":
+            raise ValueError("todo_time_existing_task_required")
         recurrence_rule = str(
             value.get("recurrenceRule") or value.get("recurrence_rule") or ""
         ).strip().lower()
@@ -409,6 +417,7 @@ class TodoCommand:
             "details": ("details",),
             "dueAt": ("dueAt", "due_at"),
             "dueDate": ("dueDate", "due_date"),
+            "timeSpec": ("timeSpec",),
             "timezone": ("timezone", "timezoneName"),
             "remindBeforeMinutes": (
                 "remindBeforeMinutes", "remind_before_minutes",
@@ -446,6 +455,7 @@ class TodoCommand:
             expected_version=max(0, expected_version),
             commit_intent=bool(value.get("commitIntent") or value.get("commit_intent")),
             provided_fields=provided_fields,
+            time_spec=time_spec,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -468,9 +478,12 @@ class TodoCommand:
             "snoozeMinutes": self.snooze_minutes,
             "snoozeUntil": self.snooze_until,
             "scope": self.scope,
+            "timeSpec": self.time_spec,
         }
         if self.action == "create":
             result.update(values)
         else:
             result.update({key: values[key] for key in self.provided_fields})
+        if not self.time_spec:
+            result.pop("timeSpec", None)
         return result

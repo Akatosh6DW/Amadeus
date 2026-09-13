@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Literal, Mapping
 
-from .proactive_control import ProactiveDirective, infer_explicit_proactive_directive
+from .proactive_control import ProactiveDirective, PROACTIVE_DIRECTIVE_INSTRUCTION
 from .fingerprints import runtime_fingerprint
 
 
@@ -345,7 +345,7 @@ def interpret_utterance(
         requires_answer=requires_answer,
         answer_target=answer_target,
         confidence=confidence,
-        proactive_directive=infer_explicit_proactive_directive(semantic or original),
+        proactive_directive="unchanged",
     )
 
 
@@ -1013,18 +1013,7 @@ def turn_contract_prompt(
 ) -> str:
     """Render a concise per-turn contract immediately before the user message."""
 
-    proactive_contract = (
-        {"proactiveDirectiveRequired": interpretation.proactive_directive}
-        if interpretation.proactive_directive != "unchanged"
-        else {"proactiveDirectivePolicy": "model_decides_from_current_user_intent"}
-    )
-    proactive_instruction = (
-        "proactiveDirectiveRequired 是本轮结束后的强制主动联系状态；输出 proactiveDirective 必须与它逐字一致。"
-        if interpretation.proactive_directive != "unchanged"
-        else
-        "proactiveDirectivePolicy 要求根据当前用户整句语义判断：用户希望助手保持安静并由用户稍后回来时输出 "
-        "pause_until_next_user_message，明确恢复联系时输出 resume；只是谈到等待、忙碌或时间时输出 unchanged。"
-    )
+    proactive_contract = {"proactiveDirectivePolicy": "model_decides_from_current_user_intent"}
     return "\n".join([
         "[Turn Contract：本轮生成前已确定，必须优先满足]",
         json.dumps({
@@ -1037,7 +1026,7 @@ def turn_contract_prompt(
         "required_acts 是本轮不可省略的交流结果；optional_acts 只能在完成必答结果后自然加入。",
         "人格吐槽、昵称反应、害羞或调侃绝不能替代 required_acts。",
         "第一条可见中文及其日语发声稿必须覆盖 first_visible_must_cover，并且脱离任何未显示前文也能独立成立。",
-        proactive_instruction,
+        PROACTIVE_DIRECTIVE_INSTRUCTION,
         "输出 completedActs、standalone、dependsOnUndeliveredPrefix、turnComplete；只有真正完成合同时才能声明完成。",
     ])
 

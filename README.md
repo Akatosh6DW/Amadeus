@@ -13,7 +13,7 @@ git clone --depth 1 https://github.com/Akatosh6DW/Amadeus.git
 
 第一次需要联网等待下载：主要环境、基础模型和声音包合计超过 9 GB；没有微软 C++ 构建工具时还会自动安装该工具及 Windows SDK，下载量和占用空间会进一步增加，Windows 可能要求管理员授权。请保留启动窗口，完成后在“设置 → API”填写自己的 API Key。下载失败时，处理提示中的问题后重新双击 `start.cmd`，程序会检查并补齐缺失内容。完整的已下载资源会复用；未完成的文件可能需要重新下载。若微软安装器要求重启，程序会提示你重启后再运行，不会自动重启电脑。
 
-主仓库与声音资源仓库公开后，未登录 GitHub 的用户才能直接下载。单独的拉取动作只下载源码，自动准备在第一次启动时执行。
+上面的匿名 `git clone` 适用于主仓库公开的情况。仓库仍为私有时，先用 `gh auth login --hostname github.com` 登录或配置 Git Credential Manager，再执行拉取；资源安装器会复用已有的 GitHub 凭据。
 
 ## 尚未下载源码：一条命令安装并启动
 
@@ -25,7 +25,20 @@ irm https://raw.githubusercontent.com/Akatosh6DW/Amadeus/main/install.ps1 | iex
 
 安装目录默认为 `%USERPROFILE%\Apps\Amadeus`。该命令自动下载源码、安装缺失环境，从 [AmadeusVoice](https://github.com/Akatosh6DW/AmadeusVoice/releases/tag/runtime-assets-20260910) 下载并校验资源，然后启动界面。首次启动只需在“设置 → API”填写自己的 API Key。
 
-主仓库和 AmadeusVoice 的资源 Release 均公开后，这条命令才可供所有人直接使用。脚本需要访问 GitHub、Conda/Python 软件源、GPT-SoVITS 上游资源源；对话服务由用户自己的模型接口提供。
+主仓库和 AmadeusVoice 的资源 Release 均公开后，这条命令可匿名使用。脚本需要访问 GitHub、Conda/Python 软件源、GPT-SoVITS 上游资源源；对话服务由用户自己的模型接口提供。
+
+仓库仍为私有时，匿名 `irm` 会得到访问错误。用已登录的 GitHub CLI 先取出安装脚本，再以非交互方式执行：
+
+```powershell
+gh auth login --hostname github.com
+$installer = Join-Path $env:TEMP "amadeus-install.ps1"
+$scriptText = gh api --method GET "repos/Akatosh6DW/Amadeus/contents/install.ps1?ref=main" --header "Accept: application/vnd.github.raw+json"
+[IO.File]::WriteAllText($installer, ($scriptText -join "`n"), [Text.UTF8Encoding]::new($false))
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -Backend auto
+Remove-Item -LiteralPath $installer -Force
+```
+
+`install.ps1` 会依次读取当前进程的 `GH_TOKEN`/`GITHUB_TOKEN`、`gh auth token` 和 Git Credential Manager；凭据只在内存中使用，不写入源码、URL、日志或配置，也不会随 GitHub 重定向发往其他站点。资源 Release 公开后可继续匿名下载。
 
 安装中途网络失败时，重新执行同一命令即可继续检查和补齐。已有用户数据不会随资源重装被删除。
 
@@ -33,7 +46,7 @@ irm https://raw.githubusercontent.com/Akatosh6DW/Amadeus/main/install.ps1 | iex
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/Akatosh6DW/Amadeus/main/install.ps1 -OutFile install-amadeus.ps1
-powershell -ExecutionPolicy Bypass -File .\install-amadeus.ps1 -InstallDirectory D:\Apps\Amadeus -Backend cpu
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install-amadeus.ps1 -InstallDirectory D:\Apps\Amadeus -Backend cpu
 ```
 
 已经拿到源码时直接双击 `start.cmd`。原 `deploy.cmd` 保留为手动部署入口。
@@ -53,6 +66,23 @@ powershell -ExecutionPolicy Bypass -File .\install-amadeus.ps1 -InstallDirectory
 自动检测可用 NVIDIA 驱动，满足 CUDA 12.8 条件时选择 GPU，否则选择 CPU。不要求另外安装 CUDA Toolkit。CPU 能运行语音，但通常更慢。建议至少 16 GB 内存并预留 40 GB 磁盘空间。
 
 图像理解使用当前对话模型的原图输入能力。部署不下载 Florence-2 等旧版视觉模型，也不创建旧视觉模型环境。小型 BGE 模型用于人格文本检索，与图像识别无关。
+
+部署环境和下载缓存默认都在项目目录内：`.tools/` 保存 Miniforge、Git、Rhubarb 等工具，`.conda/` 保存桌面与语音环境，`.sources/` 保存固定版本的 GPT-SoVITS，`.runtime-assets/` 保存已安装资源，`.cache/deployment-assets/` 保存可复用压缩包，`.tmp/bootstrap/` 保存安装临时文件。脚本会复用系统中已存在的 Conda；需要完全隔离时可让它使用项目内的 `.tools/miniforge`，不要把项目目录指向共享环境。
+
+## 源码开发环境
+
+源码运行使用项目环境中的解释器，不依赖系统 Python：桌面代码使用 `.\.conda\amadeus-desktop\python.exe`，语音服务使用 `.\.conda\gpt-sovits\python.exe`。可以直接调用解释器，或按需激活对应环境：
+
+```powershell
+conda activate .\.conda\amadeus-desktop
+python -X utf8 server.py
+conda deactivate
+conda activate .\.conda\gpt-sovits
+python -X utf8 tools\gpt_sovits_tts_server.py
+conda deactivate
+```
+
+首次准备源码运行环境使用 `tools\bootstrap_deploy.ps1 -Backend auto -NoLaunch`；它创建可复用的项目环境并校验部署资源。开发时保持桌面和语音解释器分开，避免把语音依赖安装进桌面环境；`conda run --prefix .\.conda\amadeus-desktop ...` 可在脚本或编辑器中无需激活环境直接运行。
 
 ## 使用与检查
 

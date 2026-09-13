@@ -280,7 +280,7 @@ function Ensure-VoiceEnvironment {
     Invoke-Native -FilePath $python -Arguments @("-m", "pip", "install", "--index-url", $torchIndex, "torch==$($environment.torch.version)", "torchaudio==$($environment.torch.version)")
     Invoke-Native -FilePath $Conda -Arguments @(
         "run", "--no-capture-output", "--prefix", $voiceEnv,
-        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
         "-File", (Join-Path $gptRoot "install.ps1"),
         "-Device", $device,
         "-Source", $environment.gptSovits.modelSource

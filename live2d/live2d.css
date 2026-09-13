@@ -71,6 +71,18 @@ body::before {
   touch-action: none;
 }
 
+.window-resize-handle { display: none; position: fixed; z-index: 10000; touch-action: none; user-select: none; }
+.native-window-resizable .window-resize-handle { display: block; }
+.window-resize-handle[data-window-resize="n"] { top: 0; left: 14px; right: 14px; height: 7px; cursor: ns-resize; }
+.window-resize-handle[data-window-resize="s"] { bottom: 0; left: 14px; right: 14px; height: 7px; cursor: ns-resize; }
+.window-resize-handle[data-window-resize="w"] { left: 0; top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }
+.window-resize-handle[data-window-resize="e"] { right: 0; top: 14px; bottom: 14px; width: 7px; cursor: ew-resize; }
+.window-resize-handle[data-window-resize="nw"] { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.window-resize-handle[data-window-resize="ne"] { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.window-resize-handle[data-window-resize="sw"] { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.window-resize-handle[data-window-resize="se"] { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.window-resizing, .window-resizing * { cursor: var(--window-resize-cursor) !important; user-select: none !important; }
+
 .window-drag-strip::after {
   content: "";
   position: absolute;
@@ -3129,6 +3141,62 @@ body.dev-mode.dev-panel-collapsed .hud {
 .background-file-row.hidden {
   display: none;
 }
+
+.background-controls {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.background-editor { display: grid; gap: 10px; }
+.background-editor.hidden { display: none; }
+.background-preview-stage {
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  background: #080e12;
+  border: 1px solid rgba(236, 146, 45, 0.24);
+  border-radius: 8px;
+}
+.background-preview {
+  position: relative;
+  overflow: hidden;
+  max-width: 100%;
+  background: #071011;
+  touch-action: none;
+  user-select: none;
+  cursor: default;
+  outline-offset: 4px;
+}
+.background-preview:focus-visible { outline: 2px solid var(--cyan); }
+.background-preview.dragging, .background-preview.dragging .current { cursor: grabbing; }
+.background-preview img {
+  position: absolute;
+  display: block;
+  max-width: none;
+  pointer-events: none;
+  user-select: none;
+}
+.background-preview::after { content: ""; position: absolute; inset: 0; background: rgba(2, 6, 6, 0.18); pointer-events: none; }
+.background-crop-guide { z-index: 1; }
+.background-crop-guide { position: absolute; pointer-events: none; box-sizing: border-box; }
+.background-crop-guide.current { z-index: 2; border: 1px solid rgba(255, 255, 255, 0.8); pointer-events: auto; cursor: grab; }
+.background-crop-guide.narrow { border: 2px dashed #6ee7dc; }
+.background-crop-guide.wide { border: 2px dashed #ffb567; }
+.background-guide-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; }
+.background-guide-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 22px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-top: 2px dashed currentColor;
+}
+.background-guide-legend .narrow { color: #6ee7dc; }
+.background-guide-legend .wide { color: #ffb567; }
 
 .field output {
   justify-self: end;
