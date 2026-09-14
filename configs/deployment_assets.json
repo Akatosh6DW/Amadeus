@@ -1,12 +1,12 @@
 {
   "formatVersion": 2,
-  "resourceRepository": "Akatosh6DW/AmadeusVoice",
+  "resourceRepository": "Akatosh6DW/Amadeus",
   "bundles": {
     "voice": {
       "version": "20260910",
       "assetName": "amadeus-voice-v7-v6-20260910.zip",
       "target": ".runtime-assets/voice",
-      "url": "https://github.com/Akatosh6DW/AmadeusVoice/releases/download/runtime-assets-20260910/amadeus-voice-v7-v6-20260910.zip",
+      "url": "https://github.com/Akatosh6DW/Amadeus/releases/download/runtime-assets-20260910/amadeus-voice-v7-v6-20260910.zip",
       "bytes": 598464449,
       "sha256": "72bb0a047e05666c6fc819356190bc208f72cf07992017799dbc3597ad9d98de",
       "files": {
@@ -296,7 +296,7 @@
       "version": "20260910",
       "assetName": "amadeus-context-runtime-20260910.zip",
       "target": ".",
-      "url": "https://github.com/Akatosh6DW/AmadeusVoice/releases/download/runtime-assets-20260910/amadeus-context-runtime-20260910.zip",
+      "url": "https://github.com/Akatosh6DW/Amadeus/releases/download/runtime-assets-20260910/amadeus-context-runtime-20260910.zip",
       "bytes": 16370934,
       "sha256": "e5a626d2308a85faaac20ef5a5e81238df90194cca1070c1b657df7fc651b914",
       "files": {

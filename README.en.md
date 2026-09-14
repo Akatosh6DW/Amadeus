@@ -39,7 +39,7 @@ cd Amadeus
 .\start.cmd
 ```
 
-On the first run, `start.cmd` automatically downloads and installs the required environments and voice assets, then starts the desktop interface. Use the same file for later launches or to retry an interrupted download. For development, select `.conda/amadeus-desktop/python.exe` as the Python interpreter in your editor.
+On the first run, `start.cmd` installs the required environments from their package sources and downloads voice and persona-retrieval assets from this repository's Releases, then starts the desktop interface. Live2D models are included with the source. Use the same file for later launches or to retry an interrupted download. For development, select `.conda/amadeus-desktop/python.exe` as the Python interpreter in your editor.
 
 ## Usage notes
 

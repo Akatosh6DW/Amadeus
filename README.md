@@ -39,7 +39,7 @@ cd Amadeus
 .\start.cmd
 ```
 
-首次运行 `start.cmd` 会自动下载安装所需环境与声音资源，然后启动桌面界面。以后双击同一个文件即可；下载中断时重新运行。开发时在编辑器中选择 `.conda/amadeus-desktop/python.exe` 作为 Python 解释器。
+首次运行 `start.cmd` 会从依赖软件源安装所需环境，并从本仓库的 Releases 下载声音与人格检索资源，然后启动桌面界面。Live2D 模型随源码提供。以后双击同一个文件即可；下载中断时重新运行。开发时在编辑器中选择 `.conda/amadeus-desktop/python.exe` 作为 Python 解释器。
 
 ## 使用提示
 
