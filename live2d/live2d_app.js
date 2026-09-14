@@ -299,6 +299,9 @@ let eyeDrift = { x: 0, y: 0, nextAt: performance.now() + 900 };
 let shyGazeAwayDirection = Math.random() < 0.5 ? -1 : 1;
 let availableVoices = [];
 let settings = { ...DEFAULT_SETTINGS };
+// Verification is session-only; saved credentials alone do not prove connectivity.
+let apiVerification = "unverified";
+let apiConfigurationRevision = 0;
 let developerModelTransforms = loadDeveloperModelTransforms();
 let state = loadState();
 let connectionStatus = "LOCAL";
@@ -2135,14 +2138,11 @@ async function prepareStartupGreeting(voiceReadyPromise = Promise.resolve(null))
   } catch (error) {
     if (greetingGeneration !== startupGreetingGeneration || !startupGreetingPending) return null;
     console.warn("startup greeting preparation failed", error);
-    preparedStartupGreeting = {
-      ...startupGreetingForCurrentTime(),
-      source: "local-startup-fallback",
-      startupFallbackReason: "startup_greeting_request_failed",
-      startupFallbackNotice: `启动问候连接失败，当前显示的是本地备用问候。${connectionErrorSummary(error)}`,
-    };
-    await prepareStartupGreetingSpeech(preparedStartupGreeting, voiceReadyPromise, greetingGeneration);
-    return preparedStartupGreeting;
+    // A failed request may have already persisted a pause on the server.
+    // Never manufacture unsolicited speech without a successful decision.
+    startupGreetingPending = false;
+    preparedStartupGreeting = null;
+    return null;
   } finally {
     startupGreetingPreparing = false;
   }
@@ -2340,6 +2340,7 @@ async function updateProactiveInteraction(now = performance.now()) {
     }
     if (data.suppressed) {
       applyProactiveControl(data.proactiveControl);
+      if (!proactiveOutreachPaused()) scheduleNextProactiveInteraction(performance.now(), 0);
       return;
     }
     if (greeting && data.startupFallbackReason) {
@@ -2389,21 +2390,18 @@ async function proactiveEventFor(greeting = false, willSulk = false, signal = nu
   if (greeting) {
     const prepared = preparedStartupGreeting;
     preparedStartupGreeting = null;
-    return prepared || startupGreetingForCurrentTime();
+    return prepared || null;
   }
   if (willSulk) {
+    // End an unanswered sequence silently; a local sign-off bypassed the
+    // model's availability decision and could wake a sleeping user.
+    proactiveState.phase = "sulking";
+    nextProactiveInteractionAt = 0;
     return {
-      reply: "……算了，你先忙吧。需要我的时候再来找我。我也要回去做实验了。",
-      spokenTextJa: "……もういいわ。先に用事を済ませて。必要になったら呼んで。私も実験に戻るから。",
-      emotion: "annoyed",
-      gesture: "tilt",
-      voiceStyle: "soft",
-      voiceTone: "cold",
-      emotionIntensity: 0.84,
-      eyeContact: 0.32,
-      gazeX: -0.26,
-      holdMs: 120000,
-      fadeMs: 22000,
+      ok: true,
+      suppressed: true,
+      reason: "unanswered_sequence_complete",
+      proactiveControl: proactiveState.control,
     };
   }
   const recentProactiveTexts = state.messages
@@ -5678,6 +5676,17 @@ async function saveSettings(update, message = "设置已保存", applyWindow = f
     throw new Error(data?.error || `HTTP ${response.status}`);
   }
   settings = normalizeSettings({ ...optimisticSettings, ...(data.settings || {}) });
+  const apiChanged = ["apiEndpoint", "apiModel", "apiNetworkMode", "apiProxyUrl", "useResponseFormat"]
+    .some(key => Object.hasOwn(update, key) && update[key] !== previousSettings[key])
+    || (Object.hasOwn(update, "apiKey") && update.apiKey !== "__KEEP__");
+  if (apiChanged) {
+    apiConfigurationRevision += 1;
+    setApiVerification("unverified");
+    if (dom.apiTestStatus) {
+      dom.apiTestStatus.textContent = "API 设置已更改，请保存后测试连接。";
+      dom.apiTestStatus.classList.remove("error");
+    }
+  }
   applySettingsToUi();
   fillSettingsForm();
   if (applyWindow && window.pywebview?.api?.applyWindowSettings) {
@@ -6644,12 +6653,8 @@ function applySettingsToUi() {
   setChatCollapsed(settings.hudCollapsed, { scroll: false });
   document.body.classList.toggle("full-layout", settings.layoutMode === "full");
   document.body.classList.toggle("lite-layout", settings.layoutMode !== "full");
-  connectionStatus = settings.modelConfigured ? "API READY" : "LOCAL";
-  if (dom.settingsStatus) {
-    dom.settingsStatus.textContent = settings.modelConfigured
-      ? `${settings.apiModel} / API READY`
-      : "LOCAL SIMULATION";
-  }
+  connectionStatus = apiConnectionLabel();
+  renderApiVerification();
   updateModelStateLabel();
   updatePinWindowButton();
   fitModel();
@@ -6729,23 +6734,29 @@ async function saveApiSettings() {
 }
 
 async function testApiConnection() {
+  const revision = apiConfigurationRevision;
   dom.apiTestStatus.textContent = "正在连接 DeepSeek...";
   try {
     const response = await fetch("/api/test-api", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     const data = await response.json();
+    if (revision !== apiConfigurationRevision) return;
+    const verified = response.ok && data.ok === true;
     const transport = data.transport && typeof data.transport === "object" ? data.transport : null;
     const routeSummary = transport
       ? `；路线 ${transport.networkMode || "auto"} / ${transport.proxyConfigured ? `代理(${transport.proxySource || "configured"})` : "直连"}`
       : "";
     dom.apiTestStatus.textContent = `${data.message || (data.ok ? "API 连接正常" : "API 连接失败")}${routeSummary}`;
-    dom.apiTestStatus.classList.toggle("error", !data.ok);
-    connectionStatus = data.ok ? "API READY" : "API ERROR / TEST FAILED";
+    dom.apiTestStatus.classList.toggle("error", !verified);
+    setApiVerification(verified ? "verified" : data.code === "http_401" ? "invalid" : "failed");
+    connectionStatus = apiConnectionLabel();
     updateModelStateLabel();
   } catch (error) {
+    if (revision !== apiConfigurationRevision) return;
     const detail = connectionErrorSummary(error);
     dom.apiTestStatus.textContent = `测试失败：${detail}`;
     dom.apiTestStatus.classList.add("error");
-    connectionStatus = "API ERROR / TEST FAILED";
+    setApiVerification("failed");
+    connectionStatus = apiConnectionLabel();
     updateModelStateLabel();
   }
 }
@@ -7566,7 +7577,7 @@ async function clearMemory() {
     state.memories = [];
     state.memoryRecords = Array.isArray(data.memoryRecords) ? data.memoryRecords : [];
     refreshMemoryEditor(true);
-    updateConnectionStatus({ source: settings.modelConfigured ? "api" : "local", memories: [] });
+    updateConnectionStatus({ memories: [] });
     persist();
     toast("长期记忆已清除");
   } catch (error) {
@@ -11544,8 +11555,27 @@ function mouthShapeForChar(char) {
   return { open: 0.34, form: 0.02 };
 }
 
+function apiConnectionLabel() {
+  if (!settings.modelConfigured) return "API 未配置";
+  return { unverified: "API 已填写，未验证", verified: "API 连接已验证", invalid: "API Key 验证失败", failed: "API 连接失败" }[apiVerification];
+}
+
+function renderApiVerification() {
+  if (dom.settingsStatus) dom.settingsStatus.textContent = `${settings.apiModel || ""} / ${apiConnectionLabel()}`;
+}
+
+function setApiVerification(value) {
+  apiVerification = value;
+  renderApiVerification();
+}
+
 function updateConnectionStatus(data = {}) {
   const source = String(data.source || "").toLowerCase();
+  if (data.connectionState === "failed") {
+    setApiVerification(data.connectionCode === "upstream_http_401" ? "invalid" : "failed");
+  } else if (source === "api" && !data.connectionState) {
+    setApiVerification("verified");
+  }
   const memoryCount = Array.isArray(data.memories) ? data.memories.length : state.memories.length;
   if (data.connectionState === "startup-greeting-fallback") {
     connectionStatus = `STARTUP GREETING LOCAL / MEM ${memoryCount}`;
@@ -11554,12 +11584,12 @@ function updateConnectionStatus(data = {}) {
   } else if (data.connectionState === "backend-failed") {
     connectionStatus = `LOCAL BACKEND LOST / MEM ${memoryCount}`;
   } else if (data.connectionState === "backend-restored") {
-    connectionStatus = `${settings.modelConfigured ? "API READY" : "LOCAL"} / MEM ${memoryCount}`;
+    connectionStatus = `${apiConnectionLabel()} / MEM ${memoryCount}`;
   } else if (data.connectionState === "reconnecting") {
     connectionStatus = `API RECONNECT ${data.attempt || 1}/${data.attempts || 3} / MEM ${memoryCount}`;
   } else if (data.connectionState === "failed") {
     const code = String(data.connectionCode || "CONNECTION").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24);
-    connectionStatus = `API ERROR ${code || "CONNECTION"} / MEM ${memoryCount}`;
+    connectionStatus = `${apiConnectionLabel()} (${code || "CONNECTION"}) / MEM ${memoryCount}`;
   } else if (data.toolUsed) {
     const toolState = data.toolStatus === "failed" ? "FAILED" : "OK";
     connectionStatus = `TOOL ${String(data.toolUsed).toUpperCase()} ${toolState} / MEM ${memoryCount}`;
@@ -11568,7 +11598,7 @@ function updateConnectionStatus(data = {}) {
   } else if (source === "tool") {
     connectionStatus = `TOOL ${data.toolUsed || "LOCAL"} / MEM ${memoryCount}`;
   } else if (settings.modelConfigured) {
-    connectionStatus = `API READY / MEM ${memoryCount}`;
+    connectionStatus = `${apiConnectionLabel()} / MEM ${memoryCount}`;
   } else {
     connectionStatus = `LOCAL / MEM ${memoryCount}`;
   }
@@ -12245,6 +12275,7 @@ async function fetchChatUtteranceStream(payload, controller, playback) {
         const error = new Error(String(eventPayload.message || eventPayload.reason || "流式回答中断"));
         error.streamFallbackAllowed = Boolean(eventPayload.fallbackAllowed) && !hadUtterance;
         error.streamErrorType = String(eventPayload.errorType || eventPayload.reason || "stream_failed");
+        error.code = String(eventPayload.code || "");
         error.streamErrorStage = String(eventPayload.stage || "stream");
         error.connectionFailure = Boolean(eventPayload.connectionFailure);
         error.completedTools = Array.isArray(eventPayload.completedTools) ? eventPayload.completedTools : [];
@@ -12886,7 +12917,11 @@ async function requestConversationReply() {
     if (typedPipelineFailure) {
       const errorType = String(error.streamErrorType || "internal_pipeline_failed");
       const stage = String(error.streamErrorStage || "pipeline");
-      const message = completedTools.includes("open_browser")
+      const upstreamFailure = errorType === "upstream_http_failed";
+      if (upstreamFailure) updateConnectionStatus({ connectionState: "failed", connectionCode: error.code });
+      const message = upstreamFailure
+        ? `${completedTools.length ? "已有操作完成，但后续模型请求失败。" : ""}${detail}`
+        : completedTools.includes("open_browser")
         ? "网页已打开，但后续回复生成失败。"
         : completedTools.length > 0
         ? "已有操作成功完成，但后续回复生成失败。"
@@ -12896,8 +12931,6 @@ async function requestConversationReply() {
         ? "刚才引用的消息没有找到。可以把那句话直接引用过来，我再接着回答。"
         : errorType === "grounding_validation_failed"
         ? "我刚才没能确认自己的理解，所以先没有乱说。你愿意的话，我可以换个方式再试一次。"
-        : errorType === "upstream_http_failed"
-          ? "我刚才没能把这件事处理完。你要我再试一次吗？"
         : errorType === "upstream_protocol_failed"
           ? "我刚才的话没能完整接上。你可以让我再试一次。"
           : "我刚才没处理好这件事。你可以让我再试一次，或者再告诉我一下你想要的结果。";

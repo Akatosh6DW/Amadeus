@@ -114,7 +114,7 @@ from agent.cognitive_context import (
     prioritize_context_candidates,
     scope_allows_archive,
 )
-from agent.proactive_control import PROACTIVE_DIRECTIVES, PROACTIVE_DIRECTIVE_INSTRUCTION
+from agent.proactive_control import PROACTIVE_DIRECTIVES, PROACTIVE_DIRECTIVE_INSTRUCTION, OUTREACH_AVAILABILITY_INSTRUCTION
 from agent.discourse_reference import (
     DiscourseLedger,
     ReferenceResolution,
@@ -495,7 +495,7 @@ GENERIC_MEMORY_NOISE = {"什么", "干什么", "做什么", "怎么办", "不知
 
 UPSTREAM_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
 UPSTREAM_RETRY_DELAYS = (0.45, 1.2)
-UPSTREAM_BACKGROUND_PURPOSES = {"ambient_emotion", "proactive_generation"}
+UPSTREAM_BACKGROUND_PURPOSES = {"ambient_emotion", "proactive_generation", "proactive_availability"}
 COGNITIVE_BODY_READ_PURPOSES = frozenset({
     "cognitive_format_recovery",
     "cognitive_adaptation_recall",
@@ -619,6 +619,12 @@ def upstream_http_error_user_message(error: urllib.error.HTTPError) -> str:
     suffix = f"，错误类型 {provider_code}" if provider_code else ""
     if status == 400:
         return f"DeepSeek 拒绝了主对话请求（HTTP 400{suffix}），请求格式或模型上下文不兼容。"
+    if status == 401:
+        return "API Key 验证失败（HTTP 401）。服务商未接受当前密钥，请在设置中检查 API Key 和 Endpoint，保存后测试连接。"
+    if status == 402:
+        return "API 账户余额不足（HTTP 402），请检查服务商账户余额。"
+    if status == 403:
+        return "API 访问被拒绝（HTTP 403），请检查密钥的模型访问权限或服务商访问限制。"
     return f"DeepSeek 返回 HTTP {status}{suffix}。"
 
 
@@ -9391,6 +9397,7 @@ def apply_proactive_directive(
             str(pause_reason or "").strip()
             if str(pause_reason or "").strip() in {
                 "user_requested_silence",
+                "model_inferred_unavailability",
                 "unanswered_sequence_complete",
             }
             else "user_requested_silence"
@@ -16526,6 +16533,81 @@ def proactive_screen_observation_evidence(
     }
 
 
+def proactive_outreach_context_key(context: Mapping[str, Any]) -> tuple[Any, ...]:
+    """A background decision cannot outlive a newer user turn or conversation."""
+    latest_user = next((turn for turn in reversed(context.get("recentTurns") or [])
+                        if isinstance(turn, Mapping) and turn.get("user")), {})
+    return (
+        context.get("conversationId"), context.get("conversationEpoch"),
+        latest_user.get("turnId"), latest_user.get("at"), latest_user.get("user"),
+    )
+
+
+def apply_model_outreach_decision(
+    candidate: Mapping[str, Any], *, context_key: tuple[Any, ...],
+    observed_control: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Apply only a structured model decision, without emitting a chat turn."""
+    decision = str(candidate.get("outreachDecision") or "").strip().lower()
+    reason = str(candidate.get("outreachReason") or "").strip()[:500]
+    with CONVERSATION_LOCK:
+        context = read_conversation_context()
+        control = normalize_proactive_control(context.get("proactiveControl"))
+        stale = (proactive_outreach_context_key(context) != context_key
+                 or control != dict(observed_control))
+        if stale or control["status"] == "paused":
+            return {"ok": True, "suppressed": True,
+                    "reason": "proactive_context_changed", "proactiveControl": control}
+        if decision == "speak" and reason:
+            write_server_log("proactive_outreach_decision", decision=decision, reason=reason)
+            return None
+        if decision == "pause" and reason:
+            latest_user = next((turn for turn in reversed(context.get("recentTurns") or [])
+                                if isinstance(turn, Mapping) and turn.get("user")), {})
+            control = apply_proactive_directive(
+                context, "pause", user_initiated=False,
+                source_turn_id=str(latest_user.get("turnId") or ""),
+                source_user_message=str(latest_user.get("user") or ""),
+                pause_reason="model_inferred_unavailability",
+            )
+            write_conversation_context(context)
+        write_server_log("proactive_outreach_decision", decision=decision or "missing",
+                         reason=reason, suppressed=True, status=control["status"])
+        return {"ok": True, "suppressed": True, "proactiveControl": control,
+                "reason": "model_chose_silence" if decision == "pause" and reason
+                else "proactive_outreach_decision_invalid"}
+
+
+def assess_proactive_outreach(
+    settings: dict[str, Any], context: Mapping[str, Any], messages: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Decide availability before choosing topics, observing screens or writing speech."""
+    control = normalize_proactive_control(context.get("proactiveControl"))
+    context_key = proactive_outreach_context_key(context)
+    if not configured(settings):
+        return apply_model_outreach_decision({}, context_key=context_key, observed_control=control)
+    model_input = {"currentTime": now_iso(), "proactiveControl": proactive_control_for_model(context),
+                   "recentConversation": [{"role": item.get("role"), "content": str(item.get("content") or "")[:1600]}
+                                          for item in messages[-14:]]}
+    payload = {"model": settings["apiModel"], "temperature": 0, "max_tokens": 220,
+               "messages": [{"role": "system", "content": OUTREACH_AVAILABILITY_INSTRUCTION},
+                            {"role": "user", "content": json.dumps(model_input, ensure_ascii=False)}]}
+    if settings.get("useResponseFormat"):
+        payload["response_format"] = {"type": "json_object"}
+    if "deepseek.com" in settings["apiEndpoint"]:
+        payload["thinking"] = {"type": "disabled"}
+    try:
+        content = send_upstream_chat_payload(settings, payload, timeout=20, purpose="proactive_availability")
+        candidate = parse_json_object(content)
+    except Exception as error:
+        write_server_log("proactive_availability_failed", errorType=type(error).__name__)
+        candidate = {}
+    return apply_model_outreach_decision(
+        candidate if isinstance(candidate, dict) else {},
+        context_key=context_key, observed_control=control,
+    )
+
+
 def generate_proactive_interaction(body: dict[str, Any]) -> dict[str, Any]:
     """Generate one contextual proactive utterance; never select a local question bank."""
 
@@ -16574,6 +16656,9 @@ def generate_proactive_interaction(body: dict[str, Any]) -> dict[str, Any]:
                 messages.append({"role": "user", "content": str(turn["user"])[:1200]})
             if str(turn.get("assistant") or "").strip():
                 messages.append({"role": "assistant", "content": str(turn["assistant"])[:1600]})
+    suppression = assess_proactive_outreach(settings, context, messages)
+    if suppression is not None:
+        return suppression
     latest_user = next(
         (
             str(item.get("content") or "").strip()
@@ -16786,6 +16871,8 @@ def generate_proactive_interaction(body: dict[str, Any]) -> dict[str, Any]:
     ])
     prompt_input = {
         "mode": kind,
+        "currentTime": now_iso(),
+        "proactiveControl": proactive_control_for_model(context),
         "proactiveContext": {
             "exchangeStatus": exchange_status,
             "latestExchangeCompleted": exchange_status == "completed",
@@ -35477,6 +35564,19 @@ def generate_startup_greeting(body: dict[str, Any]) -> dict[str, Any]:
         }
     started = time.perf_counter()
     settings = load_settings()
+    recent_messages = [
+        {"role": role, "content": str(turn[key])}
+        for turn in (context.get("recentTurns") or [])[-8:] if isinstance(turn, Mapping)
+        for role, key in (("user", "user"), ("assistant", "assistant")) if turn.get(key)
+    ]
+    if not recent_messages:
+        recent_messages = [item for item in (body.get("messages") or [])
+                           if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
+                           and str(item.get("content") or "").strip()][-14:]
+    if any(item["role"] == "user" for item in recent_messages):
+        suppression = assess_proactive_outreach(settings, context, recent_messages)
+        if suppression is not None:
+            return suppression
     now = datetime.now().astimezone()
 
     def finalize_startup_result(result: dict[str, Any], startup_source: str) -> dict[str, Any]:
@@ -41507,6 +41607,7 @@ def normalize_streaming_utterance(
     normalized = normalize_model_reply({
         "reply": text_zh,
         "spokenTextJa": spoken_ja,
+        "proactiveDirective": payload.get("proactiveDirective"),
         "emotion": payload.get("emotion"),
         "emotionIntensity": payload.get("emotionIntensity"),
         "gesture": payload.get("gesture"),
@@ -41535,6 +41636,8 @@ def normalize_streaming_utterance(
     )
     return {
         "utteranceId": str(payload.get("utteranceId") or f"u{sequence}")[:80],
+        "proactiveDirective": normalize_proactive_directive(payload.get("proactiveDirective")),
+        "proactiveDirectiveProvided": str(payload.get("proactiveDirective") or "").strip().lower() in PROACTIVE_DIRECTIVES,
         "textZh": str(normalized.get("reply") or text_zh),
         "spokenTextJa": str(normalized.get("spokenTextJa") or spoken_ja),
         "speechText": str(normalized.get("speechText") or speech_text),
@@ -49235,6 +49338,7 @@ class AmadeusHandler(BaseHTTPRequestHandler):
             emit("turn_abort", sequence, {
                 "reason": error_type,
                 "errorType": error_type,
+                "code": f"upstream_http_{int(error.code)}" if isinstance(error, urllib.error.HTTPError) else "",
                 "stage": error_stage,
                 "connectionFailure": connection_failure,
                 "completedTools": completed_tools_for_request(body),
