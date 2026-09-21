@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Local AMADEUS web server, settings store, memory store, and chat proxy."""
 
+# 后端入口负责本地 HTTP 服务、配置存取与对话编排；领域规则由 agent 和各存储模块提供。
 from __future__ import annotations
 
 from desktop_window_geometry import normalize_window_size, window_limits
+from agent.participant_perspective import PARTICIPANT_PERSPECTIVE_RULE
+from agent.participant_realization import PARTICIPANT_REALIZATION_RULE, realize_participant_speech, strip_participant_realization_metadata
 
 import json
 import base64
@@ -202,6 +205,8 @@ from schedule_service import (
 )
 from todo_store import (
     TodoVersionConflict,
+    TodoResultMismatch,
+    verify_todo_state,
     acknowledge_reminder,
     claim_due_reminder,
     create_todo,
@@ -373,6 +378,7 @@ RELEASE_MODE = bool(getattr(sys, "frozen", False)) or os.environ.get("AMADEUS_RE
 RELEASE_BLOCKED_API_PATHS = frozenset({"/api/prompt", "/api/persona"})
 
 
+# 对发布模式下的开发者和诊断入口同时匹配根路径及子路由，避免只拦截菜单入口。
 def release_api_route_is_blocked(path: str) -> bool:
     return (
         path in RELEASE_BLOCKED_API_PATHS
@@ -397,7 +403,7 @@ RUNTIME_PATHS: RuntimePaths = resolve_runtime_paths(
 )
 RUNTIME_MODE = RUNTIME_PATHS.mode
 DATA_DIR = RUNTIME_PATHS.root
-APP_BUILD = "1.0.0"
+APP_BUILD = "1.0.1"
 PORT_REGISTRY = {
     "browserDebug": 5173,
     "desktopBackend": 5174,
@@ -567,6 +573,7 @@ def upstream_http_error_diagnostics(
 ) -> dict[str, Any]:
     """Read an HTTP error body once and retain content-safe provider metadata."""
 
+    # HTTP 错误正文通常只能读一次；复用已缓存的诊断结果，避免后续处理得到空正文。
     cached = getattr(error, "_amadeus_upstream_diagnostics", None)
     if isinstance(cached, dict):
         return dict(cached)
@@ -682,6 +689,7 @@ class RuntimeProcessLock:
         self.file_handle: Any = None
 
     def acquire(self) -> None:
+        # 同一数据目录默认只允许一个后端；显式开启并行时才跳过实例锁。
         if os.environ.get("AMADEUS_ALLOW_PARALLEL_RUNTIME") == "1":
             return
         if os.name == "nt":
@@ -881,6 +889,7 @@ def prune_chat_request_cache(now: float | None = None) -> None:
 def prepare_external_chat_body(body: dict[str, Any]) -> str:
     """Remove client-forged internal state and establish a server request ID."""
 
+    # 剥离客户端可能伪造的内部字段，再建立用于重试去重的请求标识。
     for key in [item for item in body if str(item).startswith("_")]:
         body.pop(key, None)
     request_id = normalize_chat_request_id(body.get("requestId"))
@@ -912,6 +921,7 @@ def claim_chat_request(request_id: str, supersedes_request_id: str = "") -> tupl
                         )
                     except ValueError:
                         pass
+        # 重用完成结果或等待正在处理的同一请求，避免网络重试重复写入用户回合。
         existing = _chat_requests.get(request_id)
         if existing:
             if existing.get("state") == "completed" and isinstance(existing.get("result"), dict):
@@ -1083,6 +1093,7 @@ def cancel_chat_request(request_id: Any, *, reason: str = "user_stop_button") ->
                     )
                 except ValueError:
                     pass
+    # 取消状态已先行登记；随后释放工具闸门并关闭相关连接，让各处理阶段结束等待。
     release_chat_stream_tool_gate(normalized)
     with _active_upstream_response_lock:
         responses = list(_active_upstream_responses.get(normalized, []))
@@ -1292,6 +1303,7 @@ def available_background_images() -> list[dict[str, str]]:
             if not re.fullmatch(r"local-[a-z0-9-]+", preset_id) or preset_id in seen:
                 continue
             try:
+                # 清单中的图片路径也要解析并校验目录边界，防止越界读取任意本地文件。
                 path = (root / str(item.get("file") or "")).resolve()
                 if root not in path.parents or path.suffix.lower() not in BACKGROUND_IMAGE_EXTENSIONS or not path.is_file():
                     continue
@@ -1686,6 +1698,8 @@ ATTACHMENT_REPLY_RULE = (
 )
 
 SPEAKER_ATTRIBUTION_RULE = (
+    PARTICIPANT_PERSPECTIVE_RULE
+    + "\n"
     "[说话人与证据归属：高优先级]\n"
     "只有 role=user 或标为‘用户：’的原文，才能作为‘用户说过’的证据。"
     "role=assistant、‘AMADEUS：’中的内容是你自己的旧回复或旧判断，绝不能改写成用户说过。\n"
@@ -1707,7 +1721,8 @@ TRANSITION_MARKERS = (
 )
 
 SPOKEN_JA_ALIGNMENT_RULE = (
-    SPOKEN_JA_NO_EMOJI_RULE
+    PARTICIPANT_PERSPECTIVE_RULE
+    + "\n" + SPOKEN_JA_NO_EMOJI_RULE
     + "\n你负责把 AMADEUS 的中文显示回复改写成自然日语发声稿。"
     "只输出 JSON：{\"spokenTextJa\":\"...\",\"speechSegmentCount\":1}。"
     "要求：1. spokenTextJa 必须完整覆盖 replyZh 的语义，包括吐槽、反问、转折和情绪；"
@@ -1729,6 +1744,8 @@ SPOKEN_JA_ALIGNMENT_RULE = (
     "11. 若输入含 referenceBindings，中文与日语必须保持同一参与者绑定：participant:user 是用户，"
     "participant:assistant 是 AMADEUS；引号中的第一人称服从 quoted_speaker，OCR 作者 unknown 时不得猜测。"
     "不得在翻译时交换‘我/你’或把第三方改成任一对话参与者。"
+    "若提供 participantInterpretation，它是当前轮（含纠错后）的模型理解，帮助沿用正文中的人物关系，"
+    "不是额外事实证据。以完整中文正文为表达内容，保持其人物、动作方向和引用层级，不恢复上一版错误稿的关系。"
     "12. 不要解释，不要输出中文。"
 )
 
@@ -9161,6 +9178,7 @@ def default_conversation_context() -> dict[str, Any]:
         "screenCaptures": [],
         "activeVisualArtifact": {},
         "pendingAssistantQuestion": {},
+        "waitingForUser": False,
         "assistantQuestionHistory": [],
         "proactiveEventIds": [],
         "proactiveControl": {
@@ -9272,6 +9290,10 @@ def read_conversation_context() -> dict[str, Any]:
         if isinstance(value.get("proactiveEventIds"), list)
         else []
     )
+    legacy_question_wait = (value.get("proactiveControl") or {}).get("reason") == "unanswered_question_no_nudge"
+    value["waitingForUser"] = value.get("waitingForUser") is True or legacy_question_wait
+    if legacy_question_wait:
+        value["proactiveControl"] = {"status": "allowed"}
     value["proactiveControl"] = normalize_proactive_control(
         value.get("proactiveControl")
     )
@@ -10060,6 +10082,35 @@ def record_cognitive_format_failure(body: dict[str, Any], content: str, diagnost
         pass
 
 
+def refresh_todo_result_observations(body: dict[str, Any]) -> None:
+    """Keep immutable execution receipts separate from current database state."""
+    entries = []
+    for entry in (body.get("_cognitiveEvidence") or {}).values():
+        if not isinstance(entry, dict) or entry.get("historical"):
+            continue
+        receipt = entry.get("receipt") or {}
+        action = receipt.get("actionReceipt") or {}
+        target = str(action.get("taskId") or action.get("resolvedTarget") or "")
+        if (receipt.get("name") == "todo_manage" and receipt.get("ok")
+                and action.get("status") == "accepted" and target):
+            entries.append((entry, action, target))
+    if not entries:
+        return
+    latest_versions: dict[str, int] = {}
+    for _, action, target in entries:
+        latest_versions[target] = max(latest_versions.get(target, 0), _safe_nonnegative_int(action.get("taskVersionAfter")))
+    with state_database() as connection:
+        current_rows = {target: read_todo(connection, target) for target in latest_versions}
+        for entry, action, target in entries:
+            expected = action.get("expectedState") or ({"version": action["taskVersionAfter"]} if action.get("taskVersionAfter") else {})
+            actual = current_rows[target]
+            entry["currentStateVerification"] = (verify_todo_state(actual, expected, task_id=target) if expected else
+                {"status": "unverified", "taskId": target, "reason": "legacy_receipt_missing_postcondition"})
+            entry["currentStateVerification"]["superseded"] = _safe_nonnegative_int(action.get("taskVersionAfter")) < latest_versions[target]
+            if entry["currentStateVerification"]["status"] != "verified":
+                entry["currentStateVerification"]["currentTask"] = actual
+
+
 def resolve_cognitive_response(
     body: dict[str, Any], settings: dict[str, Any], payload: dict[str, Any], content: str,
     *, request_id: str, initial_failure: CognitiveProtocolError | None = None,
@@ -10524,6 +10575,8 @@ def resolve_cognitive_response(
             continued["reasoning_effort"] = "low"
             continued["max_tokens"] = max(6000, int(continued.get("max_tokens") or 0))
             continued.pop("temperature", None)
+        if purpose == "cognitive_repair_resume":
+            continued["messages"].append({"role": "system", "content": PARTICIPANT_REALIZATION_RULE})
         raise_if_chat_request_cancelled(request_id)
         images = conversation_image_inputs(body, settings)
         continued = with_conversation_images(body, continued, images, purpose=purpose)
@@ -10615,6 +10668,7 @@ def resolve_cognitive_response(
         }], "cognitive_repair_resume")
     def validate_output(value: Mapping[str, Any], overlay: Any) -> str | None:
         nonlocal candidate_task
+        refresh_todo_result_observations(body)
         active = overlay if isinstance(overlay, Mapping) else current_overlay()
         state = active["state"] if isinstance(active, Mapping) and isinstance(active.get("state"), Mapping) else current_state()
         state = {**state, "_invalidatedPendingActionIds": list((active or {}).get("invalidatedPendingActionIds", []))}
@@ -10650,9 +10704,22 @@ def resolve_cognitive_response(
             for ref, entry in (body.get("_cognitiveEvidence") or {}).items()
             if isinstance(entry, Mapping) and not entry.get("historical")
             and isinstance(entry.get("receipt"), Mapping) and entry["receipt"].get("ok")
+            and (entry.get("currentStateVerification") or {}).get("status", "verified") == "verified"
             and tool_result_was_attempted(entry["receipt"])
             and entry["receipt"].get("_cognitiveRequestSignature")
         }
+        stale_requests = [
+            {"request": request, "currentStateVerification": entry["currentStateVerification"]}
+            for request in requests for entry in (body.get("_cognitiveEvidence") or {}).values()
+            if not entry.get("historical")
+            and (entry.get("currentStateVerification") or {}).get("status") in {"mismatch", "unverified"}
+            and tool_request_signature(dict(request)) == (entry.get("receipt") or {}).get("_cognitiveRequestSignature")
+        ]
+        if stale_requests:
+            raise CognitiveProtocolError(json.dumps({
+                "violations": [{"code": "todo_result_changed", **item} for item in stale_requests],
+                "repair": "这个调用曾成功，但数据库当前状态已改变；旧回执不能证明当前目标已满足。保留历史成功记录，依据 currentTask 的真实 taskId 和最新 version 更新计划，再调用 todo_manage update；不要重复创建，也不要用旧 expectedVersion 重放。若不再需要修改，如实说明现状。",
+            }, ensure_ascii=False))
         reused_requests = [request for request in requests
                            if tool_request_signature(dict(request)) in successful_results]
         # Reuse successful current-turn operations before execution validators.
@@ -10821,6 +10888,18 @@ def resolve_cognitive_response(
                 ], "cognitive_successful_tool_resume")
         if body.get("_cognitiveOutcomeRequired") and str(value.get("kind") or "turn") != "tool_use" and not requests:
             closure_violations = []
+            if (value.get("outcome") or {}).get("taskStatus") == "completed":
+                for ref, entry in (body.get("_cognitiveEvidence") or {}).items():
+                    observation = entry.get("currentStateVerification") or {}
+                    binding = (entry.get("receipt") or {}).get("_cognitiveStepBinding") or {}
+                    active_task = state.get("task") or {}
+                    belongs_to_task = (binding.get("taskId") == active_task.get("taskId")
+                                       and binding.get("planRevision") == active_task.get("planRevision"))
+                    if (not entry.get("historical") and belongs_to_task and not observation.get("superseded")
+                            and observation.get("status") in {"mismatch", "unverified"}):
+                        closure_violations.append({"code": "tool_result_state_changed", "evidenceRef": ref,
+                            "currentStateVerification": observation,
+                            "repair": "旧回执记录的操作曾经成功，但当前数据库状态已不符合该目标。依据 currentTask 的最新目标和版本重新规划并执行必要修改，或如实报告变化；不能仅凭旧回执宣称当前目标已经完成。"})
             if (value.get("outcome") or {}).get("status") == "completed":
                 challenged_ids = {
                     str(patch.get("targetId") or patch.get("beliefId") or "")
@@ -10845,8 +10924,27 @@ def resolve_cognitive_response(
             )
             closure_violations.extend(verification["violations"])
             if closure_violations:
+                unfinished_steps = [
+                    {key: deepcopy(step[key]) for key in ("stepId", "name", "args", "status") if key in step}
+                    for step in (state.get("task") or {}).get("plan", [])
+                    if isinstance(step, Mapping) and step.get("name")
+                    and step.get("status") not in {"completed", "failed"}
+                ]
+                write_server_log("cognitive_completion_state_rejected", requestId=request_id,
+                    taskId=(state.get("task") or {}).get("taskId"),
+                    planRevision=(state.get("task") or {}).get("planRevision"),
+                    steps=[{key: step.get(key) for key in ("stepId", "name", "status", "receiptId")}
+                           for step in (state.get("task") or {}).get("plan", []) if isinstance(step, Mapping)],
+                    patchOperations=[patch.get("operation") for patch in (active or {}).get("patches", [])
+                                     if isinstance(patch, Mapping)])
                 raise CognitiveProtocolError(json.dumps({
                     "violations": closure_violations,
+                    "unfinishedToolSteps": unfinished_steps,
+                    "toolProgressRepair": (
+                        "参数补丁只修改计划，不执行工具。确实需要新操作时，返回 kind=tool_use、calls，执行上述未完成步骤后再根据真实回执回答。"
+                        "若本次候选误改了已经完成的计划，用 cognitive.replacePendingPatches=true 和正确补丁恢复入口状态；仅给空 patches 不会撤销此前候选。"
+                        "不能把旧操作成功当成新参数已生效，也不能重复创建已经存在的记录。"
+                    ) if unfinished_steps else "",
                     "availableEvidence": [{"id": item["id"], "readable": bool(item.get("bodyExcerpt")),
                                            "beliefUpdateEligibility": item.get("beliefUpdateEligibility"),
                                            "title": item.get("title"),
@@ -11139,6 +11237,8 @@ def send_conversation_brain_payload(
         active["reasoning_effort"] = "low"
         active["max_tokens"] = max(6000, int(active.get("max_tokens") or 0))
         active.pop("temperature", None)
+    if prompt:
+        active["messages"].append({"role": "system", "content": PARTICIPANT_REALIZATION_RULE})
     outgoing = with_cognitive_transport_state(body, with_conversation_images(body, active, images, purpose=purpose))
     record_persona_model_input(body, outgoing, purpose)
     content = send_upstream_chat_payload(settings, outgoing,
@@ -11161,6 +11261,9 @@ def iter_conversation_brain_stream(
         payload = {**payload, "messages": messages_with_repaired_context(body, list(payload.get("messages", [])))}
         payload["messages"].append({"role": "system", "content": cognitive_turn_prompt(body)})
     parts = []
+    if cognitive_turn_state(body):
+        payload = {**payload, "messages": [*payload.get("messages", []),
+                   {"role": "system", "content": PARTICIPANT_REALIZATION_RULE}]}
     outgoing = with_cognitive_transport_state(body, with_conversation_images(body, payload, images, purpose=purpose))
     record_persona_model_input(body, outgoing, purpose)
     for delta in iter_upstream_chat_stream(settings, outgoing, timeout=timeout,
@@ -11194,6 +11297,7 @@ def bind_cognitive_result(body: Mapping[str, Any], result: dict[str, Any]) -> No
     result["_cognitiveDigest"] = {
         "turnId": snapshot.get("currentTurnId"), "rootSnapshotId": snapshot.get("rootSnapshotId"),
         "understoodUserGoal": str(decision.get("understoodGoal") or "")[:800],
+        "referenceFrames": deepcopy(decision.get("referenceFrames") or []),
         "userRequest": str((snapshot.get("currentUserMessage") or {}).get("text") or "")[:800],
         "interactionAct": decision.get("interactionAct", "CHAT"),
         "actions": [{"tool": item.get("name"), "status": "success" if item.get("ok") else "failed"}
@@ -15874,7 +15978,7 @@ def append_proactive_conversation_event(body: dict[str, Any]) -> dict[str, Any]:
         requested_directive
         if terminal_pause_authorized else "unchanged"
     )
-    if not event_id or not reply:
+    if not event_id or (not reply and not terminal_pause_authorized):
         raise RequestValidationError(
             "invalid_proactive_event",
             "主动互动记录缺少 eventId 或 reply。",
@@ -15921,6 +16025,14 @@ def append_proactive_conversation_event(body: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "pendingAssistantQuestion": context.get("pendingAssistantQuestion", {}),
             }
+        if ("afterUserTurnId" in body and str(body["afterUserTurnId"] or "")
+                != str(proactive_outreach_context_key(context)[2] or "")):
+            return {"ok": True, "discardedAsStale": True,
+                    "waitingForUser": bool(context.get("waitingForUser")), "proactiveControl": proactive_control}
+        if terminal_pause_authorized and not reply:
+            context["waitingForUser"] = True
+            write_conversation_context(context)
+            return {"ok": True, "waitingForUser": True, "proactiveControl": proactive_control}
         known_ids = [
             str(item)[:100]
             for item in context.get("proactiveEventIds", [])
@@ -15937,6 +16049,8 @@ def append_proactive_conversation_event(body: dict[str, Any]) -> dict[str, Any]:
             "emotion": str(body.get("emotion") or "neutral")[:40],
             "proactiveDirective": proactive_directive,
         }
+        if isinstance(body.get("requiresUserResponse"), bool):
+            result.update(requiresUserResponse=body["requiresUserResponse"], requiresUserResponseProvided=True)
         if reminder_context is not None:
             result["todoContext"] = reminder_context
         if terminal_pause_authorized:
@@ -15983,6 +16097,7 @@ def append_proactive_conversation_event(body: dict[str, Any]) -> dict[str, Any]:
             context.get("proactiveControl")
         ),
         "pendingAssistantQuestion": context.get("pendingAssistantQuestion", {}),
+        "waitingForUser": bool(context.get("waitingForUser") or context.get("pendingAssistantQuestion")),
     }
 
 
@@ -16617,10 +16732,10 @@ def generate_proactive_interaction(body: dict[str, Any]) -> dict[str, Any]:
     latest_turn = (context.get("recentTurns") or [{}])[-1]
     old_unanswered = bool(old_questions and old_questions[-1].get("status") == "suspended"
                           and old_questions[-1].get("sourceTurnId") == latest_turn.get("turnId"))
-    if waiting or (body.get("kind") == "follow_up" and old_unanswered):
+    if context.get("waitingForUser") or waiting or (body.get("kind") == "follow_up" and old_unanswered):
         return {"ok": True, "suppressed": True, "reason": "unanswered_question_no_nudge",
-                "proactiveControl": {"status": "paused", "resumeMode": "next_user_message",
-                    "reason": "unanswered_question_no_nudge", "sourceTurnId": latest_turn.get("turnId", "")}}
+                "waitingForUser": True,
+                "proactiveControl": normalize_proactive_control(context.get("proactiveControl"))}
     proactive_control = normalize_proactive_control(context.get("proactiveControl"))
     if proactive_control["status"] == "paused":
         write_server_log(
@@ -17200,6 +17315,7 @@ def generate_proactive_interaction(body: dict[str, Any]) -> dict[str, Any]:
             result.update({
                 "ok": True,
                 "source": "api-proactive",
+                "proactiveAfterUserTurnId": str(proactive_outreach_context_key(context)[2] or ""),
                 "proactiveKind": kind,
                 "proactiveSubject": str(
                     resolution.get("subject")
@@ -18625,6 +18741,7 @@ def public_conversation_history(
             context.get("proactiveControl")
         ),
         "storageHealth": health,
+        "waitingForUser": bool(context.get("waitingForUser") or context.get("pendingAssistantQuestion")),
         "recoveryRequired": bool(health.get("recoveryRequired")),
         "recoverySource": recovery_source,
         "compatibilityRecovery": context.get("compatibilityRecovery") or {},
@@ -21408,6 +21525,7 @@ def tool_todo_manage(
     resolution: dict[str, Any] = {}
     receipt: dict[str, Any] = {}
     resolved_task_id = command.task_id
+    expected_state: dict[str, Any] = {}
     try:
         database_scope = (
             nullcontext(_connection) if _connection is not None else state_database()
@@ -21431,6 +21549,18 @@ def tool_todo_manage(
                         connection,
                         str(replay_receipt.get("taskId") or replay_receipt.get("resolvedTarget") or ""),
                     )
+                    # A historical success is not proof that the current row
+                    # still satisfies the request. Never recreate on replay.
+                    replay_expected = replay_receipt.get("expectedState")
+                    if not isinstance(replay_expected, Mapping) or not replay_expected:
+                        replay_expected = {"version": replay_receipt.get("taskVersionAfter")}
+                    verification = verify_todo_state(replay_task, replay_expected,
+                        task_id=str(replay_receipt.get("taskId") or replay_receipt.get("resolvedTarget") or ""))
+                    if verification["status"] != "verified":
+                        return {"name": "todo_manage", "ok": False, "error": "todo_result_changed",
+                                "action": command.action, "currentTask": replay_task,
+                                "previousActionReceipt": replay_receipt, "stateVerification": verification,
+                                "requiresRefresh": True, "replayed": True, "source": "local_sqlite"}
                     return {
                         "name": "todo_manage",
                         "ok": True,
@@ -21439,10 +21569,15 @@ def tool_todo_manage(
                         "actionReceipt": replay_receipt,
                         "timeFacts": todo_time_receipt(replay_task, anchor),
                         "replayed": True,
+                        "stateVerification": verification,
                         "source": "local_sqlite",
                     }
             if command.action == "create":
                 command = resolve_todo_command_time(command, anchor)
+                expected_state = {"title": command.title, "details": command.details,
+                    "dueAt": command.due_at, "dueDate": command.due_date if not command.due_at else "",
+                    "timezone": command.timezone_name, "remindBeforeMinutes": command.remind_before_minutes,
+                    "priority": command.priority, "recurrenceRule": command.recurrence_rule, "status": "pending"}
                 task = create_todo(
                     connection,
                     title=command.title,
@@ -21515,12 +21650,23 @@ def tool_todo_manage(
                             "name": "todo_manage", "ok": False,
                             "error": "todo_no_changes",
                         }
-                    task = update_todo(
-                        connection,
-                        resolved_task_id,
-                        changes,
-                        expected_version=command.expected_version,
-                    )
+                    expected_state = dict(changes)
+                    if changes.get("dueAt"):
+                        expected_state["dueDate"] = ""
+                    elif changes.get("dueDate"):
+                        expected_state["dueAt"] = ""
+                    expected_state.update(status=before_task.get("status"), snoozedUntil="")
+                    if command.expected_version and command.expected_version != before_task.get("version"):
+                        raise TodoVersionConflict(before_task, command.expected_version)
+                    if verify_todo_state(before_task, expected_state, task_id=resolved_task_id)["status"] == "verified":
+                        task = before_task
+                    else:
+                        task = update_todo(
+                            connection,
+                            resolved_task_id,
+                            changes,
+                            expected_version=command.expected_version,
+                        )
                 elif resolution.get("status") == "resolved" and command.action in {
                     "complete", "reopen", "delete",
                 }:
@@ -21554,6 +21700,19 @@ def tool_todo_manage(
                         expected_version=command.expected_version,
                     )
             if task:
+                # Store functions return rows, but success must be tied to a
+                # read of the selected record and the resolved requested state.
+                result_task_id = str(task.get("taskId") or "")
+                task = read_todo(connection, resolved_task_id or result_task_id)
+                if expected_state:
+                    verification = verify_todo_state(task, expected_state,
+                        task_id=resolved_task_id or result_task_id)
+                    if verification["status"] != "verified":
+                        raise TodoResultMismatch(task, verification)
+                else:
+                    # Status/snooze/recurrence have their own store transition
+                    # semantics; bind replay to the exact resulting version.
+                    expected_state = {"version": task.get("version")}
                 receipt = {
                     "actionId": action_id,
                     "tool": "todo_manage",
@@ -21570,10 +21729,19 @@ def tool_todo_manage(
                     "taskVersionAfter": int(task.get("version") or 0),
                     "timestamp": now_iso(),
                     "timeFacts": todo_time_receipt(task, anchor),
+                    "expectedState": expected_state,
+                    "stateVerification": verify_todo_state(task, expected_state,
+                        task_id=resolved_task_id or result_task_id),
                 }
                 if command.time_spec:
                     receipt["timeSpec"] = dict(command.time_spec)
                 write_action_receipt_record(receipt, connection=connection)
+    except TodoResultMismatch as mismatch:
+        write_server_log("todo_result_verification_failed", requestId=source_turn_id,
+                         action=command.action, verification=mismatch.verification)
+        return {"name": "todo_manage", "ok": False, "error": "todo_result_mismatch",
+                "stateVerification": mismatch.verification, "requiresRefresh": True,
+                "source": "local_sqlite"}
     except TodoVersionConflict as conflict:
         return {
             "name": "todo_manage",
@@ -33946,10 +34114,14 @@ def align_spoken_text_ja(
         return result
     reply = re.sub(r"\[S\d+\]", "", str(result.get("reply") or ""), flags=re.I).strip()
     previous = str(result.get("spokenTextJa") or "").strip()
+    understood_goal = str((result.get("_cognitiveDigest") or {}).get("understoodUserGoal") or "")
+    reference_frames = (result.get("_cognitiveDigest") or {}).get("referenceFrames")
     if not allow_remote_repair:
         generated: str | dict[str, Any] = ""
     elif (
         not isinstance(result.get("_referenceLedger"), Mapping)
+        and not understood_goal
+        and not reference_frames
         and (persona_snapshot is None or not persona_snapshot.uses_hybrid_provider_context)
     ):
         # Preserve the historical helper call shape for independent entrypoints
@@ -33965,6 +34137,8 @@ def align_spoken_text_ja(
                 result.get("_referenceLedger")
                 if isinstance(result.get("_referenceLedger"), Mapping) else None
             ),
+            **({"understood_goal": understood_goal} if understood_goal else {}),
+            **({"reference_frames": reference_frames} if reference_frames else {}),
         )
     if isinstance(generated, dict):
         fixed = str(generated.get("spokenTextJa") or "")
@@ -34010,9 +34184,11 @@ def generate_spoken_text_ja(
     include_delivery_plan: bool = False,
     persona_snapshot: PersonaContextSnapshot | None = None,
     reference_ledger: Mapping[str, Any] | None = None,
+    understood_goal: str = "",
+    reference_frames: list[dict[str, Any]] | None = None,
 ) -> str | dict[str, Any]:
     reference_bindings = ""
-    if isinstance(reference_ledger, Mapping):
+    if isinstance(reference_ledger, Mapping) and not (understood_goal or reference_frames):
         ledger = DiscourseLedger.from_dict(reference_ledger)
         reference_bindings = render_discourse_context(
             ledger,
@@ -34028,11 +34204,17 @@ def generate_spoken_text_ja(
         "messages": [
             *persona_repair_prefix(persona_snapshot, legacy_system_prompt=False),
             {"role": "system", "content": SPOKEN_JA_ALIGNMENT_RULE},
+            {"role": "system", "content": PARTICIPANT_REALIZATION_RULE + "\n本次只补写spokenTextJa，不输出speechUnits；spokenTextJa内沿用上述人物标识，仍输出原定JSON。"},
             {"role": "user", "content": json.dumps({
                 "replyZh": reply,
                 "previousSpokenTextJa": previous,
                 "pronunciationGlossary": spoken_ja_pronunciation_glossary(reply, previous),
                 "referenceBindings": reference_bindings,
+                **({"participantInterpretation": {
+                    "source": "current_turn_model_interpretation",
+                    "understoodGoal": understood_goal,
+                    "referenceFrames": deepcopy(reference_frames or []),
+                }} if understood_goal or reference_frames else {}),
             }, ensure_ascii=False)},
         ],
     }
@@ -34042,8 +34224,8 @@ def generate_spoken_text_ja(
         payload["thinking"] = {"type": "disabled"}
     try:
         content = send_upstream_chat_payload(settings, payload, timeout=90, purpose="spoken_ja_alignment")
-        parsed = parse_json_object(content)
-        spoken = str((parsed or {}).get("spokenTextJa") or "").strip()
+        parsed = realize_participant_speech(strip_participant_realization_metadata(parse_json_object(content) or {}))
+        spoken = str(parsed.get("spokenTextJa") or "").strip()
         if include_delivery_plan:
             return {
                 "spokenTextJa": spoken,
@@ -34211,6 +34393,7 @@ def normalize_model_reply(value: Any, settings: dict[str, Any] | None = None) ->
                 value = {"reply": original}
     if not isinstance(value, dict):
         value = {}
+    value = realize_participant_speech(value)
     value = synchronize_response_waiting(value)
     semantic_kind = str(value.get("semanticKind") or value.get("kind") or "").strip().lower()
     if semantic_kind in {"clarification", "clarify"}:
@@ -34482,6 +34665,7 @@ def normalize_model_reply(value: Any, settings: dict[str, Any] | None = None) ->
         requires_user_response_provided = True
         expected_response_type = ""
     return {
+        **({"_participantSpeechRealized": True} if value.get("_participantSpeechRealized") is True else {}),
         "reply": reply,
         "spokenTextJa": spoken_text_ja,
         "speechText": speech_text,
@@ -35550,6 +35734,9 @@ def startup_greeting_tts_preflight(result: dict[str, Any]) -> dict[str, Any]:
 def generate_startup_greeting(body: dict[str, Any]) -> dict[str, Any]:
     context = read_conversation_context()
     proactive_control = normalize_proactive_control(context.get("proactiveControl"))
+    if context.get("waitingForUser") or context.get("pendingAssistantQuestion"):
+        return {"ok": True, "suppressed": True, "reason": "waiting_for_user",
+                "waitingForUser": True, "proactiveControl": proactive_control}
     if proactive_control["status"] == "paused":
         write_server_log(
             "startup_greeting_suppressed",
@@ -35599,6 +35786,7 @@ def generate_startup_greeting(body: dict[str, Any]) -> dict[str, Any]:
         result.update({
             "ok": True,
             "source": startup_source,
+            "proactiveAfterUserTurnId": str(proactive_outreach_context_key(context)[2] or ""),
             "memoryUpdates": [],
             "startupTtsPreflight": final_preflight,
             "latencyMs": round((time.perf_counter() - started) * 1000),
@@ -36080,6 +36268,7 @@ def speech_unit_contract_for_result(
         text_fingerprint = runtime_fingerprint(normalized, length=32)
         stable_seed = f"{request_id}|{ordinal}|{text_fingerprint}"
         unit = {
+            **({"_participantSpeechRealized": True} if updated.get("_participantSpeechRealized") is True else {}),
             "unitId": "speech-" + runtime_fingerprint(stable_seed, length=16),
             "ordinal": ordinal,
             "total": len(candidates),
@@ -41521,6 +41710,7 @@ def normalize_streaming_utterance(
     first_visible: bool = False,
     persona_snapshot: PersonaContextSnapshot | None = None,
 ) -> dict[str, Any]:
+    payload = realize_participant_speech(payload)
     text_zh = re.sub(r"\s+", " ", str(payload.get("textZh") or "")).strip()
     spoken_ja = re.sub(r"\s+", " ", str(payload.get("spokenTextJa") or "")).strip()
     speech_profile = speech_language_profile(settings)
@@ -41605,6 +41795,7 @@ def normalize_streaming_utterance(
                 "first visible utterance is not independently complete"
             )
     normalized = normalize_model_reply({
+        **({"_participantSpeechRealized": True} if payload.get("_participantSpeechRealized") is True else {}),
         "reply": text_zh,
         "spokenTextJa": spoken_ja,
         "proactiveDirective": payload.get("proactiveDirective"),
@@ -41635,6 +41826,7 @@ def normalize_streaming_utterance(
         is_first_visible=first_visible or sequence == 1,
     )
     return {
+        **({"_participantSpeechRealized": True} if normalized.get("_participantSpeechRealized") is True else {}),
         "utteranceId": str(payload.get("utteranceId") or f"u{sequence}")[:80],
         "proactiveDirective": normalize_proactive_directive(payload.get("proactiveDirective")),
         "proactiveDirectiveProvided": str(payload.get("proactiveDirective") or "").strip().lower() in PROACTIVE_DIRECTIVES,
@@ -44959,7 +45151,7 @@ def persist_finalized_chat_state(
         "_cognitiveStateRevision",
     ):
         value.pop(private_key, None)
-    return value, warnings
+    return strip_participant_realization_metadata(value), warnings
 
 
 def complete_deferred_chat_persistence(
@@ -45658,7 +45850,7 @@ def finalize_chat_response(
     }
     result.pop("_contextProtection", None)
     result.pop("_conversationToolResults", None)
-    return result
+    return strip_participant_realization_metadata(result)
 
 
 def process_chat_request_body(

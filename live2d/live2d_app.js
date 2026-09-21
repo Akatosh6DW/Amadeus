@@ -2117,6 +2117,7 @@ async function prepareStartupGreeting(voiceReadyPromise = Promise.resolve(null))
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
     if (data.suppressed) {
+      if (data.waitingForUser === true) state.waitingForUser = true;
       applyProactiveControl(data.proactiveControl);
       startupGreetingPending = false;
       return null;
@@ -2231,7 +2232,9 @@ async function prepareStartupGreetingSpeech(
 
 function normalizeProactiveControl(value) {
   const raw = value && typeof value === "object" ? value : {};
-  const paused = String(raw.status || "").toLowerCase() === "paused";
+  // Older clients stored the temporary question-wait gate as a quiet order.
+  const paused = String(raw.status || "").toLowerCase() === "paused"
+    && raw.reason !== "unanswered_question_no_nudge";
   return {
     status: paused ? "paused" : "allowed",
     resumeMode: paused ? "model_decides" : "",
@@ -2244,7 +2247,7 @@ function normalizeProactiveControl(value) {
 }
 
 function proactiveOutreachPaused() {
-  return proactiveState.control.status === "paused";
+  return proactiveState.control.status === "paused" || state.waitingForUser === true;
 }
 
 function applyProactiveControl(value, { persistState = true } = {}) {
@@ -2339,6 +2342,7 @@ async function updateProactiveInteraction(now = performance.now()) {
       return;
     }
     if (data.suppressed) {
+      if (data.waitingForUser === true) state.waitingForUser = true;
       applyProactiveControl(data.proactiveControl);
       if (!proactiveOutreachPaused()) scheduleNextProactiveInteraction(performance.now(), 0);
       return;
@@ -2351,6 +2355,7 @@ async function updateProactiveInteraction(now = performance.now()) {
     proactiveState.unansweredCount = transition.nextCount;
     proactiveState.phase = transition.phase;
     proactiveState.activePrompt = String(data.reply || "");
+    proactiveState.afterUserTurnId = data.proactiveAfterUserTurnId;
     proactiveState.activeSubject = String(data.proactiveSubject || proactiveState.activeSubject || "");
     if (willSulk) {
       proactiveState.nextAmbientMoodAt = now + 150000 + Math.random() * 90000;
@@ -2397,9 +2402,26 @@ async function proactiveEventFor(greeting = false, willSulk = false, signal = nu
     // model's availability decision and could wake a sleeping user.
     proactiveState.phase = "sulking";
     nextProactiveInteractionAt = 0;
+    state.waitingForUser = true;
+    persist();
+    try {
+      await storageScopedFetch("/api/conversation/proactive", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId: `waiting-${Date.now()}`, reply: "",
+          proactiveKind: "sulk", proactivePhase: "sulking",
+          unansweredCount: proactiveState.silenceLimit, silenceLimit: proactiveState.silenceLimit,
+          proactiveDirective: "pause_until_next_user_message", contextEpoch: state.contextEpoch,
+          ...(typeof proactiveState.afterUserTurnId === "string"
+            ? { afterUserTurnId: proactiveState.afterUserTurnId } : {}) }),
+        ...(signal ? { signal } : {}),
+      });
+    } catch (error) {
+      console.warn("waiting state sync deferred; local state retained:", error);
+    }
     return {
       ok: true,
       suppressed: true,
+      waitingForUser: true,
       reason: "unanswered_sequence_complete",
       proactiveControl: proactiveState.control,
     };
@@ -2496,6 +2518,8 @@ function resetProactiveSequence(now = performance.now()) {
 }
 
 function noteUserActivity() {
+  state.waitingForUser = false;
+  persist();
   const wasWaiting = proactiveState.unansweredCount;
   const wasSulking = proactiveState.phase === "sulking";
   const now = performance.now();
@@ -13027,6 +13051,7 @@ function proactiveDeliveryStillCurrent(data) {
     || data?.source === "api-proactive"
     || data?.source === "todo-reminder";
   if (!isProactive) return true;
+  // 普通主动消息要复核暂停状态和请求代际；上方已单独处理具有提醒标识的待办。
   const generation = Number(data.proactiveRequestGeneration || 0);
   const sequenceId = Number(data.proactiveSequenceId ?? -1);
   return !proactiveOutreachPaused()
@@ -13036,6 +13061,7 @@ function proactiveDeliveryStillCurrent(data) {
 }
 
 async function applyAssistant(data, userMessage = "") {
+  // 触摸回复绑定会话标识与上下文代次，切换会话后丢弃迟到的旧回复。
   if (data.source === "touch" && data.turnIdentity
       && (String(data.turnIdentity.conversationId) !== String(state.conversationId || "")
           || Number(data.contextEpoch) !== (Number(state.contextEpoch) || 0))) return false;
@@ -13092,6 +13118,8 @@ async function applyAssistant(data, userMessage = "") {
       ? "proactive"
       : data.source === "touch" ? "touch" : "chat",
     proactiveEventId: String(data.proactiveEventId || ""),
+    ...(typeof data.proactiveAfterUserTurnId === "string"
+      ? { proactiveAfterUserTurnId: data.proactiveAfterUserTurnId } : {}),
     proactiveKind: String(data.proactiveKind || ""),
     proactiveSubject: String(data.proactiveSubject || ""),
     proactivePhase: String(data.proactivePhase || ""),
@@ -13120,6 +13148,7 @@ async function applyAssistant(data, userMessage = "") {
     ...messageIdentityMeta(data, "assistant"),
   };
   const provider = String(settings.ttsProvider || "").trim().toLowerCase();
+  // 过滤无需交付或缺少可用文本的语音单元；至少两段才采用逐段显示与播放。
   const contractedSpeechUnits = Array.isArray(data.speechUnits)
     ? data.speechUnits.filter(unit => unit && unit.deliveryRequired !== false).map(unit => ({
       ...unit,
@@ -13249,7 +13278,13 @@ async function applyAssistant(data, userMessage = "") {
   }
   const committedAssistantMessage = progressiveMessage?.message || activeAssistantMessage;
   bindCompletedTurnIdentity(data, committedAssistantMessage);
+  if (data.requiresUserResponse === true && incomingSource !== "touch") {
+    state.waitingForUser = true;
+    nextProactiveInteractionAt = 0;
+    persist();
+  }
   if (messageMeta.kind === "proactive" && committedAssistantMessage) {
+    committedAssistantMessage.meta.requiresUserResponse = data.requiresUserResponse === true;
     recordProactiveConversationEvent(committedAssistantMessage, mood);
   }
   if (
@@ -13356,6 +13391,7 @@ function chooseSpeechText(reply, spokenTextJa, speechLanguage = settings.speechL
 }
 
 function resolveAssistantMood(data, userMessage, reply) {
+  // 优先采用后端提供的合法情绪标签，缺失时再使用文字特征推断。
   const hasExplicitEmotionLabel = typeof data.emotion === "string" && Boolean(emotionTargets[data.emotion]);
   const incoming = normalizeEmotion(data.emotion);
   let emotion = incoming;
@@ -14255,6 +14291,7 @@ async function saveGeneratedFile(item) {
   link.remove();
 }
 
+// 来源地址按不可信输入处理，限制协议并排除常见本地地址；后端网关仍需独立校验。
 function safeExternalSourceUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -14315,6 +14352,8 @@ function loadState() {
         conversationId: String(parsed.conversationId || `conv_${Math.max(0, Number(parsed.contextEpoch) || 0)}`),
         chatWindowHeight: clamp(toNumber(parsed.chatWindowHeight, 330), 220, 1200),
         proactiveControl: normalizeProactiveControl(parsed.proactiveControl),
+        waitingForUser: parsed.waitingForUser === true
+          || parsed.proactiveControl?.reason === "unanswered_question_no_nudge",
       };
     }
   } catch {
@@ -14328,6 +14367,7 @@ function loadState() {
     conversationId: "conv_0",
     chatWindowHeight: 330,
     proactiveControl: normalizeProactiveControl(null),
+    waitingForUser: false,
   };
 }
 
@@ -14353,11 +14393,16 @@ async function hydrateConversationHistory() {
       toast("检测到会话索引不一致；已从只读归档恢复显示，原始文件没有被覆盖");
       console.warn("conversation recovery is active:", data.storageHealth || {});
     }
+    const previousConversationId = state.conversationId;
     state.contextEpoch = Math.max(
       0,
       Number(data.conversationEpoch ?? state.contextEpoch) || 0,
     );
     state.conversationId = String(data.conversationId || `conv_${state.contextEpoch}`);
+    if (typeof data.waitingForUser === "boolean") {
+      state.waitingForUser = data.waitingForUser
+        || (state.conversationId === previousConversationId && state.waitingForUser === true);
+    }
     if (data.proactiveControl && typeof data.proactiveControl === "object") {
       applyProactiveControl(data.proactiveControl, { persistState: false });
     }
@@ -14373,6 +14418,7 @@ async function hydrateConversationHistory() {
       return;
     }
     const localMessages = Array.isArray(state.messages) ? state.messages : [];
+    // 以服务端历史为恢复基线，保存可按签名匹配的本地元数据，供下方逐条合并。
     const localBySignature = new Map();
     localMessages.forEach(message => {
       const key = messageHistorySignature(message);
@@ -14408,6 +14454,7 @@ async function hydrateConversationHistory() {
       sharedPrefix < prefixLimit
       && messageHistorySignature(restored[sharedPrefix]) === messageHistorySignature(localMessages[sharedPrefix])
     ) sharedPrefix += 1;
+    // 只有两端历史共享完整前缀时才接回本地尾部，避免把分叉历史混入当前会话。
     const localOnlyTail = sharedPrefix === prefixLimit ? localMessages.slice(sharedPrefix) : [];
     state.messages = [...restored, ...localOnlyTail].slice(-MAX_MESSAGES);
     persist();
@@ -14418,11 +14465,13 @@ async function hydrateConversationHistory() {
 
 async function recordProactiveConversationEvent(message, mood = {}) {
   if (!message || message.role !== "assistant" || message.meta?.kind !== "proactive") return;
+  const waitingSequence = proactiveState.sequenceId;
   const eventId = String(
     message.meta.proactiveEventId
     || `proactive-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   );
   message.meta.proactiveEventId = eventId;
+  // 已持久化标记与在途集合共同去重；失败不设成功标记，后续可用同一事件标识重试。
   if (message.meta.proactivePersisted || proactivePersistenceInFlight.has(eventId)) return;
   proactivePersistenceInFlight.add(eventId);
   persist();
@@ -14441,11 +14490,15 @@ async function recordProactiveConversationEvent(message, mood = {}) {
         silenceLimit: Math.max(0, Number(message.meta.proactiveSilenceLimit) || 0),
         proactiveDirective: String(message.meta.proactiveDirective || "unchanged"),
         proactiveObservation: message.meta.proactiveObservation || null,
+        requiresUserResponse: message.meta.requiresUserResponse === true,
+        ...(typeof message.meta.proactiveAfterUserTurnId === "string"
+          ? { afterUserTurnId: message.meta.proactiveAfterUserTurnId } : {}),
         contextEpoch: Math.max(0, Number(state.contextEpoch) || 0),
       }),
     });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || "proactive persistence failed");
+    if (data.waitingForUser === true && waitingSequence === proactiveState.sequenceId) state.waitingForUser = true;
     if (data.proactiveControl && typeof data.proactiveControl === "object") {
       applyProactiveControl(data.proactiveControl, { persistState: false });
     }
@@ -14469,6 +14522,7 @@ function syncPendingProactiveConversationEvents() {
     .forEach(message => recordProactiveConversationEvent(message));
 }
 
+// 仅向当前会话提供有效历史，排除连接错误提示及已废弃的固定兜底回复。
 function cleanHistoryForModel() {
   const currentEpoch = Math.max(0, Number(state.contextEpoch) || 0);
   const currentConversationId = String(state.conversationId || "");
@@ -14502,6 +14556,7 @@ function persist() {
     conversationId: String(state.conversationId || `conv_${Math.max(0, Number(state.contextEpoch) || 0)}`),
     chatWindowHeight: clamp(toNumber(state.chatWindowHeight, 330), 220, 1200),
     proactiveControl: normalizeProactiveControl(state.proactiveControl),
+    waitingForUser: state.waitingForUser === true,
   }));
 }
 
@@ -14526,6 +14581,7 @@ function clearVoiceFailure() {
   dom.voiceFailureBanner.hidden = true;
 }
 
+// 只结束仍属于当前代次的语音任务，清理播放与嘴型状态，并保留失败原因供界面显示。
 function failLocalSpeech(error, generation = speechGeneration, title = "本地语音合成失败") {
   if (generation !== speechGeneration) return null;
   console.warn(`${title}:`, error);

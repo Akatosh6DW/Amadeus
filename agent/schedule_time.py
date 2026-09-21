@@ -315,6 +315,8 @@ def _utc_iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+# 使用调用方给定的带时区时间作为锚点；同一输入可重复得到相同的 UTC 时刻。
+# next_clock 才会顺延到下一次钟点，明确指定的日历日期不自动改成明天。
 def resolve_time_spec(
     spec: Mapping[str, Any],
     *,

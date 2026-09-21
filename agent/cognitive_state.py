@@ -973,6 +973,23 @@ def task_start_is_additive(task: Mapping[str, Any], patch: Mapping[str, Any], tu
     )
 
 
+def _same_turn_tool_step_restatement(task: Mapping[str, Any], step: Mapping[str, Any],
+                                    arguments: Mapping[str, Any], turn_id: str) -> bool:
+    """An unchanged instruction preserves progress; it never proves success.
+
+    Pending/failed steps stay pending/failed. Only executor receipts establish
+    completion. A new turn or explicit invalidation still requires execution.
+    Use the same schema-aware identity as whole-plan restatements.
+    """
+    if (task.get("planDeclaredByTurnId") != turn_id
+            or step.get("status") in {"invalidated", "cancelled"}):
+        return False
+    try:
+        return tool_plan_identity([step]) == tool_plan_identity([{**step, "args": arguments}])
+    except ValueError:
+        return False
+
+
 def _apply_patch(
     state: dict[str, Any],
     patch: Mapping[str, Any],
@@ -1592,7 +1609,10 @@ def _apply_patch(
             step = selected_tool_step(task["plan"], selector)
         except ValueError as error:
             raise _error("tool_step_missing", operation, str(error)) from error
-        step["args"][field] = copy.deepcopy(target)
+        arguments = {**step["args"], field: copy.deepcopy(target)}
+        if _same_turn_tool_step_restatement(task, step, arguments, turn_id):
+            return
+        step["args"] = arguments
         step["status"] = "pending"
         step.pop("receiptId", None)
         step.pop("receiptIds", None)
@@ -1611,6 +1631,8 @@ def _apply_patch(
             step = selected_tool_step(task["plan"], selector)
         except ValueError as error:
             raise _error("tool_step_missing", operation, str(error)) from error
+        if _same_turn_tool_step_restatement(task, step, arguments, turn_id):
+            return
         step["args"] = copy.deepcopy(dict(arguments))
         step["status"] = "pending"
         step.pop("receiptId", None)

@@ -75,6 +75,10 @@ def refresh_waiting_context(context: dict, *, now: datetime, session_id: str) ->
     pending = context.get("pendingAssistantQuestion")
     if not isinstance(pending, Mapping) or not pending:
         return context
+    # Question context may age out, but silence/restart is not permission to
+    # contact the user again. Keep the outreach latch until a user message.
+    if pending.get("status", "waiting") == "waiting":
+        context["waitingForUser"] = True
     asked = _date(pending.get("askedAt"), now)
     expires = _date(pending.get("expiresAt"), now)
     reason = ""
@@ -126,6 +130,8 @@ def related_task_patch(directive: Mapping, context: Mapping, task: Mapping) -> d
 def update_waiting_after_turn(context: dict, *, turn: Mapping, result: Mapping,
                               question: str, now: datetime, session_id: str, task_id: str = "") -> None:
     refresh_waiting_context(context, now=now, session_id=session_id)
+    if turn.get("user"):
+        context["waitingForUser"] = False
     pending = context.get("pendingAssistantQuestion") or {}
     relation = question_relation(result.get("questionRelation"))
     if pending and turn.get("user"):
@@ -141,6 +147,7 @@ def update_waiting_after_turn(context: dict, *, turn: Mapping, result: Mapping,
             status = {"answer": "answered", "cancel": "cancelled", "resume": "resumed"}.get(relation["relation"], "suspended")
             remember_wait(context, old, status, relation["relation"], now)
     if question:
+        context["waitingForUser"] = True
         context["pendingAssistantQuestion"] = {
             "questionId": str(turn["turnId"]), "sourceTurnId": str(turn["turnId"]),
             "text": question, "askedAt": str(turn["at"]), "sessionId": session_id,

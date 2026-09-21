@@ -84,6 +84,13 @@ class TodoVersionConflict(RuntimeError):
         self.expected_version = int(expected_version)
 
 
+class TodoResultMismatch(RuntimeError):
+    def __init__(self, task: Mapping[str, Any], verification: Mapping[str, Any]) -> None:
+        super().__init__("todo_result_mismatch")
+        self.task = dict(task)
+        self.verification = dict(verification)
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -156,6 +163,24 @@ def read_todo(connection: sqlite3.Connection, task_id: str) -> dict[str, Any]:
         (str(task_id or ""),),
     ).fetchone()
     return _row_dict(row)
+
+
+def verify_todo_state(task: Mapping[str, Any], expected: Mapping[str, Any], *, task_id: str) -> dict[str, Any]:
+    """Compare a resolved requested state with a database read, not two commands."""
+    mismatched = []
+    if not task or task.get("taskId") != task_id:
+        mismatched.append("taskId")
+    for key, wanted in expected.items():
+        actual = task.get(key)
+        if key in {"dueAt", "snoozedUntil"} and wanted and actual:
+            matches = parse_iso(wanted) is not None and parse_iso(wanted) == parse_iso(actual)
+        else:
+            matches = actual == wanted
+        if not matches:
+            mismatched.append(key)
+    return {"status": "verified" if not mismatched else "mismatch",
+            "source": "local_sqlite", "taskId": task_id,
+            "observedVersion": task.get("version"), "mismatchedFields": mismatched}
 
 
 def list_todos(
@@ -596,6 +621,7 @@ def rebuild_todo_reminders(
         )
 
 
+# 同时写入任务、创建事件并重建提醒；有具体时刻时不再保留全天日期字段。
 def create_todo(
     connection: sqlite3.Connection,
     *,
@@ -960,6 +986,8 @@ def snooze_todo(
     return task
 
 
+# 回收超时的提醒领取记录，再以任务版本过滤失效提醒。
+# 条件更新确保同一条 pending 记录只被一个调用方成功领取；返回空字典表示未领取。
 def claim_due_reminder(
     connection: sqlite3.Connection,
     *,
@@ -1016,6 +1044,7 @@ def claim_due_reminder(
     }
 
 
+# 领取成功不等于送达：收到结果后才更新 delivered，失败则延后重试并限制次数。
 def acknowledge_reminder(
     connection: sqlite3.Connection,
     reminder_id: str,

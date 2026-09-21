@@ -870,6 +870,7 @@ def bind_required_capabilities(
     )
 
 
+# 将本轮感知目标、用户权限和副作用授权一起校验，防止屏幕请求误用摄像头。
 def validate_tool_choice(
     tool_id: str,
     preflight: TurnPreflight,

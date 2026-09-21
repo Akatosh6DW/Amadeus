@@ -11,6 +11,7 @@ import json
 from typing import Any, Mapping
 
 from agent.cognitive_brain import normalize_brain_container
+from agent.participant_realization import realize_participant_speech
 
 
 class ModelSemanticStreamParser:
@@ -115,7 +116,7 @@ class ModelSemanticStreamParser:
             if boundary in {"continue", "micro_pause", "phrase_pause", "turn_pause"}
             else "continue"
         )
-        return normalized
+        return realize_participant_speech(normalized)
 
     def _emit_utterance(self, value: Mapping[str, Any]) -> list[dict[str, Any]]:
         if isinstance(value.get("scheduleIntent"), Mapping):

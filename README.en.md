@@ -20,7 +20,7 @@ A fan project that attempts to recreate Amadeus from *Steins;Gate* on the Window
 
 ## Use the Release
 
-1. Open the [v1.0.0 release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.0) and download `AMADEUS-v1.0.0-setup.zip`.
+1. Open the [v1.0.1 release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.1) and download `AMADEUS-v1.0.1-setup.zip`.
 2. Extract the ZIP to a folder and double-click `install-release.cmd`.
 3. After installation, run the generated `AMADEUS.exe`.
 4. On first launch, open Settings → API and enter your own API key.

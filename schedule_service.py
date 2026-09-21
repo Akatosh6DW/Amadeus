@@ -128,6 +128,8 @@ def _status_for_policy(policy: SchedulePolicyDecision) -> str:
     }[policy.action]
 
 
+# 只保存日程对话的状态迁移；实际创建或修改待办仍交给独立的执行能力。
+# 无关话题使当前流程挂起，继续原任务时复用标识和原始请求，避免丢失上下文。
 def apply_schedule_transition(
     connection: sqlite3.Connection,
     intent: ScheduleIntent,

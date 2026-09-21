@@ -293,6 +293,7 @@ def compact_packet(
                                          "tool", "action", "taskId", "taskVersionBefore", "taskVersionAfter", "timeFacts", "timeSpec"}}
                              if isinstance(item.get("receipt"), Mapping) else None,
             "executionStatus": item.get("executionStatus"),
+            "currentStateVerification": deepcopy(item.get("currentStateVerification")),
             "attempted": ((item.get("receipt") or {}).get("attempted", item.get("executionStatus") != "not_attempted")
                           if item.get("sourceType") in {"tool", "visual"} else None),
             "executionError": str((item.get("receipt") or {}).get("error") or "")[:500],

@@ -18,6 +18,7 @@ read通常status=completed且fileOutputs=[]；不要把只读说明误当成必�
 """
 
 
+# 综合扩展名、附件类别和 MIME 类型判断可编辑性，避免只改后缀就把 PDF 当作文本。
 def document_capabilities(items: Sequence[Mapping[str, Any]], editable_extensions: set[str]) -> list[dict[str, Any]]:
     return [{"id": str(item.get("id") or item.get("attachmentId") or ""),
              "name": str(item.get("name") or ""),
@@ -30,11 +31,13 @@ def document_capabilities(items: Sequence[Mapping[str, Any]], editable_extension
             for item in items if isinstance(item, Mapping)]
 
 
+# 不支持或执行失败都表示本次附件任务已停止，调用方据此同步任务状态。
 def attachment_request_stopped(value: Mapping[str, Any]) -> bool:
     action = value.get("attachmentAction")
     return isinstance(action, Mapping) and action.get("status") in {"unsupported", "failed"}
 
 
+# 交付前检查文件名、完整文本及 UTF-8 字节大小，返回问题代码供上层修复。
 def file_output_issues(outputs: Any, *, max_files: int, max_bytes: int) -> list[str]:
     if not isinstance(outputs, list):
         return ["file_outputs_must_be_list"]
