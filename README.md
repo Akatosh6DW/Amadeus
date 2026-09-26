@@ -53,3 +53,11 @@ API Key、模型和工具权限都在界面设置中管理。屏幕、摄像头�
 
 - 系统：Windows 10/11 x64；建议至少 16 GB 内存。
 - 空间：源码部署预留约 40 GiB，Release 安装预留约 30 GiB。
+
+## 许可证
+
+本项目的原创代码采用 [MIT 许可证](LICENSE)。MIT 只覆盖项目维护者有权授权的原创部分：Live2D 形象与贴图、声音模型权重、参考音频、角色设定和相关商标不在其范围内，只能随 AMADEUS 使用，不得单独提取再发布。GPT-SoVITS、PixiJS、Live2D Cubism Core、Rhubarb 等第三方组件继续适用各自的原许可证。
+
+Live2D 形象来源：“标准实验服”模型来自 ai-poet 的 [amadeus-system-new](https://github.com/ai-poet/amadeus-system-new) 项目；“日常服”是本项目在该模型基础上绘制的换装皮肤，仍使用原模型的网格、物理、表情和动作。模型版权归原作者所有。牧濑红莉栖及《命运石之门》相关角色和商标归其各自权利人所有。
+
+声音模型由项目维护者基于 GPT-SoVITS 训练。训练所用的角色语音素材及声音相关权利归原权利人所有，因此模型权重和参考音频不适用 MIT 许可证，仅供随 AMADEUS 使用。
