@@ -31,6 +31,14 @@ TODO_ACTIONS = frozenset({
 TODO_TARGET_STATUSES = frozenset({
     "", "active", "pending", "in_progress", "completed", "deleted", "all",
 })
+TODO_NOOP_TARGET_FIELDS = (
+    "title", "details", "status", "priority", "dueAt", "dueDate", "allDay",
+    "timezone", "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
+)
+TODO_NOOP_REQUESTABLE_FIELDS = (
+    "title", "details", "status", "priority", "dueAt", "dueDate", "timezone",
+    "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
+)
 
 _TODO_NOUN = re.compile(r"待办|任务|todo(?:\s*list)?|日程|提醒|计划事项", re.I)
 _TODO_MUTATION = re.compile(
@@ -236,6 +244,93 @@ def parse_due_at(value: Any, *, local_timezone=None) -> datetime | None:
 def normalized_due_at(value: Any, *, local_timezone=None) -> str:
     parsed = parse_due_at(value, local_timezone=local_timezone)
     return parsed.isoformat(timespec="seconds") if parsed else ""
+
+
+def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Normalize a complete user-goal target for a verified no-op.
+
+    The target describes the state requested by the current user turn.  It is
+    deliberately separate from an ordinary ``keep`` decision: a model must
+    first resolve the requested fields and inherit every unspecified field from
+    the current candidate.  Partial/extra structures cannot stand in for a
+    database readback.
+    """
+
+    if not isinstance(value, Mapping) or set(value) != set(TODO_NOOP_TARGET_FIELDS):
+        return None
+    text_fields = (
+        "title", "details", "status", "priority", "dueAt", "dueDate",
+        "timezone", "recurrenceRule", "snoozedUntil",
+    )
+    if any(not isinstance(value.get(key), str) for key in text_fields):
+        return None
+    if not isinstance(value.get("allDay"), bool):
+        return None
+    if (
+        isinstance(value.get("remindBeforeMinutes"), bool)
+        or not isinstance(value.get("remindBeforeMinutes"), int)
+        or not 0 <= value["remindBeforeMinutes"] <= 7 * 24 * 60
+    ):
+        return None
+    due_at_input = value["dueAt"].strip()
+    due_at = normalized_due_at(due_at_input)
+    if due_at_input and not due_at:
+        return None
+    due_date_input = value["dueDate"].strip()
+    if due_date_input:
+        try:
+            due_date = date.fromisoformat(due_date_input).isoformat()
+        except ValueError:
+            return None
+    else:
+        due_date = ""
+    status = value["status"].strip().lower()
+    priority = value["priority"].strip().lower()
+    recurrence_rule = value["recurrenceRule"].strip().lower()
+    snoozed_until_input = value["snoozedUntil"].strip()
+    snoozed_until = normalized_due_at(snoozed_until_input)
+    if snoozed_until_input and not snoozed_until:
+        return None
+    if (
+        status not in TODO_STATUSES
+        or priority not in TODO_PRIORITIES
+        or recurrence_rule not in TODO_RECURRENCE_RULES
+        or (due_at and due_date)
+        or value["allDay"] != (not bool(due_at))
+    ):
+        return None
+    return {
+        "title": value["title"].strip(),
+        "details": value["details"].strip(),
+        "status": status,
+        "priority": priority,
+        "dueAt": due_at,
+        "dueDate": due_date,
+        "allDay": value["allDay"],
+        "timezone": value["timezone"].strip(),
+        "remindBeforeMinutes": value["remindBeforeMinutes"],
+        "recurrenceRule": recurrence_rule,
+        "snoozedUntil": snoozed_until,
+    }
+
+
+def todo_noop_target_matches(
+    candidate: Mapping[str, Any] | None,
+    target: Mapping[str, Any] | None,
+) -> bool:
+    """Compare a candidate and model target after the same strict normalization."""
+
+    current = normalize_todo_noop_target(
+        {
+            key: candidate.get(key)
+            for key in TODO_NOOP_TARGET_FIELDS
+        }
+        if isinstance(candidate, Mapping)
+        and all(key in candidate for key in TODO_NOOP_TARGET_FIELDS)
+        else None
+    )
+    wanted = normalize_todo_noop_target(target)
+    return current is not None and wanted is not None and current == wanted
 
 
 def clamp_remind_before_minutes(value: Any) -> int:

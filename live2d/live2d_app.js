@@ -37,7 +37,6 @@ function runtimeModeStateLabel(label) {
   return REQUESTED_TEST_MODE ? `TEST / ${label}` : label;
 }
 const DEV_PANEL_COLLAPSED_KEY = "amadeus-dev-panel-collapsed-v1";
-const DEV_MODEL_TRANSFORMS_KEY = "amadeus-dev-model-transforms-v1";
 const SAVED_API_KEY_MASK = "••••••••••••";
 const MAX_MESSAGES = 240;
 const MAX_MEMORIES = 512;
@@ -46,51 +45,72 @@ let DEV_MODE = REQUESTED_DEV_MODE;
 let MODEL_PREVIEW_ID = DEV_MODE ? new URLSearchParams(window.location.search).get("modelPreview") || "" : "";
 let MODEL_PREVIEW_ONLY = DEV_MODE && new URLSearchParams(window.location.search).get("previewOnly") === "1";
 let SKIP_BOOT = DEV_MODE && new URLSearchParams(window.location.search).get("skipBoot") === "1";
-const TOUCH_REGION_CONFIG_URL = "/configs/live2d_touch_regions.json";
-const TOUCH_ZONE_LABELS = {
-  head: "头部 / 摸头",
-  face: "脸部 / 轻触脸颊",
-  mouth: "嘴部 / 亲吻判定",
-  hand: "手部 / 牵手",
-  chest: "胸部 / 越界触摸",
-  body: "普通躯干（不发送事件）",
-};
-const DEFAULT_TOUCH_REGION_CONFIG = {
-  touchBounds: [0, 0, 1, 1],
-  priority: ["mouth", "face", "head", "hand", "chest"],
-  zones: {
-    mouth: [[[0.43, 0.35], [0.57, 0.35], [0.585, 0.39], [0.54, 0.415], [0.47, 0.41], [0.425, 0.385]]],
-    face: [[[0.35, 0.22], [0.605, 0.22], [0.645, 0.29], [0.62, 0.38], [0.55, 0.445], [0.46, 0.445], [0.385, 0.395], [0.345, 0.31]]],
-    head: [[[0.265, 0.01], [0.645, 0.01], [0.71, 0.085], [0.735, 0.2], [0.69, 0.39], [0.625, 0.515], [0.32, 0.53], [0.25, 0.4], [0.225, 0.17]]],
-    hand: [
-      [[0.105, 0.755], [0.255, 0.75], [0.335, 0.825], [0.31, 0.91], [0.215, 0.945], [0.09, 0.88]],
-      [[0.63, 0.755], [0.82, 0.76], [0.9, 0.82], [0.91, 0.91], [0.79, 0.945], [0.655, 0.91], [0.6, 0.83]],
-    ],
-    chest: [[[0.315, 0.43], [0.65, 0.43], [0.735, 0.55], [0.75, 0.72], [0.64, 0.79], [0.27, 0.79], [0.18, 0.67], [0.2, 0.53]]],
-  },
-};
-
-function activeTouchRegionProfile() {
-  const profiles = touchRegionConfig?.profiles;
-  if (!profiles || typeof profiles !== "object") return touchRegionConfig || DEFAULT_TOUCH_REGION_CONFIG;
-  return profiles[activeModelProfile?.id]
-    || profiles[touchRegionConfig.defaultProfile]
-    || DEFAULT_TOUCH_REGION_CONFIG;
-}
-
-function normalizedTouchBounds(profile = activeTouchRegionProfile()) {
-  const values = Array.isArray(profile?.touchBounds) ? profile.touchBounds.map(value => toNumber(value, 0)) : [0, 0, 1, 1];
-  const [x, y, width, height] = values.length === 4 ? values : [0, 0, 1, 1];
-  return {
-    x: clamp(x, 0, 1),
-    y: clamp(y, 0, 1),
-    width: clamp(width, 0.001, 1),
-    height: clamp(height, 0.001, 1),
-  };
-}
-
 const PROACTIVE_LOGIC = window.AmadeusProactiveLogic;
 if (!PROACTIVE_LOGIC) throw new Error("proactive_logic.js is required");
+const CHAT_HISTORY_SEARCH = window.AmadeusChatHistorySearch;
+if (!CHAT_HISTORY_SEARCH) throw new Error("chat/history_search.js is required");
+const CHAT_CONVERSATION_PICKER = window.AmadeusConversationPicker;
+if (!CHAT_CONVERSATION_PICKER) throw new Error("chat/conversation_picker.js is required");
+const CHAT_BOOKMARKS = window.AmadeusBookmarks;
+if (!CHAT_BOOKMARKS) throw new Error("chat/bookmarks.js is required");
+const CHAT_MESSAGE_VIEW = window.AmadeusMessageView;
+if (!CHAT_MESSAGE_VIEW) throw new Error("chat/message_view.js is required");
+const API_VERIFICATION = window.AmadeusApiVerification;
+if (!API_VERIFICATION) throw new Error("settings/api_verification.js is required");
+const SETTINGS_CONTROLLER = window.AmadeusSettingsController;
+if (!SETTINGS_CONTROLLER) throw new Error("settings/settings_controller.js is required");
+const TOUCH_INTERACTION = window.AmadeusTouchInteraction;
+if (!TOUCH_INTERACTION) throw new Error("character/touch_interaction.js is required");
+const PROACTIVE_CONTROLLER = window.AmadeusProactiveController;
+if (!PROACTIVE_CONTROLLER) throw new Error("chat/proactive_controller.js is required");
+const REMINDER_POLLING = window.AmadeusReminderPolling;
+if (!REMINDER_POLLING) throw new Error("chat/reminder_polling.js is required");
+const TODO_CONTROLLER = window.AmadeusTodoController;
+if (!TODO_CONTROLLER) throw new Error("chat/todo_controller.js is required");
+const MODEL_TRANSFORM_CONTROLLER = window.AmadeusModelTransformController;
+if (!MODEL_TRANSFORM_CONTROLLER) throw new Error("character/model_transform_controller.js is required");
+const SALIERI_PANEL = window.AmadeusSalieriPanel;
+if (!SALIERI_PANEL) throw new Error("developer/salieri_panel.js is required");
+const VOICE_DIAGNOSTICS = window.AmadeusVoiceDiagnostics;
+if (!VOICE_DIAGNOSTICS) throw new Error("developer/voice_diagnostics.js is required");
+const PERSONA_CONTROLLER = window.AmadeusPersonaController;
+if (!PERSONA_CONTROLLER) throw new Error("developer/persona_controller.js is required");
+const RELATIONSHIP_CONTROLLER = window.AmadeusRelationshipController;
+if (!RELATIONSHIP_CONTROLLER) throw new Error("developer/relationship_controller.js is required");
+const PARAMETER_LAB = window.AmadeusParameterLab;
+if (!PARAMETER_LAB) throw new Error("developer/parameter_lab.js is required");
+const DEVELOPER_EMOTION_CONTROLLER = window.AmadeusDeveloperEmotionController;
+if (!DEVELOPER_EMOTION_CONTROLLER) throw new Error("developer/emotion_controller.js is required");
+const DEVELOPER_MODEL_EDITOR = window.AmadeusDeveloperModelEditor;
+if (!DEVELOPER_MODEL_EDITOR) throw new Error("developer/model_editor.js is required");
+const VOICE_REFERENCE_CONTROLLER = window.AmadeusVoiceReferenceController;
+if (!VOICE_REFERENCE_CONTROLLER) throw new Error("developer/voice_reference_controller.js is required");
+const EXPRESSION_CONTROLLER = window.AmadeusExpressionController;
+if (!EXPRESSION_CONTROLLER) throw new Error("character/expression_controller.js is required");
+const SCENE_CONTROLLER = window.AmadeusSceneController;
+if (!SCENE_CONTROLLER) throw new Error("character/scene_controller.js is required");
+const FRAME_CONTROLLER = window.AmadeusFrameController;
+if (!FRAME_CONTROLLER) throw new Error("character/frame_controller.js is required");
+const BACKGROUND_RENDERER = window.AmadeusBackgroundRenderer;
+if (!BACKGROUND_RENDERER) throw new Error("character/background_renderer.js is required");
+const MOUTH_PARAMETER_RENDERER = window.AmadeusMouthParameterRenderer;
+if (!MOUTH_PARAMETER_RENDERER) throw new Error("character/mouth_parameter_renderer.js is required");
+const PARAMETER_RENDERER = window.AmadeusParameterRenderer;
+if (!PARAMETER_RENDERER) throw new Error("character/parameter_renderer.js is required");
+const ASSISTANT_PRESENTATION = window.AmadeusAssistantPresentation;
+if (!ASSISTANT_PRESENTATION) throw new Error("character/assistant_presentation.js is required");
+const VISUAL_PARAMETER_CONTROLLER = window.AmadeusVisualParameterController;
+if (!VISUAL_PARAMETER_CONTROLLER) throw new Error("character/visual_parameter_controller.js is required");
+const GESTURE_MOTION = window.AmadeusGestureMotion;
+if (!GESTURE_MOTION) throw new Error("character/gesture_motion.js is required");
+const NATIVE_MOTION_CONTROLLER = window.AmadeusNativeMotionController;
+if (!NATIVE_MOTION_CONTROLLER) throw new Error("character/native_motion_controller.js is required");
+const CHAT_CONTROLLER = window.AmadeusChatController;
+if (!CHAT_CONTROLLER) throw new Error("chat/chat_controller.js is required");
+const THINKING_INDICATOR = window.AmadeusThinkingIndicator;
+if (!THINKING_INDICATOR) throw new Error("chat/thinking_indicator.js is required");
+const CONVERSATION_STATE = window.AmadeusConversationState;
+if (!CONVERSATION_STATE) throw new Error("chat/conversation_state.js is required");
 
 const PROACTIVE_FREQUENCY_PROFILES = Object.freeze({
   quiet: Object.freeze({
@@ -224,12 +244,6 @@ const STALE_FALLBACK_REPLIES = new Set([
   "……你这个问题，倒也不是不能回答。",
   "……你这问题，倒也不是不能回答。",
 ]);
-const NON_CHEST_TOUCH_REPLY_TARGET = 10;
-const TOUCH_BURST_THRESHOLD = 3;
-const TOUCH_IGNORE_THRESHOLD = 7;
-const TOUCH_SINGLE_SETTLE_MS = 360;
-const TOUCH_BURST_SETTLE_MS = 950;
-const TOUCH_BURST_REPLY_COOLDOWN_MS = 8000;
 const EMOTION_GESTURE_CYCLES = Object.freeze({
   teasing: Object.freeze(["tilt", "look_away", "tilt", "idle"]),
   proud: Object.freeze(["look_away", "tilt", "look_away", "idle"]),
@@ -243,213 +257,135 @@ const EMOTION_GESTURE_CYCLES = Object.freeze({
 const NON_CHEST_TOUCH_TIME_CREDIT_MS = 30000;
 
 const dom = {};
-let app;
-let backgroundLayer;
-let backgroundImageState = null;
-let backgroundRevision = 0;
+let backgroundRenderer = null;
+let mouthParameterRenderer = null;
+let parameterRenderer = null;
+let developerEmotionController = null;
+let developerModelEditorController = null;
+let developerParameterLabController = null;
+let voiceReferenceController = null;
 let backgroundDraft = null;
 let backgroundEditor;
 let windowAspectRatios = { lite: [0.55, 0.95], full: [1.15, 1.90] };
-let model;
-let coreModel;
-let modelGarmentRig = null;
-let live2dModelProfiles = [FALLBACK_MODEL_PROFILE];
-let live2dModelOverrides = {};
-let activeModelProfile = FALLBACK_MODEL_PROFILE;
-let modelHome = { x: 0, y: 0, scale: 1 };
-let modelFitReference = { width: 0, height: 0, layoutMode: "" };
-let tickerTime = 0;
-let blinkUntil = 0;
-let nextBlink = performance.now() + 1400;
-let speakUntil = 0;
-let currentEmotion = "neutral";
-let stableEmotion = "neutral";
-let emotionRecoveryTarget = "neutral";
-let cognitiveOverlayBaseEmotion = "neutral";
-let cognitiveOverlayBaseDetail = null;
-let emotionEnteredAt = performance.now();
-let currentEmotionHoldMs = 9000;
-let currentEmotionFadeMs = 3200;
+let sceneController = null;
+const EMPTY_SCENE_STATE = Object.freeze({
+  app: null,
+  backgroundLayer: null,
+  model: null,
+  coreModel: null,
+  modelGarmentRig: null,
+  profiles: Object.freeze([FALLBACK_MODEL_PROFILE]),
+  overrides: Object.freeze({}),
+  activeProfile: FALLBACK_MODEL_PROFILE,
+  modelHome: Object.freeze({ x: 0, y: 0, scale: 1 }),
+  modelFitReference: Object.freeze({ width: 0, height: 0, layoutMode: "" }),
+  status: "idle",
+});
+
+function sceneSnapshot() {
+  return sceneController?.getState?.() || EMPTY_SCENE_STATE;
+}
+let frameController = null;
+const EMPTY_FRAME_STATE = Object.freeze({
+  tickerTime: 0,
+  blinkUntil: 0,
+  nextBlink: 0,
+  blink: 0,
+  eyeOpen: 1,
+  breath: 0.5,
+  idleSway: 0,
+  pointer: Object.freeze({ x: 0, y: 0 }),
+  headLook: Object.freeze({ x: 0, y: 0 }),
+  eyeLook: Object.freeze({ x: 0, y: 0 }),
+  eyeDrift: Object.freeze({ x: 0, y: 0, nextAt: 0 }),
+  shyGazeAwayDirection: 1,
+});
+
+function frameSnapshot() {
+  return frameController?.getState?.() || EMPTY_FRAME_STATE;
+}
 const EXPRESSION_POST_SPEECH_HOLD_MS = 8000;
-let emotionSpeechProtectedUntil = 0;
-let activeGesture = "";
-let gestureUntil = 0;
-let gestureEnteredAt = performance.now();
 const armMotionController = AmadeusArmMotion.createController();
-let lookAwayDirection = 1;
-let furiousTurnDirection = 0;
-let furiousTurnTarget = 1;
-let furiousTurnVelocity = 0;
-let narrowEyeExpressionSince = 0;
 let annotatedExpressionStyleEmotion = "neutral";
 let annotatedExpressionVariantUnit = Math.random();
 let annotatedExpressionMirrorSide = Math.random() < 0.5 ? -1 : 1;
-const runtimePupilScaleTargets = { left: 1, right: 1 };
-const runtimePupilScaleValues = { left: 1, right: 1 };
-let runtimeAuthorBlushOpacityTarget = 1;
-let runtimeAuthorBlushOpacityValue = 1;
-const emotionGestureSteps = new Map();
-let lastLive2DExpression = "";
-let lastLive2DMotion = "";
-let lastLive2DMotionAt = 0;
-let pointer = { x: 0, y: 0 };
-let headLook = { x: 0, y: 0 };
-let eyeLook = { x: 0, y: 0 };
-let eyeDrift = { x: 0, y: 0, nextAt: performance.now() + 900 };
-let shyGazeAwayDirection = Math.random() < 0.5 ? -1 : 1;
 let availableVoices = [];
 let settings = { ...DEFAULT_SETTINGS };
-// Verification is session-only; saved credentials alone do not prove connectivity.
-let apiVerification = "unverified";
-let apiConfigurationRevision = 0;
-let developerModelTransforms = loadDeveloperModelTransforms();
-let state = loadState();
+let state = null;
 let connectionStatus = "LOCAL";
 let relationshipTone = "close_companion";
 let persistentColdShoulder = false;
 let transientInteraction = "";
 let transientInteractionUntil = 0;
-let currentEmotionWeight = 1;
-let currentExpressionDetail = {
-  blushIntensity: 0,
-  eyeContact: 0.65,
-  gazeX: 0,
-  gazeY: 0,
-  tension: 0,
-  outburst: false,
-};
-let nextContextEmotionAt = performance.now() + 18000;
-let contextEmotionRequestInFlight = false;
-let speechState = {
-  active: false,
-  pending: false,
-  startedAt: 0,
-  endsAt: 0,
-  text: "",
-  displayText: "",
-  spokenTextJa: "",
-  timeline: [],
-  mouthCues: [],
-  alignmentSource: "",
-  ttsMetrics: null,
-  charIndex: 0,
-  voiceStyle: "calm",
-  voiceTone: "neutral",
-  voiceIntensity: "normal",
-  speechPace: "normal",
-  speechSpeed: 1,
-  pipelineSegmentIndex: 0,
-  pipelineSegmentTotal: 1,
-  utterance: null,
-  mood: null,
-  moodApplied: false,
-  kind: "idle",
-  generation: 0,
-  systemSpeechActive: false,
-  systemSpeechDeadline: 0,
-  textRevealPending: false,
-};
-let ttsAudio = null;
-let ttsAudioUrl = "";
-let ttsAudioGeneration = 0;
-let audioContext = null;
-let audioAnalyser = null;
-let audioSamples = null;
-let audioMouthLevel = 0;
-let voiceDiagnostics = { stage: "idle", message: "尚无语音请求", updatedAt: Date.now() };
-let voiceDiagnosticEvents = [];
+let proactiveController = null;
+let reminderPollingController = null;
+const speechPlayback = AmadeusSpeechPlayback.createSpeechPlaybackController({
+  getSettings: () => settings,
+  defaultSettings: DEFAULT_SETTINGS,
+  gateway: { fetch: (...args) => fetch(...args) },
+  platform: {
+    createAudio: url => new Audio(url),
+    createObjectURL: blob => URL.createObjectURL(blob),
+    revokeObjectURL: url => URL.revokeObjectURL(url),
+    createAudioContext: () => new (window.AudioContext || window.webkitAudioContext)(),
+    hasSystemSpeech: () => "speechSynthesis" in window,
+    speechSynthesis: () => window.speechSynthesis,
+    createUtterance: text => new SpeechSynthesisUtterance(text),
+    selectVoice: () => selectVoice(),
+  },
+  clock: {
+    now: () => performance.now(),
+    delay: ms => delay(ms),
+    setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+    clearTimeout: timer => window.clearTimeout(timer),
+  },
+  mood: {
+    currentEmotion: () => expressionSnapshot().currentEmotion,
+    setEmotion: (...args) => setEmotion(...args),
+    protectExpression: until => protectCurrentExpressionThroughSpeech(until),
+  },
+  feedback: {
+    diagnostic: (...args) => recordVoiceDiagnostic(...args),
+    syncSubmitButton: () => syncChatSubmitButton(),
+    showThinking: (...args) => thinkingIndicatorController?.show?.(...args),
+    hideThinking: (...args) => thinkingIndicatorController?.hide?.(...args),
+    updateThinking: (...args) => thinkingIndicatorController?.updateStage?.(...args),
+    showFailure: (...args) => showVoiceFailure(...args),
+    clearFailure: () => clearVoiceFailure(),
+  },
+  rules: {
+    normalizeSpeechPace: value => normalizeSpeechPace(value),
+    speedForSpeechPace: value => speedForSpeechPace(value),
+    normalizeVoiceIntensity: value => normalizeVoiceIntensity(value),
+    normalizeSpeechLanguage: value => normalizeSpeechLanguage(value),
+    normalizeSpeechProsody: value => normalizeSpeechProsody(value),
+    speechLanguageProfile: value => speechLanguageProfile(value),
+    chooseSpeechText: (...args) => chooseSpeechText(...args),
+    resolveSpeechPace: (...args) => resolveSpeechPace(...args),
+    resolveSpeechSpeed: (...args) => resolveSpeechSpeed(...args),
+    resolveAssistantMood: (...args) => resolveAssistantMood(...args),
+  },
+});
 let developerRuntimeTimer = 0;
 let developerPersonaSkillMonitor = null;
-let developerEmotionOverride = null;
-let developerEmotionManualBlush = null;
-let developerParameterLock = false;
-let developerExpressionCalibrationActive = false;
-let developerParameterShowAdvanced = false;
-const developerParameterOverrides = new Map();
-const developerParameterBaseline = new Map();
-let developerParameterMetadata = [];
-const developerParameterDisplayNames = new Map();
-let developerExpressionTrainingSamples = [];
-let developerExpressionRuntime = { schemaVersion: 1, activeByModel: {} };
-let developerExpressionTrainingSelectedId = "";
-let developerExpressionTrainingLoaded = false;
-let developerExpressionTrainingDirty = false;
-let developerExpressionTrainingEditorOpen = false;
-let developerExpressionTrainingDraft = null;
-let developerExpressionTrainingDraftIsNew = false;
-let developerExpressionTrainingPreviousSelectedId = "";
-let developerTrainingKind = "expression";
-let developerVoiceReferences = [];
-let developerVoiceReferenceCatalog = null;
-let developerVoiceReferenceLoaded = false;
-let developerVoiceReferenceSelectedId = "";
-let developerVoiceReferenceDraft = null;
-let developerVoiceReferenceDirty = false;
-let developerVoiceReferenceAudioUrl = "";
-let developerVoiceReferenceOriginalAudioUrl = "";
-const developerVoiceReferenceAudioLoadTokens = { candidate: 0, original: 0 };
-let developerAuthorBlushOpacityOverride = null;
-const developerPupilScaleOverrides = { left: null, right: null };
 let connectionWatchdogTimer = 0;
 let latestRuntimeStatus = null;
-let animeMouthState = createAnimeMouthState();
-let startupGreetingPending = false;
-let startupGreetingPreparing = false;
-let preparedStartupGreeting = null;
-let startupGreetingGeneration = 0;
-let startupGreetingAbortController = null;
-let nextProactiveInteractionAt = 0;
-let proactiveInteractionInFlight = false;
-const proactivePersistenceInFlight = new Set();
-let todoItems = [];
-let todoActiveCount = 0;
-let todoLatestRevision = 0;
-let todoSeenRevision = Math.max(
-  0,
-  Number(window.localStorage.getItem(TODO_SEEN_REVISION_KEY)) || 0,
-);
-let todoUnseenCount = 0;
-let todoEditorTaskId = "";
-let todoEditorVersion = 0;
-let todoLoadInFlight = false;
-let todoLoadPending = false;
-let todoMarkSeenPending = false;
-let todoReminderInFlight = false;
-let bookmarkItems = [];
-let bookmarkEditorId = "";
-let bookmarkEditorVersion = 0;
-let bookmarkLoadInFlight = false;
-let bookmarkLoadPending = false;
-let todoReminderTimer = 0;
-let todoRefreshTimer = 0;
-let salieriRefreshTimer = 0;
-let salieriRecorderEnabled = false;
+let bookmarksController = null;
+let messageView = null;
+let apiVerificationController = null;
+let settingsController = null;
+let todoController = null;
+let modelTransformController = null;
+let chatController = null;
+let thinkingIndicatorController = null;
+let touchInteractionController = null;
+let salieriController = null;
+let voiceDiagnosticsController = null;
+let personaController = null;
+let relationshipController = null;
+let expressionController = null;
 let nextPositiveAmbientMoodAt = performance.now() + 150000 + Math.random() * 210000;
-const proactiveState = {
-  lastUserActivityAt: performance.now(),
-  lastProactiveAt: 0,
-  unansweredCount: 0,
-  phase: "idle",
-  returnContext: "",
-  nextAmbientMoodAt: 0,
-  silenceLimit: PROACTIVE_LOGIC.silenceLimit(),
-  activePrompt: "",
-  activeSubject: "",
-  sequenceId: 1,
-  control: normalizeProactiveControl(state.proactiveControl),
-};
 let bootSequenceActive = true;
-let speechGeneration = 0;
-let chatRequestGeneration = 0;
-let chatAbortController = null;
-let chatRequestInFlight = false;
-let thinkingIndicator = null;
-let thinkingProgressTimer = 0;
-let thinkingProgressRequestId = "";
-let activeChatRequestId = "";
-let activeAnswerRequestId = "";
-let supersededChatRequestId = "";
-let deferredTouchAssistant = null;
 let firstRunApiSetupOpened = false;
 let activeConversationGroup = "";
 let activeConversationInputs = [];
@@ -461,53 +397,14 @@ let pendingReplyAnchor = null;
 let pendingAttachments = [];
 let attachmentSerializationInFlight = false;
 let conversationWasInterrupted = false;
-let activeAssistantMessage = null;
-const chatHistorySearchState = {
-  query: "",
-  role: "all",
-  offset: 0,
-  limit: 30,
-  total: 0,
-  hasMore: false,
-  timer: 0,
-  controller: null,
-  results: [],
-};
-const conversationPickerState = {
-  controller: null,
-  conversations: [],
-  loading: false,
-};
-let speechPipelineGeneration = 0;
-let speechPipelineAbortController = null;
-let speechRequestAbortController = null;
-let speechGapIndicatorGeneration = 0;
-let speechPipelineActive = false;
-let touchRequestAbortController = null;
-let touchRequestGeneration = 0;
-let proactiveRequestAbortController = null;
-let proactiveRequestGeneration = 0;
-let touchDebounceTimer = 0;
-let lastDeveloperTouchAt = 0;
-let touchRegionConfig = DEFAULT_TOUCH_REGION_CONFIG;
-const touchState = {
-  recentTouches: [],
-  recentReplies: [],
-  sequence: [],
-  zoneCounts: {},
-  sessionCount: 0,
-  consecutiveZone: "",
-  consecutiveCount: 0,
-  elapsedSinceSameZoneMs: 3600000,
-  requestInFlight: false,
-  pendingZone: "",
-  pendingAfterChat: false,
-  lastTouchAt: 0,
-  nonChestTouchesSinceReply: NON_CHEST_TOUCH_REPLY_TARGET - 1,
-  lastNonChestReplyRequestedAt: 0,
-  replyCooldownUntil: 0,
-};
-const paramValues = {};
+let activeInteractionAssistantMessage = null;
+let chatHistorySearchController = null;
+let conversationPickerController = null;
+let conversationStateController = null;
+let assistantPresentationController = null;
+let visualParameterController = null;
+let gestureMotionController = null;
+let nativeMotionController = null;
 const MODEL_UI_HIDE_PARAMS = [
   "yy", "hd", "gyzz",
   "DZH", "BB", "KLSTN", "TX",
@@ -973,24 +870,6 @@ const EXPRESSION_TRAINING_LAYER_CHANNELS = Object.freeze({
   Param7: "娇羞脸、眼部、嘴部、lianhong/lianhong2",
   Param8: "惊讶脸、眼部轮廓、瞳孔观感、嘴部",
 });
-const MOUTH_TEMPLATE_FAMILY_BY_EMOTION = Object.freeze({
-  affectionate: "smile",
-  amused: "smile",
-  laughing: "smile",
-  excited: "smile",
-  proud: "smile",
-  teasing: "smile",
-  thinking: "awkward",
-  focused: "awkward",
-  skeptical: "awkward",
-  awkward: "awkward",
-  shy: "awkward",
-  flustered: "awkward",
-  concerned: "awkward",
-  annoyed: "angry",
-  furious: "angry",
-});
-
 // The model-facing emotion remains compatible with the existing JSON enum,
 // while this semantic layer determines how it behaves over time and which
 // visual family it belongs to.
@@ -1030,8 +909,100 @@ const EMOTION_OVERLAY_STRENGTH = Object.freeze({
 const COGNITIVE_BASE_RAW_INTENSITY = 0.15;
 const COGNITIVE_BASE_DETAIL_WEIGHT = 0.15;
 
+// 会话控制器只保存持久化事务与历史恢复代次；消息数组、当前会话和等待事实仍由页面/主动控制器提供。
+conversationStateController = CONVERSATION_STATE.createConversationStateController({
+  storage: window.localStorage,
+  storageKey: STORAGE_KEY,
+  legacyStorageKey: REQUESTED_DEV_MODE ? "" : "amadeus-live2d-chat-v1",
+  maxMessages: MAX_MESSAGES,
+  maxMemories: MAX_MEMORIES,
+  defaultMemories: DEFAULT_MEMORIES,
+  staleFallbackReplies: STALE_FALLBACK_REPLIES,
+  getState: () => state,
+  getWaitingForUser: () => proactiveController?.getWaitingForUser?.() ?? (state?.waitingForUser === true),
+  normalizeProactiveControl,
+  visibleMessageContent,
+  stripVisibleStageDirections,
+  clamp,
+  toNumber,
+  requestHistory: (...args) => storageScopedFetch(...args),
+  hydrateContext: (data, previousConversationId) => {
+    hydrateProactiveConversationContext(data, previousConversationId);
+  },
+  renderMessages: () => renderMessages(),
+  notify: message => toast(message),
+  warn: (...args) => console.warn(...args),
+});
+state = conversationStateController.load();
+
+// 表现规则控制器只持有归一化/推断算法；expression controller 仍持有当前情绪与动作代次。
+assistantPresentationController = ASSISTANT_PRESENTATION.createAssistantPresentationController({
+  getSettings: () => settings,
+  hasEmotion: emotion => Boolean(emotionTargets[emotion]),
+  expressionDefaultsFor,
+  nextGestureForEmotion: (...args) => expressionController?.nextGestureForEmotion?.(...args),
+  speechLanguageProfile,
+  clamp,
+  toNumber,
+});
+
+// 视觉参数控制器只接收本帧快照和写入端口；窄眼代次、瞳孔与脸红派生不再在页面循环复制。
+visualParameterController = VISUAL_PARAMETER_CONTROLLER.createVisualParameterController({
+  getActiveProfile: () => sceneSnapshot().activeProfile,
+  getVisualEmotion: () => effectiveVisualEmotion(),
+  visualEmotionIntensityWeight,
+  emotionLifecycleWeight,
+  setSmoothParam: (...args) => setSmoothParam(...args),
+  setMappedSmoothParam: (...args) => setMappedSmoothParam(...args),
+  updateRuntime: payload => parameterRenderer?.updateRuntime(payload),
+  renderMouth: payload => mouthParameterRenderer?.render(payload),
+  applyAnnotatedFaceLayers: plan => applyAnnotatedFaceLayers(plan),
+  modelArmPoseTarget: (...args) => modelArmPoseTarget(...args),
+});
+
+// 手势姿态只读取本帧 expression/frame 快照；页面继续拥有渲染循环和模型写入时序。
+gestureMotionController = GESTURE_MOTION.createGestureMotionController({
+  getExpressionSnapshot: () => expressionSnapshot(),
+  getFrameSnapshot: () => frameSnapshot(),
+});
+
+// 原生表情/动作只通过 scene profile 与模型端口交付；最后一次表达式/动作由控制器保存。
+nativeMotionController = NATIVE_MOTION_CONTROLLER.createNativeMotionController({
+  getModel: () => sceneSnapshot().model,
+  getProfile: () => sceneSnapshot().activeProfile,
+  getRigModelId: () => activeRigModelId(),
+  now: () => performance.now(),
+  random: () => Math.random(),
+});
+
 document.addEventListener("DOMContentLoaded", () => {
   bindDom();
+  bindBackgroundRenderer();
+  bindExpressionController();
+  bindChatHistorySearch();
+  bindConversationPicker();
+  bindBookmarks();
+  bindMessageView();
+  bindSettingsController();
+  bindTodoController();
+  bindSceneController();
+  bindDeveloperModelEditorController();
+  bindFrameController();
+  bindMouthParameterRenderer();
+  bindParameterRenderer();
+  bindDeveloperEmotionController();
+  bindParameterLabController();
+  bindVoiceReferenceController();
+  bindModelTransformController();
+  bindSalieriPanel();
+  bindVoiceDiagnostics();
+  bindPersonaController();
+  bindRelationshipController();
+  bindApiVerification();
+  bindChatController();
+  bindThinkingIndicatorController();
+  bindProactiveControllers();
+  bindTouchInteraction();
   bindEvents();
   syncChatSubmitButton();
   boot();
@@ -1388,6 +1359,1018 @@ function bindDom() {
   dom.todoToggleBtn?.setAttribute("aria-label", todoDrawerOpen ? "收起待办" : "展开待办");
 }
 
+function bindChatHistorySearch() {
+  chatHistorySearchController = CHAT_HISTORY_SEARCH.createChatHistorySearchController({
+    document,
+    elements: {
+      panel: dom.chatHistorySearchPanel,
+      opener: dom.chatHistorySearchBtn,
+      input: dom.chatHistorySearchInput,
+      closeButton: dom.closeChatHistorySearchBtn,
+      roleButtons: dom.chatHistorySearchRoleButtons,
+      status: dom.chatHistorySearchStatus,
+      results: dom.chatHistorySearchResults,
+      prevButton: dom.chatHistorySearchPrevBtn,
+      nextButton: dom.chatHistorySearchNextBtn,
+      page: dom.chatHistorySearchPage,
+      chatLog: dom.chatLog,
+    },
+    requestPage: requestConversationHistorySearch,
+    notify: toast,
+    setTimer: window.setTimeout.bind(window),
+    clearTimer: window.clearTimeout.bind(window),
+    createAbortController: () => new AbortController(),
+  });
+  chatHistorySearchController.bind();
+}
+
+// 会话列表只通过这一处触及页面共享的会话、消息与回复状态；控制器本身不保存它们。
+async function applyConversationPickerTransition({ kind, data, requestedId = "" }) {
+  invalidateConversationHistoryHydration();
+  if (kind === "new") {
+    state.contextEpoch = Math.max(0, Number(data.context?.conversationEpoch) || 0);
+    state.conversationId = String(data.context?.conversationId || `conv_${state.contextEpoch}`);
+    state.messages = [];
+    applyProactiveControl(data.context?.proactiveControl, { persistState: false });
+    renderMessages();
+    persist();
+    return;
+  }
+  if (kind === "active-deleted") {
+    state.contextEpoch = Math.max(0, Number(data.context?.conversationEpoch) || 0);
+    state.conversationId = String(
+      data.context?.conversationId || data.activeConversationId || `conv_${state.contextEpoch}`,
+    );
+    state.messages = [];
+    applyProactiveControl(data.context?.proactiveControl, { persistState: false });
+    resetActiveConversationRequestState();
+    clearPendingReplyAnchor();
+    renderMessages();
+    persist();
+    return;
+  }
+  if (kind === "switch") {
+    state.contextEpoch = Math.max(0, Number(data.context?.conversationEpoch) || 0);
+    state.conversationId = String(data.context?.conversationId || requestedId);
+    state.messages = [];
+    applyProactiveControl(data.context?.proactiveControl, { persistState: false });
+    await hydrateConversationHistory();
+    renderMessages();
+    persist();
+  }
+}
+
+function bindConversationPicker() {
+  conversationPickerController = CHAT_CONVERSATION_PICKER.createConversationPickerController({
+    document,
+    elements: {
+      trigger: dom.newConversationBtn,
+      panel: dom.conversationPicker,
+      closeButton: dom.conversationPickerCloseBtn,
+      count: dom.conversationPickerCount,
+      status: dom.conversationPickerStatus,
+      list: dom.conversationPickerList,
+      createButton: dom.conversationCreateBtn,
+      composer: dom.userInput,
+    },
+    request: storageScopedFetch,
+    session: {
+      getCurrentConversationId: () => state.conversationId,
+      prepareForNavigation: prepareForConversationNavigation,
+      applyTransition: applyConversationPickerTransition,
+    },
+    beforeOpen: () => {
+      if (!dom.settingsModal?.classList.contains("hidden")) closeSettings();
+      setChatCollapsed(false, { scroll: false });
+      bookmarksController?.close();
+      closeChatHistorySearch();
+    },
+    notify: toast,
+    confirm: window.confirm.bind(window),
+    createAbortController: () => new AbortController(),
+  });
+  conversationPickerController.bind();
+}
+
+function bindBookmarks() {
+  bookmarksController = CHAT_BOOKMARKS.createBookmarksController({
+    document,
+    elements: {
+      trigger: dom.bookmarkBtn,
+      panel: dom.bookmarkPanel,
+      closeButton: dom.bookmarkCloseBtn,
+      refreshButton: dom.bookmarkRefreshBtn,
+      count: dom.bookmarkCount,
+      quickForm: dom.bookmarkQuickForm,
+      quickName: dom.bookmarkQuickName,
+      quickUrl: dom.bookmarkQuickUrl,
+      list: dom.bookmarkList,
+      empty: dom.bookmarkEmpty,
+      editor: dom.bookmarkEditor,
+      editorName: dom.bookmarkEditorName,
+      editorUrl: dom.bookmarkEditorUrl,
+      editorCancelButton: dom.bookmarkEditorCancelBtn,
+      editorDeleteButton: dom.bookmarkEditorDeleteBtn,
+    },
+    gateway: {
+      listBookmarks: async () => {
+        const response = await storageScopedFetch("/api/bookmarks", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || data.ok === false) throw new Error(data.error || "bookmark load failed");
+        return data;
+      },
+      mutateBookmark: async body => {
+        const response = await storageScopedFetch("/api/bookmarks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.message || data.error || `bookmark request failed (${response.status})`);
+        }
+        return data;
+      },
+      openBrowser: async body => {
+        const response = await storageScopedFetch("/api/actions/open-browser", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.message || data.error || "浏览器没有接受请求");
+        }
+        return data;
+      },
+    },
+    beforeOpen: () => {
+      setChatCollapsed(false, { scroll: false });
+      conversationPickerController?.close();
+      closeChatHistorySearch();
+    },
+    notify: toast,
+    setTimer: window.setTimeout.bind(window),
+    queueMicrotask: window.queueMicrotask.bind(window),
+    now: Date.now,
+  });
+  bookmarksController.bind();
+}
+
+function bindMessageView() {
+  messageView = CHAT_MESSAGE_VIEW.createMessageView({
+    document,
+    chatLog: dom.chatLog,
+    actions: {
+      reply: ({ role, content, meta }) => replyToMessage(role, content, meta),
+      openSource: async ({ url, actionId }) => {
+        try {
+          const response = await fetch("/api/actions/open-browser", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url, actionId }),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            toast(result.message || "浏览器没有接受打开请求");
+          }
+        } catch (_error) {
+          toast("打开请求未能交给本地浏览器网关");
+        }
+      },
+      saveGeneratedFile,
+    },
+    notify: toast,
+    isDeveloper: () => DEV_MODE,
+    maxAttachments: MAX_CHAT_ATTACHMENTS,
+    clipboard: navigator.clipboard,
+    formatContent: (role, content) => visibleMessageContent(role, content),
+    formatSpeechDiagnostic: metaData => {
+      const speechText = metaData.speechText || metaData.spokenTextJa;
+      if (!speechText) return "";
+      const label = normalizeSpeechLanguage(metaData.speechLanguage) === "zh-CN" ? "ZH" : "JA";
+      return `${label}: ${stripVisibleStageDirections(speechText)}`;
+    },
+    setTimer: window.setTimeout.bind(window),
+    requestAnimationFrame,
+  });
+}
+
+function bindSettingsController() {
+  settingsController = SETTINGS_CONTROLLER.createSettingsController({
+    getSettings: () => settings,
+    normalizeSettings,
+    replaceSettings: nextSettings => { settings = nextSettings; },
+    renderForm: () => fillSettingsForm(),
+    applySettingsToUi: () => applySettingsToUi(),
+    request: (...args) => fetch(...args),
+    onLoaded: data => {
+      registerBackgroundImages(data.backgroundPresets);
+      if (data.windowAspectRatios?.lite && data.windowAspectRatios?.full) {
+        windowAspectRatios = data.windowAspectRatios;
+      }
+    },
+    onLoadError: error => {
+      console.warn(error);
+      toast(`设置加载失败：${error.message}`);
+    },
+    onSettingsSaved: (update, previousSettings) => {
+      apiVerificationController?.onSettingsSaved(update, previousSettings);
+    },
+    applyWindowSettings: nextSettings => {
+      if (!window.pywebview?.api?.applyWindowSettings) return null;
+      return window.pywebview.api.applyWindowSettings(nextSettings);
+    },
+    notify: message => toast(message),
+  });
+  settingsController.bind();
+}
+
+function bindTodoController() {
+  todoController = TODO_CONTROLLER.createTodoController({
+    elements: {
+      drawer: dom.todoDrawer,
+      toggle: dom.todoToggleBtn,
+      refresh: dom.todoRefreshBtn,
+      filter: dom.todoFilterInput,
+      quickForm: dom.todoQuickForm,
+      list: dom.todoList,
+      editor: dom.todoEditor,
+      editorDueAt: dom.todoEditorDueAt,
+      editorDueDate: dom.todoEditorDueDate,
+      editorCancel: dom.todoEditorCancelBtn,
+      editorDelete: dom.todoEditorDeleteBtn,
+    },
+    storage: {
+      readSeenRevision: () => Number(window.localStorage.getItem(TODO_SEEN_REVISION_KEY)) || 0,
+      writeSeenRevision: revision => {
+        window.localStorage.setItem(TODO_SEEN_REVISION_KEY, String(revision));
+      },
+    },
+    transport: { request: (...args) => storageScopedFetch(...args) },
+    view: {
+      isDrawerOpen: () => Boolean(dom.todoDrawer?.classList.contains("open")),
+      setDrawerOpen: open => {
+        if (!dom.todoDrawer) return false;
+        dom.todoDrawer.classList.toggle("open", Boolean(open));
+        dom.todoDrawer.setAttribute("aria-expanded", String(Boolean(open)));
+        dom.todoToggleBtn?.setAttribute("aria-label", open ? "收起待办" : "展开待办");
+        window.localStorage.setItem(TODO_DRAWER_OPEN_KEY, open ? "1" : "0");
+        return true;
+      },
+      getFilterValue: () => dom.todoFilterInput?.value || "active",
+      getQuickTitle: () => dom.todoQuickTitle?.value || "",
+      setQuickTitle: value => { if (dom.todoQuickTitle) dom.todoQuickTitle.value = value; },
+      renderBadge: state => renderTodoBadge(state),
+      renderItems: (items, state) => renderTodoItems(items, state),
+      setEditor: item => {
+        dom.todoEditorTitle.value = String(item.title || "");
+        dom.todoEditorDetails.value = String(item.details || "");
+        dom.todoEditorDueAt.value = todoDateTimeInputValue(item.dueAt);
+        dom.todoEditorDueDate.value = String(item.dueDate || "");
+        dom.todoEditorPriority.value = String(item.priority || "normal");
+        dom.todoEditorRemindBefore.value = String(item.remindBeforeMinutes || 0);
+        dom.todoEditorRecurrence.value = String(item.recurrenceRule || "");
+        dom.todoEditor.classList.remove("hidden");
+        dom.todoEditorTitle.focus();
+      },
+      readEditor: () => ({
+        title: dom.todoEditorTitle.value,
+        details: dom.todoEditorDetails.value,
+        dueAt: dom.todoEditorDueAt.value,
+        dueDate: dom.todoEditorDueDate.value,
+        priority: dom.todoEditorPriority.value,
+        remindBeforeMinutes: dom.todoEditorRemindBefore.value,
+        recurrenceRule: dom.todoEditorRecurrence.value,
+      }),
+      clearEditor: () => dom.todoEditor?.classList.add("hidden"),
+    },
+    feedback: {
+      warn: (...args) => console.warn(...args),
+      notify: message => toast(message),
+    },
+  });
+  todoController.bind();
+}
+
+function bindModelTransformController() {
+  modelTransformController = MODEL_TRANSFORM_CONTROLLER.createModelTransformController({
+    isDeveloper: () => DEV_MODE,
+    storage: {
+      read: key => window.localStorage.getItem(key),
+      write: (key, value) => window.localStorage.setItem(key, value),
+    },
+    storageKey: "amadeus-dev-model-transforms-v1",
+    settings: {
+      get: () => settings,
+      replace: nextSettings => { settings = nextSettings; },
+    },
+    getSelectedModelId: () => dom.live2dModelInput?.value || "",
+    getActiveModelId: () => sceneSnapshot().activeProfile?.id || FALLBACK_MODEL_PROFILE.id,
+    fit: () => fitModel(),
+    notify: message => toast(message),
+    view: {
+      modelInput: dom.live2dModelInput,
+      scaleInput: dom.modelScaleInput,
+      offsetXInput: dom.modelOffsetXInput,
+      offsetYInput: dom.modelOffsetYInput,
+      scaleValue: dom.modelScaleValue,
+      resetButton: dom.resetModelTransformBtn,
+    },
+    onModelSelectionChanged: () => updateLive2DModelHint(),
+  });
+  modelTransformController.bind();
+}
+
+function bindSalieriPanel() {
+  salieriController = SALIERI_PANEL.createSalieriPanelController({
+    elements: {
+      toggle: dom.salieriWindowToggle,
+      window: dom.salieriWindow,
+      close: dom.salieriCloseBtn,
+      unlockForm: dom.salieriUnlockForm,
+      codeInput: dom.salieriCodeInput,
+      transcriptWrap: dom.salieriTranscriptWrap,
+      transcript: dom.salieriTranscript,
+      status: dom.salieriStatus,
+      refresh: dom.salieriRefreshBtn,
+      path: dom.salieriPath,
+      message: dom.salieriMessage,
+    },
+    transport: { request: (...args) => storageScopedFetch(...args) },
+    view: {
+      isMemoryPageVisible: () => !dom.settingsModal?.classList.contains("hidden")
+        && dom.tabPages?.some(page => (
+          page.dataset.page === "memory" && page.classList.contains("active")
+        )),
+      setOpen: open => {
+        dom.salieriWindow?.classList.toggle("hidden", !open);
+        dom.salieriWindowToggle?.setAttribute("aria-expanded", String(open));
+      },
+    },
+  });
+  salieriController.bind();
+}
+
+function bindVoiceDiagnostics() {
+  voiceDiagnosticsController = VOICE_DIAGNOSTICS.createVoiceDiagnosticsController({
+    document,
+    isDeveloper: () => DEV_MODE,
+    elements: {
+      developerPanel: dom.developerPanel,
+      voiceStatus: dom.devVoiceStatus,
+      replyZh: dom.devReplyZh,
+      spokenJa: dom.devSpokenJa,
+      speakingJa: dom.devSpeakingJa,
+      diagnostic: dom.devVoiceDiagnostic,
+      stopDiagnostic: dom.devVoiceStopDiagnostic,
+      events: dom.devVoiceEvents,
+    },
+    settings: {
+      get: () => ({ ttsProvider: settings.ttsProvider || DEFAULT_SETTINGS.ttsProvider }),
+    },
+    speech: {
+      getState: () => speechPlayback.state,
+      getCurrentIndex: () => speechPlayback.currentSpeechIndex,
+      isSpeaking: now => isSpeaking(now),
+    },
+    clock: { now: () => Date.now() },
+  });
+  voiceDiagnosticsController.bind();
+}
+
+function bindPersonaController() {
+  personaController = PERSONA_CONTROLLER.createPersonaController({
+    document,
+    isDeveloper: () => DEV_MODE,
+    elements: {
+      reloadDev: dom.reloadPersonaBtn,
+      reloadSettings: dom.reloadSettingsPersonaBtn,
+      devSave: dom.savePersonaBtn,
+      settingsSave: dom.saveSettingsPersonaBtn,
+      devOverride: dom.devPersonaOverride,
+      settingsOverride: dom.settingsPersonaOverride,
+      devStatus: dom.devPersonaStatus,
+      settingsStatus: dom.settingsPersonaStatus,
+      summary: dom.devPersonaSummary,
+      generatedSkill: dom.devGeneratedSkill,
+    },
+    transport: { request: (...args) => storageScopedFetch(...args) },
+    view: {
+      isSettingsVisible: () => !dom.settingsModal?.classList.contains("hidden"),
+    },
+    feedback: { notify: message => toast(message) },
+  });
+  personaController.bind();
+}
+
+function bindRelationshipController() {
+  relationshipController = RELATIONSHIP_CONTROLLER.createRelationshipController({
+    document,
+    isDeveloper: () => DEV_MODE,
+    elements: {
+      refresh: dom.refreshRelationshipBtn,
+      scopeInput: dom.devRelationshipScopeInput,
+      scopeStatus: dom.devRelationshipScopeStatus,
+      stage: dom.devRelationshipStage,
+      radar: dom.devRelationshipRadar,
+      radarValue: dom.devRelationshipRadarValue,
+      radarDots: dom.devRelationshipRadarDots,
+      nextTitle: dom.devRelationshipNextTitle,
+      readiness: dom.devRelationshipReadiness,
+      readinessValue: dom.devRelationshipReadinessValue,
+      reactionProfile: dom.devRelationshipReactionProfile,
+      stagePath: dom.devRelationshipStagePath,
+      meters: dom.devRelationshipMeters,
+      requirements: dom.devRelationshipRequirements,
+      explanation: dom.devRelationshipExplanation,
+      detail: dom.devRelationshipDetail,
+    },
+    transport: { request: (...args) => storageScopedFetch(...args) },
+    feedback: { warn: (...args) => console.warn(...args) },
+  });
+  relationshipController.bind();
+}
+
+function bindExpressionController() {
+  expressionController = EXPRESSION_CONTROLLER.createExpressionController({
+    catalog: {
+      targets: emotionTargets,
+      semantics: EMOTION_SEMANTICS,
+      gestureCycles: EMOTION_GESTURE_CYCLES,
+      overlayStrength: EMOTION_OVERLAY_STRENGTH,
+      cognitiveBaseDetailWeight: COGNITIVE_BASE_DETAIL_WEIGHT,
+      defaults: expressionDefaultsFor,
+      timings: emotionTimingFor,
+    },
+    clock: { now: () => performance.now() },
+    ports: {
+      isDeveloper: () => DEV_MODE,
+      getDeveloperOverride: () => developerEmotionController?.getOverride?.() || null,
+      getDeveloperManualBlush: () => developerEmotionController?.getManualBlush?.() ?? null,
+      clearDeveloperManualBlush: () => developerEmotionController?.clearManualBlush?.(),
+      getSpeechState: () => speechPlayback.state,
+      isPipelineActive: () => speechPlayback.pipelineActive,
+      isSpeaking: now => speechPlayback.isSpeaking(now),
+      getPersistentColdShoulder: () => persistentColdShoulder,
+      getPointer: () => frameSnapshot().pointer,
+      getHeadTurnProfile: () => activeHeadTurnProfile(),
+      normalizeGesture: value => normalizeGesture(value),
+      getAnnotatedExpressionStyleEmotion: () => annotatedExpressionStyleEmotion,
+      setAnnotatedExpressionStyleEmotion: (emotion, detail = {}) => {
+        annotatedExpressionStyleEmotion = emotion;
+        const requestedVariantUnit = Number(detail.annotatedVariantUnit);
+        annotatedExpressionVariantUnit = Number.isFinite(requestedVariantUnit)
+          ? clamp(requestedVariantUnit, 0, 0.999999)
+          : Math.random();
+        annotatedExpressionMirrorSide = Math.random() < 0.5 ? -1 : 1;
+      },
+      getMessages: () => state.messages,
+      requestContextEmotion: payload => storageScopedFetch("/api/emotion-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then(response => response.json().then(data => {
+        if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+      })),
+      visualIntensity: rawIntensity => visualEmotionIntensityWeight(rawIntensity),
+      applyNativeExpression: emotion => nativeMotionController?.applyExpression(emotion),
+      applyNativeMotion: (emotion, gesture) => nativeMotionController?.applyMotion(emotion, gesture),
+      pulseInteraction: id => pulseInteraction(id),
+      updateModelStateLabel: () => updateModelStateLabel(),
+      updateDeveloperEmotionPanel: () => developerEmotionController?.renderPanel?.(),
+      setGlitch: () => {
+        document.body.classList.add("glitch");
+        window.setTimeout(() => document.body.classList.remove("glitch"), 560);
+      },
+      warn: (...args) => console.warn(...args),
+    },
+  });
+}
+
+function expressionSnapshot() {
+  return expressionController?.getState() || {
+    currentEmotion: "neutral",
+    stableEmotion: "neutral",
+    emotionRecoveryTarget: "neutral",
+    cognitiveOverlayBaseEmotion: "neutral",
+    cognitiveOverlayBaseDetail: null,
+    emotionEnteredAt: performance.now(),
+    currentEmotionHoldMs: 0,
+    currentEmotionFadeMs: 1200,
+    emotionSpeechProtectedUntil: 0,
+    activeGesture: "",
+    gestureUntil: 0,
+    gestureEnteredAt: performance.now(),
+    lookAwayDirection: 1,
+    furiousTurnDirection: 0,
+    furiousTurnTarget: 0,
+    furiousTurnVelocity: 0,
+    currentEmotionWeight: 1,
+    currentExpressionDetail: {
+      blushIntensity: 0,
+      eyeContact: 0.65,
+      gazeX: 0,
+      gazeY: 0,
+      tension: 0,
+      outburst: false,
+    },
+    nextContextEmotionAt: 0,
+    contextEmotionRequestInFlight: false,
+  };
+}
+
+function bindApiVerification() {
+  apiVerificationController = API_VERIFICATION.createApiVerificationController({
+    elements: {
+      settingsStatus: dom.settingsStatus,
+      apiEndpointInput: dom.apiEndpointInput,
+      apiModelInput: dom.apiModelInput,
+      cognitiveRepairModelInput: dom.cognitiveRepairModelInput,
+      apiKeyInput: dom.apiKeyInput,
+      visionEnabledInput: dom.visionEnabledInput,
+      visionApiKeyInput: dom.visionApiKeyInput,
+      apiNetworkModeInput: dom.apiNetworkModeInput,
+      apiProxyUrlInput: dom.apiProxyUrlInput,
+      responseFormatInput: dom.responseFormatInput,
+      saveApiButton: dom.saveApiBtn,
+      testApiButton: dom.testApiBtn,
+      apiTestStatus: dom.apiTestStatus,
+    },
+    getSettings: () => settings,
+    saveSettings,
+    request: fetch,
+    summarizeError: connectionErrorSummary,
+    notify: toast,
+    savedApiKeyMask: SAVED_API_KEY_MASK,
+    onTestSettled: label => {
+      connectionStatus = label;
+      updateModelStateLabel();
+    },
+  });
+  apiVerificationController.bind();
+}
+
+function bindSceneController() {
+  sceneController = SCENE_CONTROLLER.createSceneController({
+    registryUrl: MODEL_REGISTRY_URL,
+    fallbackProfile: FALLBACK_MODEL_PROFILE,
+    renderResolution: RENDER_RESOLUTION,
+    getPixi: () => window.PIXI,
+    getWindow: () => window,
+    request: (...args) => fetch(...args),
+    runtime: {
+      isDeveloper: () => DEV_MODE,
+      getPreviewModelId: () => MODEL_PREVIEW_ID,
+      getSettings: () => settings,
+      setLive2DModelId: modelId => { settings.live2dModelId = modelId; },
+    },
+    stage: {
+      canvas: dom.canvas,
+      onStageCreated: () => drawPixiBackground(),
+      onProfileChanged: snapshot => {
+        const profile = snapshot.activeProfile;
+        touchInteractionController?.setModelProfile(profile);
+        document.body.dataset.live2dModel = profile.id;
+        renderLive2DModelOptions();
+        if (DEV_MODE) {
+          developerModelEditorController?.render?.();
+          touchInteractionController?.renderRegions();
+        }
+      },
+      onPointerDown: (...args) => touchInteractionController?.handleModelTouch(...args),
+      onTicker: (...args) => updateLive2D(...args),
+      drawBackground: () => drawPixiBackground(),
+      exposeDebug: snapshot => {
+        window.__AMADEUS_MODEL_DEBUG__ = {
+          profile: snapshot.activeProfile,
+          model: snapshot.model,
+          coreModel: snapshot.coreModel,
+        };
+      },
+      warn: (...args) => console.warn(...args),
+    },
+    model: {
+      installGarmentRig: (modelInstance, config) => AmadeusGarmentRig.install(modelInstance, config),
+      installPostMotionRetargeting: () => installPostMotionRetargeting(),
+    },
+    fit: {
+      fitPortrait: (...args) => window.AmadeusPortraitFraming.fitPortrait(...args),
+      getTransform: modelId => modelTransformFor(modelId),
+      getLayoutMode: () => settings.layoutMode,
+    },
+  });
+}
+
+function bindDeveloperModelEditorController() {
+  // 模型编辑器独占所选 profile、JSON 草稿和保存/重载代次；scene controller 仍独占注册表与生效场景。
+  developerModelEditorController = DEVELOPER_MODEL_EDITOR.createDeveloperModelEditorController({
+    dom,
+    document,
+    window,
+    isDeveloper: () => DEV_MODE,
+    getSceneSnapshot: sceneSnapshot,
+    getPreviewModelId: () => MODEL_PREVIEW_ID,
+    loadRegistry: () => loadLive2DModelRegistry(),
+    request: (...args) => fetch(...args),
+    notify: toast,
+    clamp,
+    toNumber,
+  });
+  developerModelEditorController.bind();
+}
+
+function bindFrameController() {
+  // 帧控制器只保留随时间变化的视线/眨眼状态；模型参数写入仍在页面渲染段完成，
+  // 这样触摸、聊天和语音可以共享同一快照，却不会复制一份逐帧状态。
+  frameController = FRAME_CONTROLLER.createFrameController({
+    clock: { now: () => performance.now() },
+  });
+}
+
+function bindBackgroundRenderer() {
+  // 背景控制器只接受生效 settings 和场景层 port；设置草稿仍由页面 settings owner 保存。
+  backgroundRenderer = BACKGROUND_RENDERER.createBackgroundRenderer({
+    bootBackgroundUrl: BOOT_BACKGROUND_URL,
+    getPixi: () => window.PIXI,
+    getWindow: () => window,
+    getApp: () => sceneSnapshot().app,
+    getLayer: () => sceneSnapshot().backgroundLayer,
+    isKnownPreset: preset => BACKGROUND_PRESETS.has(preset),
+    getPresetUrl: preset => BACKGROUND_IMAGE_PRESETS.get(preset) || "",
+    getView: () => backgroundView(settings),
+    layout: (...args) => window.AmadeusBackgroundEditor.layout(...args),
+  });
+}
+
+function bindMouthParameterRenderer() {
+  // 语音只提供采样，口型 renderer 自己保存两个参数的平滑值，避免再次复制到页面全局。
+  mouthParameterRenderer = MOUTH_PARAMETER_RENDERER.createMouthParameterRenderer({
+    getProfile: () => sceneSnapshot().activeProfile?.lipSync || {},
+    writeParameter: (id, value) => setParam(id, value),
+  });
+}
+
+function bindParameterRenderer() {
+  // 通用参数平滑值与瞳孔/脸红运行时值只由 renderer 持有；页面逐帧段提交目标，不复制可变 map。
+  parameterRenderer = PARAMETER_RENDERER.createParameterRenderer({
+    writeParameter: (id, value) => setParam(id, value),
+    resolveMappedParameterIds: (channel, fallbackId) => mappedParameterIds(channel, fallbackId),
+  });
+}
+
+function bindDeveloperEmotionController() {
+  // 开发者情绪控制器独占面板草稿、手动锁和释放后的刷新预约；页面只提供表达式与渲染窄 port。
+  developerEmotionController = DEVELOPER_EMOTION_CONTROLLER.createDeveloperEmotionController({
+    dom,
+    isDeveloper: () => DEV_MODE,
+    normalizeEmotion,
+    normalizeGesture,
+    expressionDefaultsFor,
+    getExpressionSnapshot: expressionSnapshot,
+    getRuntimeEmotionTarget: emotion => runtimeEmotionTarget(emotion),
+    getEmotionSemantics: emotion => emotionSemanticsFor(emotion),
+    getVisualIntensity: raw => visualEmotionIntensityWeight(raw),
+    getAnnotatedPlan: emotion => activeAnnotatedExpressionPlan(emotion),
+    setEmotion: (...args) => setEmotion(...args),
+    scheduleContextRefresh: delay => expressionController?.scheduleContextRefresh?.(delay),
+    notify: message => toast(message),
+  });
+  developerEmotionController.bind();
+}
+
+function bindParameterLabController() {
+  // 参数实验台独占覆盖、标定与监督样本草稿；渲染参数和口型只通过窄 port 复用页面 owner。
+  developerParameterLabController = PARAMETER_LAB.createParameterLabController({
+    dom,
+    document,
+    window,
+    fetch: (...args) => fetch(...args),
+    storageScopedFetch: (...args) => storageScopedFetch(...args),
+    getSettings: () => settings,
+    sceneSnapshot,
+    setParam,
+    mappedParameterIds,
+    effectiveVisualEmotion,
+    expressionSnapshot,
+    isDeveloper: () => DEV_MODE,
+    toast,
+    resetRenderParameters: () => {
+      parameterRenderer?.resetParameters();
+      mouthParameterRenderer?.reset();
+    },
+    getRuntimeAuthorBlushOpacity: () => parameterRenderer?.getState()?.runtimeAuthorBlushOpacityValue ?? 1,
+    getRuntimePupilScaleValues: () => parameterRenderer?.getState()?.runtimePupilScaleValues || { left: 1, right: 1 },
+    authorFaceLayerIds: AUTHOR_FACE_LAYER_IDS,
+    trainingLayerByEmotion: EXPRESSION_TRAINING_LAYER_BY_EMOTION,
+    trainingLayerWarnings: EXPRESSION_TRAINING_LAYER_WARNINGS,
+    trainingLayerChannels: EXPRESSION_TRAINING_LAYER_CHANNELS,
+    trainingEmotionLabels: EXPRESSION_TRAINING_EMOTION_LABELS,
+    trainingStrengths: EXPRESSION_TRAINING_STRENGTHS,
+    trainingParameterGroups: EXPRESSION_TRAINING_PARAMETER_GROUPS,
+    trainingUnboundIds: EXPRESSION_TRAINING_UNBOUND_IDS,
+    clamp,
+    toNumber,
+  });
+  developerParameterLabController.bind();
+}
+
+function bindVoiceReferenceController() {
+  // 语音参考 controller 独占目录/审阅草稿/音频 URL；参数实验台和语音播放只通过窄 port 协调。
+  voiceReferenceController = VOICE_REFERENCE_CONTROLLER.createDeveloperVoiceReferenceController({
+    dom,
+    document,
+    window,
+    isDeveloper: () => DEV_MODE,
+    storageScopedFetch: (...args) => storageScopedFetch(...args),
+    notify: toast,
+    onExpressionTrainingSelected: () => developerParameterLabController?.renderTrainingGallery(),
+    onExpressionTrainingLoaded: () => developerParameterLabController?.loadTraining(),
+  });
+  voiceReferenceController.bind();
+}
+
+async function prepareStartupGreetingTts(greeting, { signal, generation = 0 } = {}) {
+  if (!greeting || !shouldSynchronizeTextWithVoice()) return null;
+  const provider = String(settings.ttsProvider || "").trim().toLowerCase();
+  if (provider !== "gpt-sovits") return null;
+  recordVoiceDiagnostic("startup-warmup", "启动动画期间正在加载语音模型并预合成开机问候");
+  const reply = String(greeting.reply || "").trim();
+  const spokenTextJa = String(greeting.spokenTextJa || greeting.spoken_text_ja || "").trim();
+  const speechText = chooseSpeechText(reply, spokenTextJa);
+  const mood = resolveAssistantMood(greeting, "", reply);
+  const speechPace = resolveSpeechPace(greeting, "");
+  const speechSpeed = resolveSpeechSpeed(greeting, "", speechPace);
+  const startupSemanticUnits = Array.isArray(greeting.speechUnits)
+    ? greeting.speechUnits
+      .filter(unit => unit && unit.deliveryRequired !== false)
+      .map(unit => chooseSpeechText(
+        String(unit.textZh || unit.zh || "").trim(),
+        String(unit.spokenTextJa || unit.ja || "").trim(),
+        greeting.speechLanguage,
+      ))
+      .filter(Boolean)
+    : null;
+  const ttsRequest = buildTtsRequest(
+    speechText,
+    mood.voiceStyle,
+    mood.voiceTone,
+    mood.voiceIntensity,
+    mood.emotionIntensity,
+    speechSpeed,
+    speechPace,
+    startupSemanticUnits,
+  );
+  ttsRequest.requestId = `startup-${Date.now()}-${generation}`;
+  ttsRequest.utteranceId = "startup-greeting";
+  const payload = await requestPreparedTts(ttsRequest, null, signal);
+  return {
+    key: preparedTtsKey(ttsRequest),
+    payload,
+  };
+}
+
+function bindChatController() {
+  chatController = CHAT_CONTROLLER.createChatController({
+    clock: {
+      now: () => performance.now(),
+      delay: milliseconds => delay(milliseconds),
+      createAbortController: () => new AbortController(),
+    },
+    transport: { request: (...args) => storageScopedFetch(...args) },
+    playback: { pipelineActive: () => speechPlayback.pipelineActive },
+    feedback: {
+      syncSubmitButton: () => syncChatSubmitButton(),
+      stopThinkingProgress: (requestId, generation) => thinkingIndicatorController?.stopProgress?.(requestId),
+      hideThinking: generation => thinkingIndicatorController?.hide?.(generation),
+      updateThinkingStage: (...args) => thinkingIndicatorController?.updateStage?.(...args),
+      updateConnectionStatus: data => updateConnectionStatus(data),
+      recoverBackend: () => requestNativeBackendRecovery(),
+      notifyBackendCancellation: requestId => notifyBackendAnswerCancellation(requestId),
+      interruptSpeech: () => interruptCurrentSpeech(),
+      toast: message => toast(message),
+      onStart: ({ generation, requestId }) => {
+        syncChatSubmitButton();
+        setEmotion("thinking", "nod", { restart: true });
+        thinkingIndicatorController?.show?.(generation, "context", "正在整理当前对话与记忆");
+        thinkingIndicatorController?.startProgress?.(requestId, generation);
+      },
+      onSettled: stateSnapshot => {
+        thinkingIndicatorController?.stopProgress?.(stateSnapshot.requestId);
+        if (!speechPlayback.pipelineActive) thinkingIndicatorController?.hide?.(stateSnapshot.generation);
+        syncChatSubmitButton();
+      },
+    },
+  });
+}
+
+function bindThinkingIndicatorController() {
+  // 思考气泡和 developer progress timer 只由该 controller 持有；聊天/语音只发窄 feedback 事件。
+  thinkingIndicatorController = THINKING_INDICATOR.createThinkingIndicatorController({
+    dom,
+    document,
+    window,
+    isDeveloper: () => DEV_MODE,
+    getGeneration: () => chatController?.getGeneration?.() || 0,
+    request: (...args) => fetch(...args),
+    scrollToLatest: () => messageView?.scrollToLatest(),
+  });
+}
+
+function bindProactiveControllers() {
+  reminderPollingController = REMINDER_POLLING.createReminderPollingController({
+    clock: {
+      now: () => performance.now(),
+      setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+      clearTimeout: timer => window.clearTimeout(timer),
+      setInterval: (callback, delay) => window.setInterval(callback, delay),
+      clearInterval: timer => window.clearInterval(timer),
+    },
+    session: {
+      isBootActive: () => bootSequenceActive,
+      isChatRequestInFlight: () => chatController?.isRequestInFlight() || false,
+      isProactiveRequestInFlight: () => proactiveController?.isRequestInFlight(),
+      isTouchRequestInFlight: () => touchInteractionController?.isRequestInFlight(),
+      getSpeechState: () => speechPlayback.state,
+      isSpeaking: now => isSpeaking(now),
+    },
+    transport: { request: (...args) => storageScopedFetch(...args) },
+    delivery: {
+      applyAssistant: (...args) => applyAssistant(...args),
+      applyProactiveControl: (...args) => applyProactiveControl(...args),
+      refreshTodos: () => loadTodos(),
+    },
+    feedback: { warn: (...args) => console.warn(...args) },
+  });
+
+  proactiveController = PROACTIVE_CONTROLLER.createProactiveController({
+    logic: PROACTIVE_LOGIC,
+    frequencyProfiles: PROACTIVE_FREQUENCY_PROFILES,
+    getSettings: () => settings,
+    clock: {
+      now: () => performance.now(),
+      random: () => Math.random(),
+      localHour: () => new Date().getHours(),
+      createAbortController: () => new AbortController(),
+    },
+    session: {
+      getInitialContext: () => ({
+        waitingForUser: state.waitingForUser,
+        proactiveControl: state.proactiveControl,
+      }),
+      setWaitingForUser: value => { state.waitingForUser = Boolean(value); },
+      setProactiveControl: value => { state.proactiveControl = { ...value }; },
+      persist: () => persist(),
+      getConversationIdentity: () => ({
+        conversationId: state.conversationId,
+        contextEpoch: state.contextEpoch,
+      }),
+      getMessageCount: () => state.messages.length,
+      getCleanHistory: () => cleanHistoryForModel(),
+      getRecentProactiveTexts: limit => state.messages
+        .filter(message => message?.role === "assistant" && message.meta?.kind === "proactive")
+        .slice(-Math.max(0, Number(limit) || 0))
+        .map(message => String(message.content || ""))
+        .filter(Boolean),
+      getMessages: () => state.messages,
+      isChatRequestInFlight: () => chatController?.isRequestInFlight() || false,
+      hasTouchPending: () => Boolean(touchInteractionController?.hasPendingWork?.()),
+    },
+    transport: { request: (...args) => storageScopedFetch(...args) },
+    speech: {
+      shouldSynchronizeTextWithVoice: () => shouldSynchronizeTextWithVoice(),
+      prepareStartupTts: (...args) => prepareStartupGreetingTts(...args),
+      onStartupAudioReady: prepared => recordVoiceDiagnostic("startup-audio-ready", "开机问候音频已在启动动画期间合成完成", {
+        audioBytes: Math.floor(String(prepared?.payload?.audioBase64 || "").length * 0.75),
+        alignmentId: String(prepared?.payload?.alignmentId || ""),
+      }),
+      onStartupTtsFailure: (error, greeting) => {
+        const deterministic = ttsRetryWouldDuplicateWork(error);
+        if (deterministic) {
+          greeting.startupTtsFailure = {
+            code: String(error?.code || "tts_incomplete_audio"),
+            message: String(error?.message || "开机问候语音确定性失败"),
+            deterministic: true,
+          };
+          recordVoiceDiagnostic(
+            "startup-audio-rejected",
+            `开机问候预合成已被确定性拒绝；本次只显示文字，不重复提交同一段音频：${error.message}`,
+          );
+        } else {
+          recordVoiceDiagnostic("startup-audio-retry", `开机问候预合成未完成，将在问候前继续等待并重试：${error.message}`);
+        }
+      },
+      getState: () => speechPlayback.state,
+      isSpeaking: now => isSpeaking(now),
+      interruptCurrentSpeech: () => interruptCurrentSpeech(),
+    },
+    scene: {
+      isDeveloper: () => DEV_MODE,
+      isBootActive: () => bootSequenceActive,
+      hasModel: () => Boolean(sceneSnapshot().model),
+      isSettingsModalOpen: () => Boolean(dom.settingsModal && !dom.settingsModal.classList.contains("hidden")),
+      isBookmarkPanelOpen: () => Boolean(dom.bookmarkPanel && !dom.bookmarkPanel.classList.contains("hidden")),
+      hasUserInput: () => Boolean(dom.userInput?.value.trim()),
+      getEmotionState: () => {
+        const expression = expressionSnapshot();
+        return { currentEmotion: expression.currentEmotion, weight: expression.currentEmotionWeight };
+      },
+      emotionLifecycleWeight: now => emotionLifecycleWeight(now),
+      getCurrentEmotion: () => expressionSnapshot().currentEmotion,
+      setEmotion: (...args) => setEmotion(...args),
+      schedulePositiveAmbientMood: at => {
+        nextPositiveAmbientMoodAt = at + 180000 + Math.random() * 300000;
+      },
+    },
+    delivery: { applyAssistant: (...args) => applyAssistant(...args) },
+    reminder: { isInFlight: () => reminderPollingController?.isInFlight() },
+    feedback: {
+      warn: (...args) => console.warn(...args),
+      toast: message => toast(message),
+      updateConnectionStatus: data => updateConnectionStatus(data),
+    },
+  });
+}
+
+function bindTouchInteraction() {
+  touchInteractionController = TOUCH_INTERACTION.createTouchInteractionController({
+    clock: {
+      now: () => performance.now(),
+      setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+      clearTimeout: timer => window.clearTimeout(timer),
+      createAbortController: () => new AbortController(),
+    },
+    config: {
+      request: (url, init) => fetch(url, init),
+    },
+    scene: {
+      getModel: () => sceneSnapshot().model,
+      getModelId: () => sceneSnapshot().activeProfile?.id || "",
+      isDeveloper: () => DEV_MODE,
+      getEmotion: () => ({
+        emotion: expressionSnapshot().currentEmotion,
+        weight: expressionSnapshot().currentEmotionWeight,
+        holdMs: expressionSnapshot().currentEmotionHoldMs,
+        fadeMs: expressionSnapshot().currentEmotionFadeMs,
+      }),
+      getRelationshipTone: () => relationshipTone,
+      preserveColdShoulderPose: () => preservePersistentFuriousPose(),
+      applyBodyTap: descriptor => setEmotion(descriptor.emotion, descriptor.gesture, {
+        emotionIntensity: descriptor.emotionIntensity,
+        restart: descriptor.restart,
+        smoothEmotionTransition: descriptor.smoothEmotionTransition,
+        holdMs: descriptor.holdMs,
+      }),
+      applyImmediateTouchFeedback: (descriptor, zone) => setEmotion(descriptor.emotion, descriptor.gesture, {
+        emotionIntensity: descriptor.emotionIntensity,
+        emotionDelta: descriptor.delta,
+        blushIntensity: descriptor.blushIntensity,
+        tension: descriptor.tension,
+        annotatedVariantUnit: descriptor.annotatedVariantUnit,
+        accumulateExpression: descriptor.accumulateExpression ?? true,
+        smoothEmotionTransition: descriptor.smoothEmotionTransition ?? true,
+        restart: descriptor.restart ?? (zone === "head" && descriptor.gesture === "smile"),
+        holdMs: descriptor.holdMs,
+        fadeMs: descriptor.fadeMs,
+      }),
+    },
+    session: {
+      getConversationIdentity: () => ({
+        conversationId: state.conversationId,
+        contextEpoch: state.contextEpoch,
+      }),
+      getHistory: () => cleanHistoryForModel().slice(-4),
+      createRequestId: () => createClientMessageId(),
+      noteTouchPresence: () => proactiveController?.noteTouchPresence(),
+      isPipelineBusy: now => {
+        const chatSpeechBusy = ["chat", "proactive"].includes(speechPlayback.state.kind)
+          && (speechPlayback.state.pending || isSpeaking(now));
+        return chatController?.isRequestInFlight() || proactiveController?.isRequestInFlight() || speechPlayback.pipelineActive || chatSpeechBusy;
+      },
+      isTouchSpeechActive: now => speechPlayback.state.kind === "touch"
+        && (speechPlayback.state.pending || isSpeaking(now)),
+      applyAssistant: (...args) => applyAssistant(...args),
+      markTouchInterrupted: () => markActiveTouchInterrupted(),
+    },
+    transport: {
+      request: (...args) => storageScopedFetch(...args),
+      interactionUrl: "/api/interaction",
+    },
+    feedback: {
+      showThinking: (...args) => thinkingIndicatorController?.show?.(...args),
+      hideThinking: (...args) => thinkingIndicatorController?.hide?.(...args),
+      renderHit: (...args) => renderDeveloperTouchHit(...args),
+      renderRegions: (...args) => renderDeveloperTouchRegions(...args),
+      renderOverlay: payload => updateDeveloperTouchOverlay(payload),
+      renderDebug: data => renderDeveloperTouchDebug(data),
+      reloadRelationship: () => loadDeveloperRelationship(),
+      warn: (...args) => console.warn(...args),
+    },
+  });
+}
+
+
 function bindEvents() {
   window.addEventListener("resize", () => {
     fitModel();
@@ -1395,8 +2378,10 @@ function bindEvents() {
     applyChatWindowHeight(state.chatWindowHeight, { persist: false });
   });
   window.addEventListener("pointermove", event => {
-    pointer.x = clamp((event.clientX / Math.max(1, window.innerWidth) - 0.5) * 2, -1, 1);
-    pointer.y = clamp((event.clientY / Math.max(1, window.innerHeight) - 0.5) * 2, -1, 1);
+    frameController?.setPointer({
+      x: (event.clientX / Math.max(1, window.innerWidth) - 0.5) * 2,
+      y: (event.clientY / Math.max(1, window.innerHeight) - 0.5) * 2,
+    });
   });
   bindWindowDragRegions();
   window.AmadeusWindowResize.bind({
@@ -1406,68 +2391,7 @@ function bindEvents() {
   });
 
   dom.settingsBtn.addEventListener("click", openSettings);
-  dom.newConversationBtn?.addEventListener("click", () => {
-    if (dom.conversationPicker?.classList.contains("hidden")) openConversationPicker();
-    else closeConversationPicker();
-  });
-  dom.conversationPickerCloseBtn?.addEventListener("click", closeConversationPicker);
-  dom.conversationCreateBtn?.addEventListener("click", startNewConversation);
-  dom.salieriWindowToggle?.addEventListener("click", () => {
-    const memoryPageVisible = !dom.settingsModal?.classList.contains("hidden")
-      && dom.tabPages?.some(page => page.dataset.page === "memory" && page.classList.contains("active"));
-    if (!memoryPageVisible) return;
-    const opening = dom.salieriWindow?.classList.contains("hidden");
-    dom.salieriWindow?.classList.toggle("hidden", !opening);
-    dom.salieriWindowToggle?.setAttribute("aria-expanded", String(opening));
-    if (opening) refreshSalieriTranscript({ quiet: true });
-  });
-  dom.salieriCloseBtn?.addEventListener("click", () => {
-    dom.salieriWindow?.classList.add("hidden");
-    dom.salieriWindowToggle?.setAttribute("aria-expanded", "false");
-  });
-  dom.salieriUnlockForm?.addEventListener("submit", unlockSalieriRecorder);
-  dom.salieriRefreshBtn?.addEventListener("click", () => refreshSalieriTranscript());
   dom.chatHistorySearchBtn?.addEventListener("click", openChatHistorySearch);
-  dom.bookmarkBtn?.addEventListener("click", () => {
-    if (dom.bookmarkPanel?.classList.contains("hidden")) openBookmarkPanel();
-    else closeBookmarkPanel();
-  });
-  dom.bookmarkCloseBtn?.addEventListener("click", closeBookmarkPanel);
-  dom.bookmarkRefreshBtn?.addEventListener("click", loadBookmarks);
-  dom.bookmarkQuickForm?.addEventListener("submit", createQuickBookmark);
-  dom.bookmarkList?.addEventListener("click", handleBookmarkListClick);
-  dom.bookmarkEditor?.addEventListener("submit", saveBookmarkEditor);
-  dom.bookmarkEditorCancelBtn?.addEventListener("click", closeBookmarkEditor);
-  dom.bookmarkEditorDeleteBtn?.addEventListener("click", deleteEditedBookmark);
-  dom.closeChatHistorySearchBtn?.addEventListener("click", closeChatHistorySearch);
-  dom.chatHistorySearchInput?.addEventListener("input", scheduleChatHistorySearch);
-  dom.chatHistorySearchInput?.addEventListener("keydown", event => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      chatHistorySearchState.offset = 0;
-      performChatHistorySearch();
-    }
-  });
-  dom.chatHistorySearchRoleButtons?.forEach(button => {
-    button.addEventListener("click", () => {
-      chatHistorySearchState.role = String(button.dataset.historyRole || "all");
-      chatHistorySearchState.offset = 0;
-      updateChatHistorySearchRoleButtons();
-      performChatHistorySearch();
-    });
-  });
-  dom.chatHistorySearchPrevBtn?.addEventListener("click", () => {
-    chatHistorySearchState.offset = Math.max(
-      0,
-      chatHistorySearchState.offset - chatHistorySearchState.limit,
-    );
-    performChatHistorySearch();
-  });
-  dom.chatHistorySearchNextBtn?.addEventListener("click", () => {
-    if (!chatHistorySearchState.hasMore) return;
-    chatHistorySearchState.offset += chatHistorySearchState.limit;
-    performChatHistorySearch();
-  });
   dom.pinWindowBtn?.addEventListener("click", toggleAlwaysOnTop);
   dom.developerEntryBtn?.addEventListener("click", openDeveloperEntry);
   dom.closeSettingsBtn.addEventListener("click", closeSettings);
@@ -1479,23 +2403,6 @@ function bindEvents() {
   dom.toggleChatBtn.addEventListener("click", () => {
     setChatCollapsed(!dom.hud.classList.contains("collapsed"));
   });
-  dom.todoToggleBtn?.addEventListener("click", () => {
-    setTodoDrawerOpen(!dom.todoDrawer?.classList.contains("open"));
-  });
-  dom.todoRefreshBtn?.addEventListener("click", loadTodos);
-  dom.todoFilterInput?.addEventListener("change", loadTodos);
-  dom.todoQuickForm?.addEventListener("submit", createQuickTodo);
-  dom.todoList?.addEventListener("click", handleTodoListClick);
-  dom.todoList?.addEventListener("change", handleTodoListChange);
-  dom.todoEditor?.addEventListener("submit", saveTodoEditor);
-  dom.todoEditorDueAt?.addEventListener("change", () => {
-    if (dom.todoEditorDueAt.value) dom.todoEditorDueDate.value = "";
-  });
-  dom.todoEditorDueDate?.addEventListener("change", () => {
-    if (dom.todoEditorDueDate.value) dom.todoEditorDueAt.value = "";
-  });
-  dom.todoEditorCancelBtn?.addEventListener("click", closeTodoEditor);
-  dom.todoEditorDeleteBtn?.addEventListener("click", deleteEditedTodo);
 
   dom.closeAppBtn.addEventListener("click", async () => {
     if (window.pywebview?.api?.closeApp) {
@@ -1543,23 +2450,9 @@ function bindEvents() {
     button.addEventListener("click", () => {
       activateSettingsTab(button.dataset.tab);
       if (button.dataset.tab === "storage") refreshCacheStatus();
-      if (button.dataset.tab === "persona") loadPersona();
+      if (button.dataset.tab === "persona") personaController?.load();
     });
   });
-  dom.apiKeyInput?.addEventListener("focus", () => {
-    if (dom.apiKeyInput.value === SAVED_API_KEY_MASK) dom.apiKeyInput.select();
-  });
-  dom.apiKeyInput?.addEventListener("beforeinput", () => {
-    if (dom.apiKeyInput.value === SAVED_API_KEY_MASK) dom.apiKeyInput.value = "";
-  });
-  dom.visionApiKeyInput?.addEventListener("focus", () => {
-    if (dom.visionApiKeyInput.value === SAVED_API_KEY_MASK) dom.visionApiKeyInput.select();
-  });
-  dom.visionApiKeyInput?.addEventListener("beforeinput", () => {
-    if (dom.visionApiKeyInput.value === SAVED_API_KEY_MASK) dom.visionApiKeyInput.value = "";
-  });
-  dom.saveApiBtn.addEventListener("click", saveApiSettings);
-  dom.testApiBtn.addEventListener("click", testApiConnection);
   dom.saveDisplayBtn.addEventListener("click", saveDisplaySettings);
   dom.saveInteractionBtn?.addEventListener("click", saveInteractionSettings);
   dom.saveVoiceBtn.addEventListener("click", saveVoiceSettings);
@@ -1568,20 +2461,6 @@ function bindEvents() {
   dom.proactiveInteractionsEnabledInput?.addEventListener("change", updateProactiveTopicControls);
   dom.proactiveScreenObservationEnabledInput?.addEventListener("change", updateProactiveTopicControls);
   dom.proactiveTopicInputs?.forEach(input => input.addEventListener("change", updateProactiveTopicControls));
-  if (dom.reloadPersonaBtn) dom.reloadPersonaBtn.addEventListener("click", loadPersona);
-  if (dom.savePersonaBtn) {
-    dom.savePersonaBtn.addEventListener("click", () => savePersonaOverride(
-      dom.devPersonaOverride,
-      dom.savePersonaBtn,
-    ));
-  }
-  dom.reloadSettingsPersonaBtn?.addEventListener("click", loadPersona);
-  dom.saveSettingsPersonaBtn?.addEventListener("click", () => savePersonaOverride(
-    dom.settingsPersonaOverride,
-    dom.saveSettingsPersonaBtn,
-  ));
-  if (dom.refreshRelationshipBtn) dom.refreshRelationshipBtn.addEventListener("click", loadDeveloperRelationship);
-  dom.devRelationshipScopeInput?.addEventListener("change", loadDeveloperRelationship);
   dom.startGptSovitsBtn.addEventListener("click", startGptSovits);
   dom.stopGptSovitsBtn.addEventListener("click", stopGptSovits);
   dom.testGptSovitsBtn.addEventListener("click", testRunningGptSovits);
@@ -1602,67 +2481,8 @@ function bindEvents() {
   });
   dom.devRefreshRuntimeBtn?.addEventListener("click", refreshDeveloperRuntime);
   dom.devCopyDiagnosticsBtn?.addEventListener("click", copyDeveloperDiagnostics);
-  dom.devEmotionInput?.addEventListener("change", loadDeveloperEmotionDefaults);
-  dom.devEmotionIntensityInput?.addEventListener("input", updateDeveloperEmotionReadouts);
-  dom.devEmotionBlushInput?.addEventListener("input", updateDeveloperEmotionReadouts);
-  dom.devApplyEmotionBtn?.addEventListener("click", applyDeveloperEmotionControl);
-  dom.devReleaseEmotionBtn?.addEventListener("click", releaseDeveloperEmotionControl);
   dom.devTestVoiceBtn?.addEventListener("click", testDeveloperVoice);
   dom.devRestartVoiceBtn?.addEventListener("click", restartDeveloperVoice);
-  dom.devModelProfileInput?.addEventListener("change", renderDeveloperModelEditor);
-  dom.devPreviewModelBtn?.addEventListener("click", previewDeveloperModel);
-  dom.devReloadModelsBtn?.addEventListener("click", reloadDeveloperModels);
-  dom.devParameterLockInput?.addEventListener("change", toggleDeveloperParameterLock);
-  dom.devParameterAdvancedInput?.addEventListener("change", toggleDeveloperParameterAdvanced);
-  dom.devParameterFilterInput?.addEventListener("input", filterDeveloperParameterControls);
-  dom.devParameterControls?.addEventListener("input", handleDeveloperParameterInput);
-  dom.devParameterControls?.addEventListener("click", handleDeveloperParameterReset);
-  dom.devRefreshParametersBtn?.addEventListener("click", refreshDeveloperParameterControls);
-  dom.devStartNeutralCalibrationBtn?.addEventListener("click", () => startDeveloperExpressionCalibration("default"));
-  dom.devStartCurrentCalibrationBtn?.addEventListener("click", () => startDeveloperExpressionCalibration("current"));
-  dom.devResetParametersBtn?.addEventListener("click", resetDeveloperParameterControls);
-  dom.devCaptureParametersBtn?.addEventListener("click", captureDeveloperParameterSnapshot);
-  dom.devOpenParameterCaptureDirectoryBtn?.addEventListener("click", openDeveloperParameterCaptureDirectory);
-  dom.devTrainingFilterInput?.addEventListener("input", renderDeveloperExpressionTrainingGallery);
-  dom.devTrainingEmotionFilter?.addEventListener("change", renderDeveloperExpressionTrainingGallery);
-  dom.devTrainingRuntimeFilter?.addEventListener("change", renderDeveloperExpressionTrainingGallery);
-  dom.devTrainingGallery?.addEventListener("click", handleDeveloperExpressionTrainingGalleryClick);
-  dom.devTrainingParameterControls?.addEventListener("input", handleDeveloperExpressionTrainingParameterInput);
-  dom.devTrainingNewBtn?.addEventListener("click", newDeveloperExpressionTrainingSample);
-  dom.devTrainingDuplicateBtn?.addEventListener("click", duplicateDeveloperExpressionTrainingSample);
-  dom.devTrainingCloseEditorBtn?.addEventListener("click", closeDeveloperExpressionTrainingEditor);
-  dom.devTrainingSaveBtn?.addEventListener("click", saveDeveloperExpressionTrainingSample);
-  dom.devTrainingRestoreBtn?.addEventListener("click", restoreDeveloperExpressionTrainingRecommendation);
-  dom.devTrainingApplyBtn?.addEventListener("click", applySelectedDeveloperExpressionTrainingSample);
-  dom.devTrainingActivateBtn?.addEventListener("click", activateSelectedDeveloperExpressionTrainingSample);
-  dom.devTrainingResetRuntimeBtn?.addEventListener("click", resetSelectedDeveloperExpressionRuntime);
-  dom.devTrainingExpressionTab?.addEventListener("click", () => setDeveloperTrainingKind("expression"));
-  dom.devTrainingVoiceReferenceTab?.addEventListener("click", () => setDeveloperTrainingKind("voice-reference"));
-  dom.devVoiceReferenceFilterInput?.addEventListener("input", renderDeveloperVoiceReferenceGallery);
-  dom.devVoiceReferenceStatusFilter?.addEventListener("change", renderDeveloperVoiceReferenceGallery);
-  dom.devVoiceReferenceRuntimeFilter?.addEventListener("change", renderDeveloperVoiceReferenceGallery);
-  dom.devVoiceReferenceSystemFilter?.addEventListener("change", renderDeveloperVoiceReferenceGallery);
-  dom.devVoiceReferenceRefreshBtn?.addEventListener("click", () => loadDeveloperVoiceReferences(true));
-  dom.devVoiceReferenceGallery?.addEventListener("click", handleDeveloperVoiceReferenceGalleryClick);
-  dom.devVoiceReferenceCloseEditorBtn?.addEventListener("click", closeDeveloperVoiceReferenceEditor);
-  dom.devVoiceReferenceSaveBtn?.addEventListener("click", saveDeveloperVoiceReferenceReview);
-  dom.devVoiceReferenceResetBtn?.addEventListener("click", resetDeveloperVoiceReferenceReview);
-  dom.devVoiceReferenceSelectCandidateBtn?.addEventListener("click", selectDeveloperVoiceReferenceCandidate);
-dom.devVoiceReferenceReviewStatusInput?.addEventListener("change", handleDeveloperVoiceReferenceStatusChange);
-dom.devVoiceReferenceEmotionLabelInput?.addEventListener("input", markDeveloperVoiceReferenceDirty);
-dom.devVoiceReferenceMappingFitInput?.addEventListener("change", handleDeveloperVoiceReferenceMappingFitChange);
-  dom.devVoiceReferenceNotesInput?.addEventListener("input", markDeveloperVoiceReferenceDirty);
-  dom.devVoiceReferenceReasons?.addEventListener("change", handleDeveloperVoiceReferenceReasonChange);
-  [
-    dom.devTrainingLabelInput,
-    dom.devTrainingEmotionInput,
-    dom.devTrainingStrengthInput,
-    dom.devTrainingTagsInput,
-    dom.devTrainingNotesInput,
-  ].forEach(input => input?.addEventListener("input", markDeveloperExpressionTrainingDirty));
-  dom.devTrainingIntensityInput?.addEventListener("input", updateDeveloperExpressionTrainingIntensity);
-  dom.devSaveModelOverrideBtn?.addEventListener("click", saveDeveloperModelOverride);
-  dom.devResetModelOverrideBtn?.addEventListener("click", resetDeveloperModelOverride);
   dom.devOpenVoiceSettingsBtn?.addEventListener("click", () => {
     openSettings();
     activateSettingsTab("voice");
@@ -1694,16 +2514,6 @@ dom.devVoiceReferenceMappingFitInput?.addEventListener("change", handleDeveloper
     syncLayoutSizeInputs();
     applySettingsToUi();
   });
-  dom.live2dModelInput?.addEventListener("change", () => {
-    updateLive2DModelHint();
-    updateModelTransformInputs();
-  });
-  [dom.modelScaleInput, dom.modelOffsetXInput, dom.modelOffsetYInput].forEach(input => {
-    input.addEventListener("input", () => {
-      previewSelectedModelTransform();
-    });
-  });
-  dom.resetModelTransformBtn?.addEventListener("click", resetSelectedModelTransform);
   dom.backgroundPresetInput?.addEventListener("change", previewBackgroundSelection);
   dom.chooseBackgroundBtn?.addEventListener("click", chooseCustomBackground);
   backgroundEditor = window.AmadeusBackgroundEditor.mount({
@@ -1733,15 +2543,15 @@ dom.devVoiceReferenceMappingFitInput?.addEventListener("change", handleDeveloper
   window.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
     if (!dom.bookmarkEditor?.classList.contains("hidden")) {
-      closeBookmarkEditor();
+      bookmarksController?.closeEditor();
       return;
     }
     if (!dom.conversationPicker?.classList.contains("hidden")) {
-      closeConversationPicker();
+      conversationPickerController?.close();
       return;
     }
     if (!dom.bookmarkPanel?.classList.contains("hidden")) {
-      closeBookmarkPanel();
+      bookmarksController?.close();
       return;
     }
     if (!dom.chatHistorySearchPanel?.classList.contains("hidden")) {
@@ -1856,7 +2666,7 @@ function setChatCollapsed(collapsed, { scroll = true } = {}) {
   syncChatToggleButton();
   if (!collapsed) {
     applyChatWindowHeight(state.chatWindowHeight, { persist: false });
-    if (scroll) scrollChatToLatest();
+    if (scroll) messageView?.scrollToLatest();
   }
 }
 
@@ -1875,7 +2685,7 @@ async function openDeveloperEntry() {
 
 async function boot() {
   initSpeechVoices();
-  await loadTouchRegionConfig();
+  await touchInteractionController.loadConfig();
   await loadSettings();
   configureRuntimeMode();
   if (DEV_MODE && !MODEL_PREVIEW_ONLY && dom.developerPanel) {
@@ -1887,20 +2697,20 @@ async function boot() {
     setDeveloperPanelCollapsed(window.localStorage.getItem(DEV_PANEL_COLLAPSED_KEY) === "1", { persist: false });
     dom.devTouchOverlay?.classList.remove("hidden");
     updateDeveloperSpeechPanel();
-    loadPersona();
-    loadDeveloperRelationship();
+    personaController?.load();
+    relationshipController?.load();
     switchDeveloperPage(MODEL_PREVIEW_ID ? "model" : "voice");
   }
   await loadLive2DModelRegistry();
   await loadMemory();
   await hydrateConversationHistory();
   await loadTodos();
-  await loadBookmarks();
+  await bookmarksController?.load();
   if (!settings.releaseMode) {
-    await refreshSalieriTranscript({ quiet: true });
-    startSalieriRefreshPolling();
+    await salieriController?.refresh({ quiet: true });
+    salieriController?.startPolling();
   } else {
-    window.clearInterval(salieriRefreshTimer);
+    salieriController?.stopPolling();
   }
   startTodoReminderPolling();
   syncPendingProactiveConversationEvents();
@@ -1922,59 +2732,13 @@ async function boot() {
 
   try {
     dom.modelState.textContent = runtimeModeStateLabel("LOADING CUBISM MODEL");
-    if (PIXI.settings) {
-      PIXI.settings.RESOLUTION = RENDER_RESOLUTION;
-      PIXI.settings.ROUND_PIXELS = false;
-      if (PIXI.SCALE_MODES) {
-        PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.LINEAR;
-      }
-    }
-    app = new PIXI.Application({
-      view: dom.canvas,
-      autoStart: true,
-      resizeTo: window,
-      backgroundColor: 0x091011,
-      backgroundAlpha: 0,
-      antialias: true,
-      autoDensity: true,
-      resolution: RENDER_RESOLUTION,
-    });
-
-    backgroundLayer = new PIXI.Container();
-    backgroundLayer.interactive = false;
-    app.stage.addChild(backgroundLayer);
-    drawPixiBackground();
-
-    model = await PIXI.live2d.Live2DModel.from(activeModelProfile.modelUrl, { autoInteract: false });
-    model.alpha = 0;
-    if ("autoUpdate" in model) model.autoUpdate = false;
-    coreModel = model.internalModel.coreModel;
-    if (activeModelProfile.garmentRigUrl) {
-      const garmentResponse = await fetch(activeModelProfile.garmentRigUrl);
-      if (!garmentResponse.ok) throw new Error("Unable to load garment rig");
-      modelGarmentRig = AmadeusGarmentRig.install(model, await garmentResponse.json());
-    }
-    installPostMotionRetargeting();
-    if (MODEL_PREVIEW_ID) {
-      window.__AMADEUS_MODEL_DEBUG__ = { profile: activeModelProfile, model, coreModel };
-    }
-    if (model.anchor && typeof model.anchor.set === "function") {
-      model.anchor.set(0, 0);
-    }
-    model.interactive = true;
-    model.buttonMode = true;
-    app.stage.addChild(model);
-    app.stage.interactive = true;
-    app.stage.hitArea = app.screen;
-    app.stage.on("pointerdown", handleModelTouch);
-    fitModel();
+    await sceneController.start();
     setExpressionFix();
-    app.ticker.add(updateLive2D);
     applyDeveloperEmotionPreview();
-    await loadDeveloperParameterDisplayInfo();
-    refreshDeveloperParameterControls();
+    await developerParameterLabController?.loadParameterDisplayInfo();
+    developerParameterLabController?.refreshParameters();
     dom.modelState.textContent = runtimeModeStateLabel("LIVE2D ONLINE");
-    toast(`${activeModelProfile.label} / Live2D online`);
+    toast(`${sceneSnapshot().activeProfile.label} / Live2D online`);
     resolveModelReady();
     await bootAnimationPromise;
     openFirstRunApiSetupIfNeeded();
@@ -2018,14 +2782,15 @@ function applyDeveloperEmotionPreview() {
 async function runBootSequence(modelReadyPromise = Promise.resolve(), readinessPromise = Promise.resolve()) {
   const overlay = dom.bootSequence;
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const scene = sceneSnapshot();
   if (!overlay) {
-    if (model) model.alpha = 1;
+    if (scene.model) scene.model.alpha = 1;
     bootSequenceActive = false;
     return;
   }
   if (SKIP_BOOT) {
     await modelReadyPromise;
-    model.alpha = 1;
+    sceneSnapshot().model.alpha = 1;
     overlay.hidden = true;
     bootSequenceActive = false;
     setEmotion("neutral", "idle", { restart: true, holdMs: 0, fadeMs: 0 });
@@ -2034,7 +2799,7 @@ async function runBootSequence(modelReadyPromise = Promise.resolve(), readinessP
   if (reducedMotion) {
     overlay.classList.add("phase-logo");
     await modelReadyPromise;
-    model.alpha = 1;
+    sceneSnapshot().model.alpha = 1;
     await delay(260);
   } else {
     overlay.classList.add("phase-logo");
@@ -2044,7 +2809,7 @@ async function runBootSequence(modelReadyPromise = Promise.resolve(), readinessP
     await modelReadyPromise;
     overlay.classList.add("phase-reveal");
     await delay(180);
-    model.alpha = 1;
+    sceneSnapshot().model.alpha = 1;
     overlay.classList.add("cut-to-model");
     await delay(90);
   }
@@ -2075,497 +2840,115 @@ async function playBootLogoVideo() {
   }
 }
 
-function proactiveFrequencyProfile() {
-  return PROACTIVE_FREQUENCY_PROFILES[settings.proactiveFrequency]
-    || PROACTIVE_FREQUENCY_PROFILES.normal;
-}
-
-function randomInterval(range) {
-  return range[0] + Math.random() * Math.max(0, range[1] - range[0]);
-}
-
 function scheduleStartupInteraction() {
-  if (!settings.proactiveInteractionsEnabled || proactiveOutreachPaused()) {
-    nextProactiveInteractionAt = 0;
-    return;
-  }
-  const profile = proactiveFrequencyProfile();
-  nextProactiveInteractionAt = performance.now() + (startupGreetingPending
-    ? (preparedStartupGreeting?.preparedTts ? 180 + Math.random() * 320 : 700 + Math.random() * 1300)
-    : randomInterval(profile.initial));
+  return proactiveController?.scheduleStartupInteraction();
 }
 
 async function prepareStartupGreeting(voiceReadyPromise = Promise.resolve(null)) {
-  const greetingGeneration = ++startupGreetingGeneration;
-  const startupChance = (state.messages.length ? 0.3 : 0.78)
-    * proactiveFrequencyProfile().startupChanceScale;
-  startupGreetingPending = Boolean(settings.proactiveInteractionsEnabled)
-    && !proactiveOutreachPaused()
-    && Math.random() < clamp(startupChance, 0.08, 0.92);
-  preparedStartupGreeting = null;
-  if (!startupGreetingPending || DEV_MODE) return null;
-  startupGreetingPreparing = true;
-  try {
-    const response = await storageScopedFetch("/api/startup-greeting", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: cleanHistoryForModel().slice(-6),
-        localHour: new Date().getHours(),
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    if (data.suppressed) {
-      if (data.waitingForUser === true) state.waitingForUser = true;
-      applyProactiveControl(data.proactiveControl);
-      startupGreetingPending = false;
-      return null;
-    }
-    if (greetingGeneration !== startupGreetingGeneration || !startupGreetingPending) return null;
-    if (data.emptyReply || !String(data.reply || "").trim()) {
-      throw new Error("startup greeting returned an empty reply");
-    }
-    preparedStartupGreeting = {
-      ...data,
-      source: data.source || "proactive",
-      memoryUpdates: [],
-    };
-    if (data.startupFallbackReason) {
-      preparedStartupGreeting.startupFallbackNotice = "启动问候没有取得有效的 DeepSeek 回复，当前显示的是本地备用问候。";
-    }
-    await prepareStartupGreetingSpeech(preparedStartupGreeting, voiceReadyPromise, greetingGeneration);
-    return preparedStartupGreeting;
-  } catch (error) {
-    if (greetingGeneration !== startupGreetingGeneration || !startupGreetingPending) return null;
-    console.warn("startup greeting preparation failed", error);
-    // A failed request may have already persisted a pause on the server.
-    // Never manufacture unsolicited speech without a successful decision.
-    startupGreetingPending = false;
-    preparedStartupGreeting = null;
-    return null;
-  } finally {
-    startupGreetingPreparing = false;
-  }
-}
-
-async function prepareStartupGreetingSpeech(
-  greeting,
-  voiceReadyPromise = Promise.resolve(null),
-  greetingGeneration = startupGreetingGeneration,
-) {
-  if (!greeting || !shouldSynchronizeTextWithVoice()) return null;
-  if (greetingGeneration !== startupGreetingGeneration || !startupGreetingPending) return null;
-  const provider = String(settings.ttsProvider || "").trim().toLowerCase();
-  if (provider !== "gpt-sovits") return null;
-  try {
-    recordVoiceDiagnostic("startup-warmup", "启动动画期间正在加载语音模型并预合成开机问候");
-    const status = await voiceReadyPromise;
-    if (greetingGeneration !== startupGreetingGeneration || !startupGreetingPending) return null;
-    if (!status?.running) throw new Error(status?.error || "GPT-SoVITS 尚未准备完成");
-    const reply = String(greeting.reply || "").trim();
-    const spokenTextJa = String(greeting.spokenTextJa || greeting.spoken_text_ja || "").trim();
-    const speechText = chooseSpeechText(reply, spokenTextJa);
-    const mood = resolveAssistantMood(greeting, "", reply);
-    const speechPace = resolveSpeechPace(greeting, "");
-    const speechSpeed = resolveSpeechSpeed(greeting, "", speechPace);
-    const startupSemanticUnits = Array.isArray(greeting.speechUnits)
-      ? greeting.speechUnits
-        .filter(unit => unit && unit.deliveryRequired !== false)
-        .map(unit => chooseSpeechText(
-          String(unit.textZh || unit.zh || "").trim(),
-          String(unit.spokenTextJa || unit.ja || "").trim(),
-          greeting.speechLanguage,
-        ))
-        .filter(Boolean)
-      : null;
-    const ttsRequest = buildTtsRequest(
-      speechText,
-      mood.voiceStyle,
-      mood.voiceTone,
-      mood.voiceIntensity,
-      mood.emotionIntensity,
-      speechSpeed,
-      speechPace,
-      startupSemanticUnits,
-    );
-    ttsRequest.requestId = `startup-${Date.now()}-${greetingGeneration}`;
-    ttsRequest.utteranceId = "startup-greeting";
-    startupGreetingAbortController?.abort();
-    const controller = new AbortController();
-    startupGreetingAbortController = controller;
-    const payload = await requestPreparedTts(ttsRequest, null, controller.signal);
-    if (greetingGeneration !== startupGreetingGeneration || !startupGreetingPending) return null;
-    greeting.preparedTts = {
-      key: preparedTtsKey(ttsRequest),
-      payload,
-    };
-    recordVoiceDiagnostic("startup-audio-ready", "开机问候音频已在启动动画期间合成完成", {
-      audioBytes: Math.floor(String(payload.audioBase64 || "").length * 0.75),
-      alignmentId: String(payload.alignmentId || ""),
-    });
-    return greeting.preparedTts;
-  } catch (error) {
-    if (greetingGeneration !== startupGreetingGeneration || !startupGreetingPending || error?.name === "AbortError") {
-      return null;
-    }
-    console.warn("startup greeting speech preparation failed", error);
-    const deterministic = ttsRetryWouldDuplicateWork(error);
-    if (deterministic) {
-      greeting.startupTtsFailure = {
-        code: String(error?.code || "tts_incomplete_audio"),
-        message: String(error?.message || "开机问候语音确定性失败"),
-        deterministic: true,
-      };
-      recordVoiceDiagnostic(
-        "startup-audio-rejected",
-        `开机问候预合成已被确定性拒绝；本次只显示文字，不重复提交同一段音频：${error.message}`,
-      );
-    } else {
-      recordVoiceDiagnostic("startup-audio-retry", `开机问候预合成未完成，将在问候前继续等待并重试：${error.message}`);
-    }
-    return null;
-  } finally {
-    if (greetingGeneration === startupGreetingGeneration) startupGreetingAbortController = null;
-  }
+  return proactiveController?.prepareStartupGreeting(voiceReadyPromise) || null;
 }
 
 function normalizeProactiveControl(value) {
-  const raw = value && typeof value === "object" ? value : {};
-  // Older clients stored the temporary question-wait gate as a quiet order.
-  const paused = String(raw.status || "").toLowerCase() === "paused"
-    && raw.reason !== "unanswered_question_no_nudge";
-  return {
-    status: paused ? "paused" : "allowed",
-    resumeMode: paused ? "model_decides" : "",
-    reason: paused ? String(raw.reason || "") : "",
-    updatedAt: String(raw.updatedAt || ""),
-    sourceTurnId: String(raw.sourceTurnId || ""),
-    sourceUserMessage: paused ? String(raw.sourceUserMessage || "") : "",
-    sourceRequestStartedAtMs: Math.max(0, Number(raw.sourceRequestStartedAtMs) || 0),
-  };
+  return PROACTIVE_CONTROLLER.normalizeProactiveControl(value);
 }
 
 function proactiveOutreachPaused() {
-  return proactiveState.control.status === "paused" || state.waitingForUser === true;
+  return Boolean(proactiveController?.isPaused());
 }
 
-function applyProactiveControl(value, { persistState = true } = {}) {
-  const wasPaused = proactiveState.control.status === "paused";
-  const control = normalizeProactiveControl(value);
-  proactiveState.control = control;
-  state.proactiveControl = { ...control };
-  if (control.status === "paused") {
-    // A terminal unanswered-sequence sign-off may finish its own sentence.
-    // User-requested quiet cancels in-flight chatter, but never a due reminder.
-    if (control.reason !== "unanswered_sequence_complete"
-        && speechState.kind === "proactive" && speechState.deliveryPriority !== "scheduled_reminder") {
-      interruptCurrentSpeech();
-    }
-    proactiveRequestGeneration += 1;
-    proactiveRequestAbortController?.abort();
-    proactiveRequestAbortController = null;
-    proactiveInteractionInFlight = false;
-    nextProactiveInteractionAt = 0;
-    startupGreetingGeneration += 1;
-    startupGreetingAbortController?.abort();
-    startupGreetingAbortController = null;
-    startupGreetingPending = false;
-    preparedStartupGreeting = null;
-  } else if (wasPaused && settings.proactiveInteractionsEnabled) {
-    scheduleNextProactiveInteraction(performance.now(), 0);
-  }
-  if (persistState) persist();
-  return control;
+function applyProactiveControl(value, options) {
+  return proactiveController?.applyProactiveControl(value, options);
 }
 
-function scheduleNextProactiveInteraction(now = performance.now(), unansweredCount = proactiveState.unansweredCount) {
-  if (!settings.proactiveInteractionsEnabled || proactiveState.phase === "sulking" || proactiveOutreachPaused()) {
-    nextProactiveInteractionAt = 0;
-    return;
-  }
-  const profile = proactiveFrequencyProfile();
-  const range = unansweredCount <= 0
-    ? profile.initial
-    : profile.followUps[Math.min(profile.followUps.length - 1, unansweredCount - 1)];
-  nextProactiveInteractionAt = now + randomInterval(range);
+function scheduleNextProactiveInteraction(now, unansweredCount) {
+  return proactiveController?.scheduleNextProactiveInteraction?.(now, unansweredCount);
 }
 
-async function updateProactiveInteraction(now = performance.now()) {
-  if (!settings.proactiveInteractionsEnabled || proactiveState.phase === "sulking" || proactiveOutreachPaused()) {
-    nextProactiveInteractionAt = 0;
-    return;
-  }
-  if (proactiveInteractionInFlight || todoReminderInFlight || !nextProactiveInteractionAt || now < nextProactiveInteractionAt) return;
-  if (startupGreetingPending && startupGreetingPreparing) {
-    nextProactiveInteractionAt = now + 500;
-    return;
-  }
-  if (DEV_MODE || bootSequenceActive || chatRequestInFlight || touchState.requestInFlight || touchDebounceTimer || speechState.pending || isSpeaking(now) || !model) {
-    nextProactiveInteractionAt = now + 15000;
-    return;
-  }
-  if (dom.settingsModal && !dom.settingsModal.classList.contains("hidden")) {
-    nextProactiveInteractionAt = now + 15000;
-    return;
-  }
-  if (dom.bookmarkPanel && !dom.bookmarkPanel.classList.contains("hidden")) {
-    nextProactiveInteractionAt = now + 15000;
-    return;
-  }
-  if (dom.userInput?.value.trim()) {
-    nextProactiveInteractionAt = now + 30000;
-    return;
-  }
-  proactiveInteractionInFlight = true;
-  const sequenceId = proactiveState.sequenceId;
-  const requestGeneration = ++proactiveRequestGeneration;
-  proactiveRequestAbortController?.abort();
-  const proactiveController = new AbortController();
-  proactiveRequestAbortController = proactiveController;
-  const greeting = startupGreetingPending;
-  startupGreetingPending = false;
-  const transition = PROACTIVE_LOGIC.nextState(proactiveState.unansweredCount, proactiveState.silenceLimit);
-  const willSulk = transition.willSulk;
-  try {
-    const data = await proactiveEventFor(greeting, willSulk, proactiveController.signal);
-    if (
-      !data
-      || proactiveController.signal.aborted
-      || requestGeneration !== proactiveRequestGeneration
-      || sequenceId !== proactiveState.sequenceId
-    ) return;
-    if (data.ok === false) {
-      console.warn("model-driven proactive generation failed:", data);
-      toast(data.message || "主动聊天生成失败；没有使用本地固定题目");
-      nextProactiveInteractionAt = performance.now() + 60000;
-      return;
-    }
-    if (data.suppressed) {
-      if (data.waitingForUser === true) state.waitingForUser = true;
-      applyProactiveControl(data.proactiveControl);
-      if (!proactiveOutreachPaused()) scheduleNextProactiveInteraction(performance.now(), 0);
-      return;
-    }
-    if (greeting && data.startupFallbackReason) {
-      updateConnectionStatus({ connectionState: "startup-greeting-fallback" });
-      toast(data.startupFallbackNotice || "启动问候未连接 DeepSeek，已明确切换为本地备用问候");
-    }
-    proactiveState.lastProactiveAt = now;
-    proactiveState.unansweredCount = transition.nextCount;
-    proactiveState.phase = transition.phase;
-    proactiveState.activePrompt = String(data.reply || "");
-    proactiveState.afterUserTurnId = data.proactiveAfterUserTurnId;
-    proactiveState.activeSubject = String(data.proactiveSubject || proactiveState.activeSubject || "");
-    if (willSulk) {
-      proactiveState.nextAmbientMoodAt = now + 150000 + Math.random() * 90000;
-      nextProactiveInteractionAt = 0;
-    } else {
-      scheduleNextProactiveInteraction(now, proactiveState.unansweredCount);
-    }
-    await applyAssistant({
-      ...data,
-      source: data.source || "proactive",
-      interactionKind: "proactive",
-      proactiveKind: data.proactiveKind || (willSulk ? "sulk" : ""),
-      proactivePhase: transition.phase,
-      proactiveUnansweredCount: transition.nextCount,
-      proactiveSilenceLimit: proactiveState.silenceLimit,
-      proactiveDirective: willSulk
-        ? "pause_until_next_user_message"
-        : String(data.proactiveDirective || "unchanged"),
-      proactiveEventId: data.proactiveEventId
-        || `proactive-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-      proactiveRequestGeneration: requestGeneration,
-      proactiveSequenceId: sequenceId,
-      memoryUpdates: [],
-    }, "");
-  } catch (error) {
-    if (error?.name === "AbortError" || requestGeneration !== proactiveRequestGeneration) return;
-    console.warn("model-driven proactive generation failed:", error);
-    toast(`主动聊天生成失败，未使用固定题目：${error.message || error}`);
-    nextProactiveInteractionAt = performance.now() + 60000;
-  } finally {
-    if (requestGeneration === proactiveRequestGeneration) proactiveRequestAbortController = null;
-    proactiveInteractionInFlight = false;
-  }
+async function updateProactiveInteraction(now) {
+  return proactiveController?.update(now);
 }
 
-async function proactiveEventFor(greeting = false, willSulk = false, signal = null) {
-  if (greeting) {
-    const prepared = preparedStartupGreeting;
-    preparedStartupGreeting = null;
-    return prepared || null;
-  }
-  if (willSulk) {
-    // End an unanswered sequence silently; a local sign-off bypassed the
-    // model's availability decision and could wake a sleeping user.
-    proactiveState.phase = "sulking";
-    nextProactiveInteractionAt = 0;
-    state.waitingForUser = true;
-    persist();
-    try {
-      await storageScopedFetch("/api/conversation/proactive", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ eventId: `waiting-${Date.now()}`, reply: "",
-          proactiveKind: "sulk", proactivePhase: "sulking",
-          unansweredCount: proactiveState.silenceLimit, silenceLimit: proactiveState.silenceLimit,
-          proactiveDirective: "pause_until_next_user_message", contextEpoch: state.contextEpoch,
-          ...(typeof proactiveState.afterUserTurnId === "string"
-            ? { afterUserTurnId: proactiveState.afterUserTurnId } : {}) }),
-        ...(signal ? { signal } : {}),
-      });
-    } catch (error) {
-      console.warn("waiting state sync deferred; local state retained:", error);
-    }
-    return {
-      ok: true,
-      suppressed: true,
-      waitingForUser: true,
-      reason: "unanswered_sequence_complete",
-      proactiveControl: proactiveState.control,
-    };
-  }
-  const recentProactiveTexts = state.messages
-    .filter(message => message?.role === "assistant" && message.meta?.kind === "proactive")
-    .slice(-18)
-    .map(message => String(message.content || ""))
-    .filter(Boolean);
-  const response = await storageScopedFetch("/api/proactive-generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      kind: proactiveState.unansweredCount > 0 ? "follow_up" : "new",
-      previousProactive: proactiveState.activePrompt,
-      previousSubject: proactiveState.activeSubject,
-      unansweredCount: proactiveState.unansweredCount,
-      topicCategories: selectedProactiveTopicCategories(),
-      recentProactiveTexts,
-      messages: cleanHistoryForModel().slice(-14),
-    }),
-    ...(signal ? { signal } : {}),
-  });
-  const data = await response.json();
-  if (!response.ok || data.ok === false) {
-    return {
-      ok: false,
-      error: data.error || `HTTP ${response.status}`,
-      message: data.message || "主动聊天生成失败；没有使用本地固定题目",
-    };
-  }
-  return data;
-}
-
-function startupGreetingForCurrentTime() {
-  const hour = new Date().getHours();
-  if (hour < 6) {
-    return {
-      reply: "还没睡？实验精神值得肯定，作息可完全不合格。",
-      spokenTextJa: "まだ寝てないの？　実験への熱意は認めるけど、生活リズムは完全に失格ね。",
-      emotion: "concerned", gesture: "boot", voiceStyle: "soft", voiceTone: "gentle",
-    };
-  }
-  if (hour < 11) {
-    return {
-      reply: "早上好。今天也要做实验吗？先声明，我可不是在等你。",
-      spokenTextJa: "おはよう。今日も実験するの？　先に言っておくけど、待ってたわけじゃないから。",
-      emotion: "amused", gesture: "boot", voiceStyle: "teasing", voiceTone: "playful",
-    };
-  }
-  if (hour >= 23) {
-    return {
-      reply: "这么晚才来。先说好，今晚不准又把睡眠当作可删除变量。",
-      spokenTextJa: "こんな時間に来たの？　今夜は睡眠を削除可能な変数みたいに扱わないこと。",
-      emotion: "concerned", gesture: "boot", voiceStyle: "soft", voiceTone: "gentle",
-    };
-  }
-  return {
-    reply: "连接确认。你总算来了，今天准备从哪项实验开始？",
-    spokenTextJa: "接続を確認。やっと来たのね。今日はどの実験から始める？",
-    emotion: "amused", gesture: "boot", voiceStyle: "teasing", voiceTone: "playful",
-  };
-}
-
-function selectedProactiveTopicCategories() {
-  const selected = Array.isArray(settings.proactiveTopicCategories)
-    ? settings.proactiveTopicCategories.filter(item => PROACTIVE_TOPIC_CATEGORIES.has(item))
-    : [];
-  return selected.length ? selected : [...PROACTIVE_TOPIC_CATEGORIES];
-}
-
-function resetProactiveSequence(now = performance.now()) {
-  proactiveRequestGeneration += 1;
-  proactiveRequestAbortController?.abort();
-  proactiveRequestAbortController = null;
-  proactiveState.lastUserActivityAt = now;
-  proactiveState.unansweredCount = 0;
-  proactiveState.phase = "idle";
-  proactiveState.nextAmbientMoodAt = 0;
-  proactiveState.silenceLimit = PROACTIVE_LOGIC.silenceLimit();
-  proactiveState.activePrompt = "";
-  proactiveState.activeSubject = "";
-  proactiveState.sequenceId += 1;
-  startupGreetingGeneration += 1;
-  startupGreetingAbortController?.abort();
-  startupGreetingAbortController = null;
-  startupGreetingPending = false;
-  preparedStartupGreeting = null;
-  if (settings.proactiveInteractionsEnabled && !proactiveOutreachPaused()) {
-    scheduleNextProactiveInteraction(now, 0);
-  } else {
-    nextProactiveInteractionAt = 0;
-  }
+function resetProactiveSequence(now) {
+  return proactiveController?.resetProactiveSequence(now);
 }
 
 function noteUserActivity() {
-  state.waitingForUser = false;
-  persist();
-  const wasWaiting = proactiveState.unansweredCount;
-  const wasSulking = proactiveState.phase === "sulking";
-  const now = performance.now();
-  if (wasWaiting) {
-    proactiveState.returnContext = wasSulking
-      ? `AMADEUS刚才连续主动联系了用户${wasWaiting}次都没有得到回应，最后已经说去做实验并独自生闷气。用户现在回来了；自然承接他的回归，保留一点别扭，但优先回答当前内容。`
-      : `AMADEUS刚才主动联系了用户${wasWaiting}次并在等待回应。用户现在回来了；可以简短表现出注意到他回来了，再自然回答当前内容。`;
-  }
-  resetProactiveSequence(now);
-  nextPositiveAmbientMoodAt = now + 180000 + Math.random() * 300000;
+  return proactiveController?.noteUserActivity();
 }
 
 function noteTouchPresence() {
-  const now = performance.now();
-  resetProactiveSequence(now);
-  nextPositiveAmbientMoodAt = now + 180000 + Math.random() * 300000;
+  return proactiveController?.noteTouchPresence();
 }
 
-function updateProactiveAmbientMood(now = performance.now()) {
-  if (proactiveState.phase !== "sulking" || !proactiveState.nextAmbientMoodAt || now < proactiveState.nextAmbientMoodAt) return;
-  if (speechState.pending || isSpeaking(now) || chatRequestInFlight || proactiveInteractionInFlight) return;
-  if (currentEmotion !== "neutral" && emotionLifecycleWeight(now) > 0.08) return;
-  const annoyed = Math.random() < 0.38;
-  setEmotion(annoyed ? "annoyed" : "melancholic", "idle", {
-    emotionIntensity: annoyed ? 0.56 : 0.62,
-    eyeContact: 0.3,
-    gazeX: annoyed ? -0.28 : -0.16,
-    gazeY: 0.12,
-    tension: annoyed ? 0.34 : 0.16,
-    holdMs: 60000,
-    fadeMs: 22000,
+function updateProactiveAmbientMood(now) {
+  return proactiveController?.updateAmbientMood(now);
+}
+
+function clearProactiveReturnContext() {
+  return proactiveController?.clearReturnContext();
+}
+
+function getProactiveReturnContext() {
+  return proactiveController?.getReturnContext() || "";
+}
+
+function clearProactiveReturnContextIf(value) {
+  return proactiveController?.clearReturnContextIf(value);
+}
+
+function getProactiveSnapshot() {
+  return proactiveController?.getState() || {
+    phase: "idle",
+    unansweredCount: 0,
+    nextAmbientMoodAt: 0,
+    sequenceId: 0,
+    control: normalizeProactiveControl(null),
+    waitingForUser: false,
+    proactiveInteractionInFlight: false,
+  };
+}
+
+function markAssistantRequiresUserResponse(source) {
+  return proactiveController?.markAssistantRequiresUserResponse(source);
+}
+
+function hydrateProactiveConversationContext(data, previousConversationId) {
+  const context = data && typeof data === "object" ? data : {};
+  return proactiveController?.hydrateConversationContext({
+    ...context,
+    previousConversationId,
+    conversationId: state.conversationId,
   });
-  proactiveState.nextAmbientMoodAt = now + 180000 + Math.random() * 240000;
+}
+
+function proactiveDeliveryStillCurrent(data) {
+  return proactiveController?.proactiveDeliveryStillCurrent(data) !== false;
+}
+
+function recordProactiveConversationEvent(message, mood = {}) {
+  return proactiveController?.recordProactiveConversationEvent(message, mood);
+}
+
+function syncPendingProactiveConversationEvents() {
+  return proactiveController?.syncPendingProactiveConversationEvents();
+}
+
+function clearPendingProactivePersistence() {
+  return proactiveController?.clearPendingPersistence();
 }
 
 function updatePositiveAmbientMood(now = performance.now()) {
   if (!nextPositiveAmbientMoodAt || now < nextPositiveAmbientMoodAt) return;
-  if (proactiveState.phase !== "idle" || proactiveState.unansweredCount > 0) {
+  const proactive = getProactiveSnapshot();
+  if (proactive.phase !== "idle" || proactive.unansweredCount > 0) {
     nextPositiveAmbientMoodAt = now + 120000;
     return;
   }
-  if (bootSequenceActive || chatRequestInFlight || proactiveInteractionInFlight || touchState.requestInFlight || speechState.pending || isSpeaking(now)) {
+  if (bootSequenceActive || chatController?.isRequestInFlight() || proactive.proactiveInteractionInFlight || touchInteractionController.isRequestInFlight() || speechPlayback.state.pending || isSpeaking(now)) {
     nextPositiveAmbientMoodAt = now + 45000;
     return;
   }
-  if (currentEmotion !== "neutral" && emotionLifecycleWeight(now) > 0.08) {
+  if (expressionSnapshot().currentEmotion !== "neutral" && emotionLifecycleWeight(now) > 0.08) {
     nextPositiveAmbientMoodAt = now + 60000;
     return;
   }
@@ -2583,103 +2966,10 @@ function updatePositiveAmbientMood(now = performance.now()) {
   nextPositiveAmbientMoodAt = now + 360000 + Math.random() * 540000;
 }
 
-function modelTouchInfo(event) {
-  const globalPoint = event?.global || event?.data?.global;
-  if (!model || !globalPoint) return { zone: "body", x: 0, y: 0 };
-  let bounds;
-  try {
-    bounds = model.getBounds();
-  } catch {
-    bounds = null;
-  }
-  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return { zone: "body", x: 0, y: 0 };
-  const rawX = (globalPoint.x - bounds.x) / bounds.width;
-  const rawY = (globalPoint.y - bounds.y) / bounds.height;
-  const profile = activeTouchRegionProfile();
-  const touchBounds = normalizedTouchBounds(profile);
-  const x = (rawX - touchBounds.x) / touchBounds.width;
-  const y = (rawY - touchBounds.y) / touchBounds.height;
-  let zone = "body";
-  if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
-    for (const candidate of profile.priority || []) {
-      const polygons = profile.zones?.[candidate] || [];
-      if (polygons.some(polygon => pointInPolygon(x, y, polygon))) {
-        zone = candidate;
-        break;
-      }
-    }
-  }
-  return { zone, x, y, rawX, rawY, modelId: activeModelProfile?.id || "", screenX: globalPoint.x, screenY: globalPoint.y };
-}
-
-function pointInPolygon(x, y, polygon) {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, yi] = polygon[i];
-    const [xj, yj] = polygon[j];
-    const crosses = (yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-9) + xi;
-    if (crosses) inside = !inside;
-  }
-  return inside;
-}
-
-async function loadTouchRegionConfig() {
-  try {
-    const response = await fetch(TOUCH_REGION_CONFIG_URL, { cache: "no-store" });
-    const value = await response.json();
-    const hasLegacyProfile = value?.zones && Array.isArray(value.priority);
-    const hasModelProfiles = value?.profiles && typeof value.profiles === "object";
-    if (!response.ok || (!hasLegacyProfile && !hasModelProfiles)) throw new Error("invalid touch region config");
-    touchRegionConfig = value;
-  } catch (error) {
-    console.warn("touch region calibration unavailable; using embedded fallback", error);
-    touchRegionConfig = DEFAULT_TOUCH_REGION_CONFIG;
-  }
-  renderDeveloperTouchRegions();
-}
-
-function renderDeveloperTouchRegions() {
-  if (!DEV_MODE || !dom.devTouchOverlay) return;
-  dom.devTouchOverlay.replaceChildren();
-  const profile = activeTouchRegionProfile();
-  for (const zone of [...(profile.priority || [])].reverse()) {
-    for (const polygon of profile.zones?.[zone] || []) {
-      const visual = document.createElement("div");
-      visual.className = "touch-region-visual";
-      visual.dataset.touchRegion = zone;
-      const shape = document.createElement("div");
-      shape.className = "touch-zone-shape";
-      shape.style.clipPath = `polygon(${polygon.map(([x, y]) => `${x * 100}% ${y * 100}%`).join(",")})`;
-      const label = document.createElement("span");
-      label.className = "touch-zone-label";
-      label.textContent = TOUCH_ZONE_LABELS[zone]?.split(" /")[0] || zone;
-      label.style.left = `${polygon.reduce((sum, point) => sum + point[0], 0) / polygon.length * 100}%`;
-      label.style.top = `${polygon.reduce((sum, point) => sum + point[1], 0) / polygon.length * 100}%`;
-      visual.append(shape, label);
-      dom.devTouchOverlay.appendChild(visual);
-    }
-  }
-}
-
-function cancelTouchInteractionForColdShoulder() {
-  if (touchDebounceTimer) {
-    clearTimeout(touchDebounceTimer);
-    touchDebounceTimer = 0;
-  }
-  if (touchRequestAbortController) {
-    touchRequestAbortController.abort();
-    touchRequestAbortController = null;
-  }
-  touchRequestGeneration += 1;
-  touchState.requestInFlight = false;
-  touchState.pendingAfterChat = false;
-  touchState.pendingZone = "";
-  deferredTouchAssistant = null;
-}
-
 function preservePersistentFuriousPose() {
   if (!persistentColdShoulder) return false;
-  if (currentEmotion !== "furious" || activeGesture !== "look_away") {
+  const expression = expressionSnapshot();
+  if (expression.currentEmotion !== "furious" || expression.activeGesture !== "look_away") {
     setEmotion("furious", "look_away", {
       emotionIntensity: 1.25,
       blushIntensity: 0,
@@ -2693,430 +2983,58 @@ function preservePersistentFuriousPose() {
   return true;
 }
 
-function handleModelTouch(event) {
-  const hit = modelTouchInfo(event);
-  const zone = hit.zone;
-  const now = performance.now();
-  renderDeveloperTouchHit(hit, now);
-  if (preservePersistentFuriousPose()) return;
-  if (zone === "body") {
-    setEmotion(currentEmotion, "tap", {
-      emotionIntensity: currentEmotionWeight,
-      restart: false,
-      smoothEmotionTransition: true,
-      holdMs: Math.max(8000, currentEmotionHoldMs),
-    });
-    return;
-  }
-  noteTouchPresence();
-  if (touchState.replyCooldownUntil > now) {
-    // A completed dense burst gets one spoken response. Touches during the
-    // short voice cooldown still animate the model but do not spawn more TTS.
-    applyImmediateTouchFeedback(zone);
-    return;
-  }
-
-  if (now - touchState.lastTouchAt > 12000) {
-    touchState.sequence = [];
-  }
-  touchState.recentTouches = touchState.recentTouches.filter(item => now - item.time < 180000);
-  touchState.recentReplies = touchState.recentReplies.filter(item => now - item.time < 600000);
-  const previousSameZone = [...touchState.recentTouches].reverse().find(item => item.zone === zone);
-  touchState.elapsedSinceSameZoneMs = previousSameZone ? Math.round(now - previousSameZone.time) : 3600000;
-  if (touchState.consecutiveZone === zone && now - touchState.lastTouchAt <= 15000) {
-    touchState.consecutiveCount += 1;
-  } else {
-    touchState.consecutiveZone = zone;
-    touchState.consecutiveCount = 1;
-  }
-  touchState.lastTouchAt = now;
-  touchState.recentTouches.push({ zone, time: now });
-  touchState.sequence.push(zone);
-  touchState.sequence = touchState.sequence.slice(-20);
-  touchState.zoneCounts[zone] = (touchState.zoneCounts[zone] || 0) + 1;
-  touchState.sessionCount += 1;
-  touchState.pendingZone = zone;
-  applyImmediateTouchFeedback(zone);
-
-  // Every touch keeps its immediate Live2D reaction. Spoken/model replies use
-  // a quiet-period debounce, so a dense click sequence becomes one aggregated
-  // event after the user's hand stops instead of a stream of interrupted TTS.
-  const aggregateAlreadyPending = Boolean(touchDebounceTimer) || touchState.requestInFlight;
-  if (!aggregateAlreadyPending && !shouldRequestTouchReply(zone, now)) return;
-
-  const burstCount = touchState.recentTouches.filter(item => now - item.time < 4500).length;
-  const boundaryLevel = burstCount >= TOUCH_IGNORE_THRESHOLD
-    ? "ignore"
-    : burstCount >= TOUCH_BURST_THRESHOLD ? "interrupt" : "normal";
-  if (chatPipelineHasPriority(now)) {
-    touchState.pendingAfterChat = true;
-    return;
-  }
-  if (touchState.requestInFlight) {
-    scheduleTouchInteraction(
-      boundaryLevel === "normal" ? TOUCH_SINGLE_SETTLE_MS : TOUCH_BURST_SETTLE_MS
-    );
-    return;
-  }
-  scheduleTouchInteraction(
-    boundaryLevel === "normal" ? TOUCH_SINGLE_SETTLE_MS : TOUCH_BURST_SETTLE_MS
-  );
-}
-
-function shouldRequestTouchReply(zone, now = performance.now()) {
-  if (zone === "chest") return true;
-  touchState.nonChestTouchesSinceReply += 1;
-  const elapsedMs = touchState.lastNonChestReplyRequestedAt > 0
-    ? Math.max(0, now - touchState.lastNonChestReplyRequestedAt)
-    : 0;
-  const timeCredit = Math.min(
-    NON_CHEST_TOUCH_REPLY_TARGET - 1,
-    elapsedMs / NON_CHEST_TOUCH_TIME_CREDIT_MS
-  );
-  if (touchState.nonChestTouchesSinceReply + timeCredit < NON_CHEST_TOUCH_REPLY_TARGET) return false;
-  touchState.nonChestTouchesSinceReply = 0;
-  touchState.lastNonChestReplyRequestedAt = now;
-  return true;
-}
-
-function chatPipelineHasPriority(now = performance.now()) {
-  const chatSpeechBusy = ["chat", "proactive"].includes(speechState.kind)
-    && (speechState.pending || isSpeaking(now));
-  return chatRequestInFlight || proactiveInteractionInFlight || speechPipelineActive || chatSpeechBusy;
-}
-
-function applyImmediateTouchFeedback(zone) {
-  if (preservePersistentFuriousPose()) return;
-  const allowedKiss = ["committed_partner", "life_partner", "old_married"].includes(relationshipTone);
-  const lowAffection = relationshipTone === "close_companion";
-  const headVariants = [
-    { emotion: "amused", gesture: "smile", delta: 0.1 },
-    { emotion: "affectionate", gesture: "soften", delta: 0.11 },
-    { emotion: "amused", gesture: "smile", delta: 0.1 },
-    { emotion: "thinking", gesture: "explain", delta: 0.07 },
-    { emotion: "amused", gesture: "smile", delta: 0.1 },
-    { emotion: "affectionate", gesture: "soften", delta: 0.11 },
-  ];
-  const feedback = {
-    head: headVariants[Math.max(0, (touchState.zoneCounts.head || 1) - 1) % headVariants.length],
-    // A cheek touch should read as moderate embarrassment, not the deepest
-    // shy/flustered prototype. Keep it centred even when the previous emotion
-    // was already strong.
-    face: {
-      emotion: "shy",
-      gesture: "lean",
-      delta: 0.02,
-      emotionIntensity: 0.84,
-      blushIntensity: 0.3,
-      tension: 0.22,
-      accumulateExpression: false,
-      smoothEmotionTransition: false,
-      restart: true,
-    },
-    mouth: { emotion: allowedKiss ? "affectionate" : "shy", gesture: allowedKiss ? "lean" : "recoil", delta: 0.15 },
-    chest: lowAffection
-      ? { emotion: "annoyed", gesture: "recoil", delta: 0.26, blushIntensity: 0.72, tension: 0.78 }
-      : { emotion: "flustered", gesture: "recoil", delta: 0.24, blushIntensity: 0.62, tension: 0.58 },
-    hand: { emotion: "affectionate", gesture: "soften", delta: 0.12 },
-  }[zone];
-  if (!feedback) return;
-  setEmotion(feedback.emotion, feedback.gesture, {
-    emotionIntensity: feedback.emotionIntensity ?? currentEmotionWeight,
-    emotionDelta: feedback.delta,
-    blushIntensity: feedback.blushIntensity,
-    tension: feedback.tension,
-    annotatedVariantUnit: feedback.annotatedVariantUnit,
-    accumulateExpression: feedback.accumulateExpression ?? true,
-    smoothEmotionTransition: feedback.smoothEmotionTransition ?? true,
-    restart: feedback.restart ?? (zone === "head" && feedback.gesture === "smile"),
-    holdMs: Math.max(30000, currentEmotionHoldMs),
-    fadeMs: Math.max(9000, currentEmotionFadeMs),
-  });
-}
-
-function scheduleTouchInteraction(delayMs) {
-  if (touchDebounceTimer) clearTimeout(touchDebounceTimer);
-  touchDebounceTimer = setTimeout(() => {
-    touchDebounceTimer = 0;
-    requestTouchInteraction();
-  }, delayMs);
-  if (touchRequestAbortController) {
-    touchRequestAbortController.abort();
-    touchRequestAbortController = null;
-    touchState.requestInFlight = false;
-    touchRequestGeneration += 1;
-  }
-}
-
-async function requestTouchInteraction() {
-  if (preservePersistentFuriousPose()) {
-    cancelTouchInteractionForColdShoulder();
-    return;
-  }
-  const latestZone = touchState.pendingZone;
-  if (!latestZone || latestZone === "body") return;
-  const now = performance.now();
-  if (chatPipelineHasPriority(now)) {
-    touchState.pendingAfterChat = true;
-    return;
-  }
-  touchState.pendingAfterChat = false;
-  const burstTouches = touchState.recentTouches.filter(item => now - item.time < 4500);
-  const burstZoneCounts = burstTouches.reduce((counts, item) => {
-    counts[item.zone] = (counts[item.zone] || 0) + 1;
-    return counts;
-  }, {});
-  const zone = (burstZoneCounts.chest || 0) > 0 ? "chest" : latestZone;
-  const burstCount = burstTouches.length;
-  const burstSequence = burstTouches.map(item => item.zone).slice(-20);
-  const shortWindowCount = touchState.recentTouches.filter(item => item.zone === zone && now - item.time < 30000).length;
-  const mediumWindowCount = touchState.recentTouches.filter(item => item.zone === zone && now - item.time < 180000).length;
-  const boundaryLevel = burstCount >= TOUCH_IGNORE_THRESHOLD ? "ignore"
-    : burstCount >= TOUCH_BURST_THRESHOLD ? "interrupt" : "normal";
-  const snapshotLastTouchAt = touchState.lastTouchAt;
-  const interruptedPreviousTouch = speechState.kind === "touch" && (speechState.pending || isSpeaking(now));
-  const generation = ++touchRequestGeneration;
-  const thinkingGeneration = -generation;
-  const controller = new AbortController();
-  touchRequestAbortController = controller;
-  touchState.requestInFlight = true;
-  showThinkingIndicator(thinkingGeneration, "model-generating", "正在组织触摸互动的文字回应");
-  const history = cleanHistoryForModel().slice(-4);
-  const touchConversationId = String(state.conversationId || "");
-  const touchContextEpoch = Number(state.contextEpoch) || 0;
-  try {
-    const response = await storageScopedFetch("/api/interaction", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        kind: zone,
-        eventType: "touch",
-        requestId: `touch_${createClientMessageId()}`,
-        conversationId: touchConversationId,
-        contextEpoch: touchContextEpoch,
-        burstCount,
-        boundaryLevel,
-        sequence: burstSequence.length ? burstSequence : touchState.sequence.slice(-20),
-        burstZoneCounts,
-        aggregatedBurst: burstCount >= TOUCH_BURST_THRESHOLD,
-        zoneCount: touchState.zoneCounts[zone] || 1,
-        shortWindowCount,
-        mediumWindowCount,
-        consecutiveCount: touchState.consecutiveZone === zone ? touchState.consecutiveCount : 1,
-        sessionCount: touchState.sessionCount,
-        elapsedSinceSameZoneMs: touchState.elapsedSinceSameZoneMs,
-        recentTouchReplies: touchState.recentReplies.map(item => item.text).slice(-12),
-        recentTouchAngles: touchState.recentReplies.map(item => item.angle).filter(Boolean).slice(-8),
-        recentOriginalClipIds: touchState.recentReplies.map(item => item.originalClipId).filter(Boolean).slice(-4),
-        interruptedPreviousTouch,
-        interruptedPreviousSpeech: false,
-        currentEmotion,
-        currentEmotionWeight,
-        relationshipTone,
-        developerDebug: DEV_MODE,
-        messages: history,
-      }),
-    });
-    const data = await response.json();
-    if (generation !== touchRequestGeneration) return;
-    if (touchConversationId !== String(state.conversationId || "")
-        || touchContextEpoch !== (Number(state.contextEpoch) || 0)) return;
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    if (boundaryLevel === "ignore") {
-      touchState.replyCooldownUntil = performance.now() + TOUCH_BURST_REPLY_COOLDOWN_MS;
-    }
-    renderDeveloperTouchDebug(data);
-    if (String(data.reply || "").trim()) {
-      touchState.recentReplies.push({
-        text: String(data.reply).trim(),
-        angle: String(data.touchMetrics?.responseAngle || ""),
-        originalClipId: String(data.originalAudio?.id || data.touchMetrics?.originalClipId || ""),
-        time: performance.now(),
-      });
-      touchState.recentReplies = touchState.recentReplies.slice(-12);
-    }
-    if (interruptedPreviousTouch) markActiveTouchInterrupted();
-    const assistantData = {
-      ...data,
-      source: "touch",
-      touchZone: zone,
-      touchBoundaryLevel: boundaryLevel,
-      touchExpressionBand: zone === "face" && boundaryLevel === "normal" ? "middle" : "",
-      memoryUpdates: [],
-      accumulateExpression: true,
-      smoothEmotionTransition: true,
-      clientChatGeneration: thinkingGeneration,
-    };
-    if (chatPipelineHasPriority(performance.now())) {
-      deferredTouchAssistant = assistantData;
-      return;
-    }
-    await applyAssistant(assistantData, "");
-  } catch (error) {
-    if (controller.signal.aborted || error?.name === "AbortError" || generation !== touchRequestGeneration) return;
-    console.warn("touch response failed:", error);
-  } finally {
-    if (generation === touchRequestGeneration) {
-      hideThinkingIndicator(thinkingGeneration);
-      touchState.requestInFlight = false;
-      touchRequestAbortController = null;
-      if (DEV_MODE) loadDeveloperRelationship();
-      if (touchState.lastTouchAt <= snapshotLastTouchAt) touchState.pendingZone = "";
-    }
-  }
-}
-
 async function loadSettings() {
-  try {
-    const response = await fetch("/api/settings");
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    registerBackgroundImages(data.backgroundPresets);
-    if (data.windowAspectRatios?.lite && data.windowAspectRatios?.full) windowAspectRatios = data.windowAspectRatios;
-    settings = normalizeSettings(data.settings);
-  } catch (error) {
-    console.warn(error);
-    settings = normalizeSettings(settings);
-    toast(`设置加载失败：${error.message}`);
-  }
+  return settingsController?.load();
 }
 
 async function loadLive2DModelRegistry() {
-  try {
-    const response = await fetch(DEV_MODE ? "/api/developer/live2d-models" : MODEL_REGISTRY_URL);
-    const data = await response.json();
-    const registry = DEV_MODE ? data.registry : data;
-    if (!response.ok || !Array.isArray(registry?.models)) throw new Error(`HTTP ${response.status}`);
-    const profiles = registry.models.filter(item => (
-      item && typeof item.id === "string" && typeof item.modelUrl === "string"
-    ));
-    if (!profiles.length) throw new Error("模型注册表为空");
-    live2dModelProfiles = profiles;
-    live2dModelOverrides = registry.overrides && typeof registry.overrides === "object"
-      ? registry.overrides
-      : {};
-  } catch (error) {
-    console.warn("Live2D model registry unavailable:", error);
-    live2dModelProfiles = [FALLBACK_MODEL_PROFILE];
-    live2dModelOverrides = {};
-  }
-  const previewModelId = MODEL_PREVIEW_ID;
-  activeModelProfile = live2dModelProfiles.find(item => item.id === previewModelId)
-    || live2dModelProfiles.find(item => item.id === settings.live2dModelId)
-    || live2dModelProfiles.find(item => item.id === FALLBACK_MODEL_PROFILE.id)
-    || live2dModelProfiles[0];
-  if (!previewModelId) settings.live2dModelId = activeModelProfile.id;
-  document.body.dataset.live2dModel = activeModelProfile.id;
-  renderLive2DModelOptions();
-  if (DEV_MODE) {
-    renderDeveloperModelEditor();
-    renderDeveloperTouchRegions();
-  }
+  return sceneController?.loadRegistry();
 }
 
 function renderLive2DModelOptions() {
   if (!dom.live2dModelInput) return;
-  const selected = settings.live2dModelId || activeModelProfile.id;
-  dom.live2dModelInput.replaceChildren(...live2dModelProfiles.map(profile => {
+  const scene = sceneSnapshot();
+  const selected = settings.live2dModelId || scene.activeProfile.id;
+  dom.live2dModelInput.replaceChildren(...scene.profiles.map(profile => {
     const option = document.createElement("option");
     option.value = profile.id;
     option.textContent = profile.label || profile.id;
     return option;
   }));
-  dom.live2dModelInput.value = live2dModelProfiles.some(item => item.id === selected)
+  dom.live2dModelInput.value = scene.profiles.some(item => item.id === selected)
     ? selected
-    : activeModelProfile.id;
+    : scene.activeProfile.id;
   updateLive2DModelHint();
 }
 
 function updateLive2DModelHint() {
   if (!dom.live2dModelHint) return;
-  const selected = live2dModelProfiles.find(item => item.id === dom.live2dModelInput?.value)
-    || activeModelProfile;
-  const pending = selected.id !== activeModelProfile.id ? " 保存后重新加载并切换。" : " 当前正在使用。";
+  const scene = sceneSnapshot();
+  const selected = scene.profiles.find(item => item.id === dom.live2dModelInput?.value)
+    || scene.activeProfile;
+  const pending = selected.id !== scene.activeProfile.id ? " 保存后重新加载并切换。" : " 当前正在使用。";
   const interaction = selected.interactionSummary ? ` 交互：${selected.interactionSummary}` : "";
   dom.live2dModelHint.textContent = `${selected.description || selected.label || selected.id}${interaction}${pending}`;
 }
 
 function normalizedModelTransform(value) {
-  const source = value && typeof value === "object" ? value : {};
-  return {
-    scale: clamp(toNumber(source.scale, 1), 0.35, 2.4),
-    offsetX: clamp(toNumber(source.offsetX, 0), -1200, 1200),
-    offsetY: clamp(toNumber(source.offsetY, 0), -1200, 1200),
-  };
+  return MODEL_TRANSFORM_CONTROLLER.normalizeTransform(value);
 }
 
-function loadDeveloperModelTransforms() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(DEV_MODEL_TRANSFORMS_KEY) || "{}");
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
-      Object.entries(parsed).map(([modelId, transform]) => [modelId, normalizedModelTransform(transform)]),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function persistDeveloperModelTransforms() {
-  localStorage.setItem(DEV_MODEL_TRANSFORMS_KEY, JSON.stringify(developerModelTransforms));
-}
-
-function modelTransformFor(modelId = activeModelProfile?.id) {
-  if (DEV_MODE && developerModelTransforms?.[modelId]) {
-    return normalizedModelTransform(developerModelTransforms[modelId]);
-  }
-  return normalizedModelTransform(settings.modelTransforms?.[modelId]);
+function modelTransformFor(modelId = sceneSnapshot().activeProfile?.id) {
+  return modelTransformController?.getTransformFor(modelId)
+    || MODEL_TRANSFORM_CONTROLLER.normalizeTransform(settings.modelTransforms?.[modelId]);
 }
 
 function selectedDisplayModelId() {
-  return dom.live2dModelInput?.value || activeModelProfile?.id || FALLBACK_MODEL_PROFILE.id;
+  return modelTransformController?.getSelectedModelId()
+    || dom.live2dModelInput?.value
+    || sceneSnapshot().activeProfile?.id
+    || FALLBACK_MODEL_PROFILE.id;
 }
 
 function updateModelTransformInputs() {
-  const transform = modelTransformFor(selectedDisplayModelId());
-  if (dom.modelScaleInput) dom.modelScaleInput.value = Math.round(transform.scale * 100);
-  if (dom.modelOffsetXInput) dom.modelOffsetXInput.value = transform.offsetX;
-  if (dom.modelOffsetYInput) dom.modelOffsetYInput.value = transform.offsetY;
-  if (dom.modelScaleValue) dom.modelScaleValue.value = `${Math.round(transform.scale * 100)}%`;
-}
-
-function previewSelectedModelTransform() {
-  const modelId = selectedDisplayModelId();
-  const transform = normalizedModelTransform({
-    scale: toNumber(dom.modelScaleInput?.value, 100) / 100,
-    offsetX: dom.modelOffsetXInput?.value,
-    offsetY: dom.modelOffsetYInput?.value,
-  });
-  if (DEV_MODE) {
-    developerModelTransforms = { ...developerModelTransforms, [modelId]: transform };
-    persistDeveloperModelTransforms();
-  } else {
-    settings.modelTransforms = { ...(settings.modelTransforms || {}), [modelId]: transform };
-  }
-  if (dom.modelScaleValue) dom.modelScaleValue.value = `${Math.round(transform.scale * 100)}%`;
-  if (modelId === activeModelProfile?.id) fitModel();
-}
-
-function resetSelectedModelTransform() {
-  const modelId = selectedDisplayModelId();
-  if (DEV_MODE) {
-    const next = { ...developerModelTransforms };
-    delete next[modelId];
-    developerModelTransforms = next;
-    persistDeveloperModelTransforms();
-  } else {
-    const next = { ...(settings.modelTransforms || {}) };
-    delete next[modelId];
-    settings.modelTransforms = next;
-  }
-  updateModelTransformInputs();
-  if (modelId === activeModelProfile?.id) fitModel();
-  toast(DEV_MODE
-    ? "已清除开发者坐标，当前回到普通模式的模型位置；普通设置未改动"
-    : "已恢复这套皮肤的默认大小和位置，保存显示设置后生效");
+  return modelTransformController?.syncInputs();
 }
 
 function registerBackgroundImages(presets) {
@@ -3144,10 +3062,7 @@ function newBackgroundDraft() {
 }
 
 function backgroundImageUrl(source) {
-  const preset = source.backgroundPreset;
-  if (preset === "boot") return BOOT_BACKGROUND_URL;
-  if (preset === "custom" && source.customBackgroundPath) return source.previewUrl || `/api/background-image?v=${backgroundRevision}`;
-  return BACKGROUND_IMAGE_PRESETS.get(preset) || "";
+  return backgroundRenderer?.imageUrl(source) || "";
 }
 
 function backgroundView(source) {
@@ -3201,2546 +3116,12 @@ async function chooseCustomBackground() {
   }
 }
 
-const DEVELOPER_FOUNDATION_PARAMETER_GROUPS = Object.freeze([
-  Object.freeze({
-    key: "eyes",
-    label: "眼睛与视线",
-    ids: Object.freeze([
-      "ParamEyeLOpen", "ParamEyeROpen",
-      "ParamEyeLSmile", "ParamEyeRSmile", "ParamEyeSmile",
-      "ParamEyeBallX", "ParamEyeBallY", "ParamEyeBallForm",
-    ]),
-  }),
-  Object.freeze({
-    key: "brows",
-    label: "眉毛",
-    ids: Object.freeze([
-      "ParamBrowLY", "ParamBrowRY", "ParamBrowLX", "ParamBrowRX",
-      "ParamBrowLAngle", "ParamBrowRAngle", "ParamBrowLForm", "ParamBrowRForm",
-    ]),
-  }),
-  Object.freeze({
-    key: "mouth",
-    label: "嘴部",
-    ids: Object.freeze(["ParamMouthForm", "ParamMouthOpenY"]),
-  }),
-  Object.freeze({
-    key: "face",
-    label: "脸颊",
-    ids: Object.freeze(["ParamCheek"]),
-  }),
-  Object.freeze({
-    key: "pose",
-    label: "头部姿态（不是面部几何，但可纳入情绪标注）",
-    ids: Object.freeze(["ParamAngleX", "ParamAngleY", "ParamAngleZ"]),
-  }),
-]);
-const DEVELOPER_FOUNDATION_PARAMETER_IDS = new Set(
-  DEVELOPER_FOUNDATION_PARAMETER_GROUPS.flatMap(group => group.ids),
-);
-
-const LIVE2D_PARAMETER_GUIDES = Object.freeze({
-  Param: ["左眼物理辅助 1", "模型作者标为“眼睛L”。这是物理输出参数，静态表情通常保持默认，让物理系统接管。"],
-  Param2: ["左眼物理辅助 2", "模型作者标为“眼睛L2”。这是物理输出参数，不建议直接加入情绪映射。"],
-  Param9: ["右眼物理辅助 1", "模型作者标为“眼睛R1”。这是物理输出参数，静态表情通常保持默认。"],
-  Param10: ["右眼物理辅助 2", "模型作者标为“眼睛R2”。这是物理输出参数，不建议直接加入情绪映射。"],
-  ParamAngleX: ["头部左右转", "负值/正值控制左右方向；具体左右以模型画面为准。先用小幅度，再逐步增加。"],
-  ParamAngleY: ["头部上下抬低", "调节抬头与低头；先在 ±5 到 ±10 范围观察，避免下巴或头发穿插。"],
-  ParamAngleZ: ["头部侧倾", "控制歪头角度；正负方向相反。表情用小幅度，强烈姿态再逐步放大。"],
-  ParamBodyAngleX: ["身体左右转", "身体跟随头部的水平转动。通常应明显小于 ParamAngleX。"],
-  ParamBodyAngleY: ["身体前后/上下姿态", "模型实际方向可能不同；适合轻微呼吸或前倾，避免大幅持续使用。"],
-  ParamBodyAngleZ: ["身体侧倾", "配合 ParamAngleZ 使用，但幅度应更小，防止整个人像僵硬倾倒。"],
-  ParamEyeLOpen: ["左眼开合", "通常 0 为闭眼、1 为睁眼。半闭时同步检查虹膜是否被裁切。"],
-  ParamEyeROpen: ["右眼开合", "通常 0 为闭眼、1 为睁眼。需要自然对称时与左眼接近。"],
-  ParamEyeBallX: ["双眼左右视线", "通常 -1 到 1。眼睛变窄时应同步降低追踪幅度。"],
-  ParamEyeBallY: ["双眼上下视线", "通常 -1 到 1。半闭眼时可小幅平移，让虹膜中心对准眼缝。"],
-  ParamEyeSmile: ["笑眼强度", "逐步增加观察眼尾弧度；不要只靠压低 EyeOpen 制造笑眼。"],
-  ParamEyeLSmile: ["左眼笑意", "用于左眼弯曲；与右眼参数配合，避免单边异常。"],
-  ParamEyeRSmile: ["右眼笑意", "用于右眼弯曲；与左眼参数配合，避免单边异常。"],
-  ParamEyeBallForm: ["虹膜/瞳孔缩放", "模型若支持，负值常用于缩小瞳孔、正值用于放大；以画面实测为准。"],
-  ParamMouthOpenY: ["嘴巴开合", "0 为闭合，增大后张嘴。表情静态截图通常先设 0，再单独观察嘴型。"],
-  ParamMouthForm: ["基础嘴部曲线", "此模型通常 -1 偏生气下弧、0 偏中性/波浪、1 偏微笑；不要用它替代所有分类嘴型。"],
-  ParamCheek: ["脸红强度", "0 应完全无脸红，逐步增加到 1；先定颜色，再决定不同情绪的百分比。"],
-  ParamBrowLY: ["左眉高度", "上下移动左眉。惊讶可抬高，担心/生气需结合眉形与角度。"],
-  ParamBrowRY: ["右眉高度", "上下移动右眉。与左眉略有差异可增加自然感。"],
-  ParamBrowLX: ["左眉左右位置", "水平移动左眉。先保持接近 0，小步调整并观察是否改善不对称构图。"],
-  ParamBrowRX: ["右眉左右位置", "水平移动右眉。通常与左眉配合，避免眉毛靠得过近或过远。"],
-  ParamBrowLForm: ["左眉形状", "改变左眉曲线；正负意义由模型决定，建议从 0 每次改 0.1。"],
-  ParamBrowRForm: ["右眉形状", "改变右眉曲线；先与左眉对称测试，再做情绪性不对称。"],
-  ParamBrowLAngle: ["左眉角度", "用于生气、担忧等眉峰方向；小步调节，避免眉毛翻转。"],
-  ParamBrowRAngle: ["右眉角度", "用于生气、担忧等眉峰方向；与左眉配合观察。"],
-  ParamBreath: ["呼吸", "通常 0 到 1 循环。静态表情标签里保持默认即可。"],
-  Param3: ["害羞表情层", "作者自定义的分类层。标注模式中可连续调节并与 Param4–Param8 自由混合；正式情绪映射暂不采用这些混合。"],
-  Param4: ["开心/俏皮表情层", "当前模型中适合高兴和 teasing。标注模式允许连续强度和跨层叠加，请观察嘴线是否自然。"],
-  Param5: ["生气表情层", "当前模型中的生气嘴与相关面部层。标注模式允许连续强度和跨层叠加。"],
-  Param6: ["低落表情层", "当前模型中的悲伤/低落层。标注模式允许连续混合，注意半闭眼时的虹膜裁切。"],
-  Param7: ["强害羞表情层", "作者自定义的更强害羞层。标注模式允许与 Param3 及其他层同时使用。"],
-  Param8: ["震惊表情层", "当前模型中的惊讶/瞳孔变化层。标注模式允许连续混合，再用眼睛开合和独立瞳孔缩放微调。"],
-  Param11: ["头发物理 X1", "模型作者定义为头发物理输出，但现有情绪表曾把它当紧张姿态使用，属于待验证疑点。截图时先保持默认，再单独小步测试。"],
-  Param12: ["头发物理 X2", "模型作者定义为头发物理输出，但现有情绪表曾把它当紧张姿态使用，属于待验证疑点。截图时先保持默认，再单独小步测试。"],
-  Param14: ["头部大角度转向辅助", "工程中配合 ParamAngleX 扩大侧头；先固定身体，再确认它是否让头发或轮廓变形。"],
-  Param15: ["头部俯仰辅助", "工程中跟随 ParamAngleY。保持小幅，观察头发、下巴和颈部连接。"],
-  Param16: ["手臂/姿态收束", "工程中用于手臂和整体姿态变化。通常 0 到 1；逐步调整观察双臂位置。"],
-  Param17: ["身体水平位移辅助", "工程中跟随身体与舞台水平移动。强度应低于头部转向。"],
-  Param13: ["头发摆动辅助 A", "工程中跟随头发摆动；静态表情可先保持默认。"],
-  Param18: ["头发摆动辅助 B", "工程中跟随头发摆动；静态表情可先保持默认。"],
-  ParamHairFront: ["前发摆动", "标准头发物理参数。静态表情保持默认；动态时用小幅周期变化。"],
-  ParamHairSide: ["侧发摆动", "标准头发物理参数。检查侧发不要穿过脸颊和肩部。"],
-  ParamHairBack: ["后发摆动", "标准头发物理参数。幅度通常比前发更缓、更滞后。"],
-});
-
-function live2dParameterGuide(id) {
-  const exact = LIVE2D_PARAMETER_GUIDES[id];
-  if (exact) return { name: exact[0], adjustment: exact[1], known: true };
-  const normalized = String(id || "");
-  if (/Mouth/i.test(normalized)) {
-    return {
-      name: "嘴部自定义参数",
-      adjustment: "先把 MouthOpenY 设为 0，单独小步调整并观察嘴角、上下唇和牙齿；不要同时改变多个未知嘴部参数。",
-      known: false,
-    };
-  }
-  if (/Eye|Pupil|Iris/i.test(normalized)) {
-    return {
-      name: "眼睛/虹膜自定义参数",
-      adjustment: "先保持视线居中，逐步改变；同时检查睁眼、半闭和闭眼三种状态，避免虹膜只剩下半段。",
-      known: false,
-    };
-  }
-  if (/Brow/i.test(normalized)) {
-    return {
-      name: "眉毛自定义参数",
-      adjustment: "每次只改一个参数约 10% 范围，记录它影响高度、角度还是眉形，再与另一侧匹配。",
-      known: false,
-    };
-  }
-  if (/Hair/i.test(normalized)) {
-    return {
-      name: "头发物理/形变参数",
-      adjustment: "静态表情通常保持默认；需要动作时小幅测试，确认不会让发丝穿过脸部或身体。",
-      known: false,
-    };
-  }
-  return {
-    name: "作者自定义参数（待实测）",
-    adjustment: "当前没有可靠语义。先记住默认值，每次移动约总范围的 5%–10%，截图标注可见变化；无变化时恢复默认。",
-    known: false,
-  };
-}
-
-function developerFoundationParameterIds() {
-  const ids = new Set(DEVELOPER_FOUNDATION_PARAMETER_IDS);
-  for (const channel of ("pupilScale", "eyeSmile", "blush")) {
-    mappedParameterIds(channel).forEach(id => ids.add(id));
-  }
-  return ids;
-}
-
-function developerParameterGroup(parameter) {
-  const group = DEVELOPER_FOUNDATION_PARAMETER_GROUPS.find(item => item.ids.includes(parameter.id));
-  if (group) return group;
-  if (mappedParameterIds("pupilScale").includes(parameter.id)) {
-    return DEVELOPER_FOUNDATION_PARAMETER_GROUPS[0];
-  }
-  return { key: "advanced", label: "高级：作者预制层、物理与身体参数" };
-}
-
-function renderDeveloperParameterCapabilities(parameters = developerParameterMetadata) {
-  if (!dom.devParameterCapabilityStatus) return;
-  const ids = new Set(parameters.map(item => item.id));
-  const pupilIds = mappedParameterIds("pupilScale").filter(id => ids.has(id));
-  const hasPupilScale = pupilIds.length > 0 || ids.has("ParamEyeBallForm");
-  const hasExtractedPupilScale = (
-    coreModel?.getDrawableIndex?.("ArtMesh60") >= 0
-    && coreModel?.getDrawableIndex?.("ArtMesh98") >= 0
-  );
-  const hasEyeHorizontalSize = [...ids].some(id => /Eye.*(?:ScaleX|SizeX|Width)/i.test(id));
-  const hasIndependentEyePosition = [...ids].some(id => /Eye[LR].*(?:Position|Pos)[XY]/i.test(id));
-  const capabilities = [
-    ["左右眼独立开合与笑眼", ids.has("ParamEyeLOpen") && ids.has("ParamEyeROpen"), "可直接组合"],
-    ["眼球左右/上下", ids.has("ParamEyeBallX") && ids.has("ParamEyeBallY"), "此模型只能双眼联动"],
-    [
-      "瞳孔/虹膜独立缩放",
-      hasPupilScale || hasExtractedPupilScale,
-      hasPupilScale
-        ? `作者参数：${pupilIds.join("、") || "ParamEyeBallForm"}`
-        : hasExtractedPupilScale
-          ? "作者未公开参数；训练页已从 ArtMesh60 / ArtMesh98 提取左右运行时缩放"
-          : "原模型未公开；Param8 只是作者的整层“惊讶”预设",
-    ],
-    ["眼睛横向大小", hasEyeHorizontalSize, hasEyeHorizontalSize ? "可直接调节" : "原模型未公开独立参数"],
-    ["整只眼睛上下/左右平移", hasIndependentEyePosition, hasIndependentEyePosition ? "可直接调节" : "原模型未公开；目前只有眼球视线可移动"],
-    ["嘴部弧度与开合", ids.has("ParamMouthForm") && ids.has("ParamMouthOpenY"), "有一条连续嘴形轴和一条开合轴，没有独立嘴角控制"],
-  ];
-  dom.devParameterCapabilityStatus.replaceChildren(...capabilities.map(([label, supported, detail]) => {
-    const item = document.createElement("div");
-    item.className = `dev-parameter-capability ${supported ? "supported" : "unsupported"}`;
-    item.textContent = `${label}：${detail}`;
-    return item;
-  }));
-}
-
-function coreParameterIdAt(index) {
-  const ids = coreModel?._parameterIds;
-  const raw = typeof ids?.at === "function" ? ids.at(index) : ids?.[index];
-  if (typeof raw === "string") return raw;
-  const value = typeof raw?.getString === "function" ? raw.getString() : raw;
-  if (typeof value === "string") return value;
-  if (typeof value?.s === "string") return value.s;
-  const text = String(value ?? raw ?? "");
-  return text === "[object Object]" ? `Parameter${index}` : text;
-}
-
-async function loadDeveloperParameterDisplayInfo() {
-  developerParameterDisplayNames.clear();
-  if (!DEV_MODE || !activeModelProfile?.modelUrl) return;
-  try {
-    const modelResponse = await fetch(activeModelProfile.modelUrl, { cache: "no-store" });
-    if (!modelResponse.ok) throw new Error(`model3 HTTP ${modelResponse.status}`);
-    const modelJson = await modelResponse.json();
-    const displayInfo = String(modelJson?.FileReferences?.DisplayInfo || "").trim();
-    if (!displayInfo) return;
-    const displayUrl = new URL(displayInfo, new URL(activeModelProfile.modelUrl, window.location.href));
-    const displayResponse = await fetch(displayUrl, { cache: "no-store" });
-    if (!displayResponse.ok) throw new Error(`cdi3 HTTP ${displayResponse.status}`);
-    const displayJson = await displayResponse.json();
-    (Array.isArray(displayJson?.Parameters) ? displayJson.Parameters : []).forEach(item => {
-      const id = String(item?.Id || "").trim();
-      const name = String(item?.Name || "").trim();
-      if (id && name) developerParameterDisplayNames.set(id, name);
-    });
-  } catch (error) {
-    console.debug("Live2D parameter display info unavailable:", error);
-  }
-}
-
-function readLive2DParameters() {
-  if (!coreModel || typeof coreModel.getParameterCount !== "function") return [];
-  const count = Math.max(0, Number(coreModel.getParameterCount()) || 0);
-  const parameters = [];
-  for (let index = 0; index < count; index += 1) {
-    try {
-      const id = coreParameterIdAt(index);
-      const minimum = Number(coreModel.getParameterMinimumValue(index));
-      const maximum = Number(coreModel.getParameterMaximumValue(index));
-      const defaultValue = Number(coreModel.getParameterDefaultValue(index));
-      const currentValue = Number(coreModel.getParameterValueByIndex(index));
-      const guide = live2dParameterGuide(id);
-      parameters.push({
-        index,
-        id,
-        minimum: Number.isFinite(minimum) ? minimum : -1,
-        maximum: Number.isFinite(maximum) ? maximum : 1,
-        defaultValue: Number.isFinite(defaultValue) ? defaultValue : 0,
-        currentValue: Number.isFinite(currentValue) ? currentValue : 0,
-        authorName: developerParameterDisplayNames.get(id) || "",
-        ...guide,
-      });
-    } catch (error) {
-      console.debug("Live2D parameter inspection failed:", index, error);
-    }
-  }
-  return parameters;
-}
-
-function live2dParameterStep(parameter) {
-  const span = Math.abs(parameter.maximum - parameter.minimum);
-  if (!span) return 0.001;
-  return Math.max(0.0001, Number((span / 200).toPrecision(4)));
-}
-
-function formatLive2DParameterValue(value) {
-  return Number(toNumber(value, 0).toFixed(4)).toString();
-}
-
-function refreshDeveloperParameterControls() {
-  if (!DEV_MODE || !dom.devParameterControls) return;
-  developerParameterMetadata = readLive2DParameters();
-  renderDeveloperParameterCapabilities(developerParameterMetadata);
-  if (!developerParameterMetadata.length) {
-    dom.devParameterControls.replaceChildren();
-    if (dom.devParameterStatus) dom.devParameterStatus.textContent = "当前模型尚未加载，或没有暴露可调参数。";
-    return;
-  }
-  const foundationIds = developerFoundationParameterIds();
-  const visibleParameters = developerParameterMetadata.filter(parameter => (
-    foundationIds.has(parameter.id) || developerParameterShowAdvanced
-  ));
-  const rows = [];
-  let previousGroupKey = "";
-  visibleParameters
-    .sort((left, right) => {
-      const leftGroup = developerParameterGroup(left);
-      const rightGroup = developerParameterGroup(right);
-      const groupOrder = [...DEVELOPER_FOUNDATION_PARAMETER_GROUPS.map(item => item.key), "advanced"];
-      const groupDelta = groupOrder.indexOf(leftGroup.key) - groupOrder.indexOf(rightGroup.key);
-      if (groupDelta) return groupDelta;
-      const groupIds = leftGroup.ids || [];
-      return groupIds.indexOf(left.id) - groupIds.indexOf(right.id);
-    })
-    .forEach(parameter => {
-    const group = developerParameterGroup(parameter);
-    if (group.key !== previousGroupKey) {
-      const groupTitle = document.createElement("h3");
-      groupTitle.className = `dev-parameter-group-title${group.key === "advanced" ? " advanced" : ""}`;
-      groupTitle.textContent = group.label;
-      rows.push(groupTitle);
-      previousGroupKey = group.key;
-    }
-    const row = document.createElement("section");
-    row.className = "dev-parameter-row";
-    row.dataset.parameterIndex = String(parameter.index);
-    row.dataset.parameterSearch = `${parameter.id} ${parameter.name} ${parameter.adjustment}`.toLowerCase();
-
-    const description = document.createElement("div");
-    const heading = document.createElement("div");
-    heading.className = "dev-parameter-heading";
-    const code = document.createElement("code");
-    code.textContent = parameter.id;
-    const name = document.createElement("strong");
-    name.textContent = parameter.name;
-    heading.append(code, name);
-    const meaning = document.createElement("div");
-    meaning.className = "dev-parameter-description";
-    const authorLabel = parameter.authorName ? `模型原名：${parameter.authorName}。` : "";
-    meaning.textContent = parameter.known
-      ? `${authorLabel}已根据标准 Cubism 语义、作者标注或当前工程映射说明。`
-      : `${authorLabel}模型作者未提供足够语义，目前不能可靠断言其具体作用。`;
-    const adjustment = document.createElement("div");
-    adjustment.className = "dev-parameter-adjustment";
-    adjustment.textContent = `怎么调：${parameter.adjustment}`;
-    description.append(heading, meaning, adjustment);
-
-    const editor = document.createElement("div");
-    editor.className = "dev-parameter-editor";
-    const step = live2dParameterStep(parameter);
-    const override = developerParameterOverrides.get(parameter.id);
-    const value = override ? override.value : parameter.currentValue;
-    const range = document.createElement("input");
-    range.type = "range";
-    range.min = String(parameter.minimum);
-    range.max = String(parameter.maximum);
-    range.step = String(step);
-    range.value = String(value);
-    range.dataset.parameterIndex = String(parameter.index);
-    range.dataset.parameterRole = "range";
-    const number = document.createElement("input");
-    number.type = "number";
-    number.min = String(parameter.minimum);
-    number.max = String(parameter.maximum);
-    number.step = String(step);
-    number.value = formatLive2DParameterValue(value);
-    number.dataset.parameterIndex = String(parameter.index);
-    number.dataset.parameterRole = "number";
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.textContent = "回到基线";
-    reset.dataset.parameterReset = String(parameter.index);
-    const bounds = document.createElement("div");
-    bounds.className = "dev-parameter-range";
-    bounds.append(
-      Object.assign(document.createElement("span"), { textContent: `最小 ${formatLive2DParameterValue(parameter.minimum)}` }),
-      Object.assign(document.createElement("span"), { textContent: `默认 ${formatLive2DParameterValue(parameter.defaultValue)}` }),
-      Object.assign(document.createElement("span"), { textContent: `最大 ${formatLive2DParameterValue(parameter.maximum)}` }),
-    );
-    editor.append(range, number, reset, bounds);
-    row.append(description, editor);
-    rows.push(row);
-  });
-  dom.devParameterControls.replaceChildren(...rows);
-  if (dom.devParameterCaptureLabelInput && !dom.devParameterCaptureLabelInput.value.trim()) {
-    dom.devParameterCaptureLabelInput.value = "待定义情绪";
-  }
-  if (dom.devParameterStatus) {
-    const availableFoundationCount = developerParameterMetadata.filter(item => foundationIds.has(item.id)).length;
-    dom.devParameterStatus.textContent = developerExpressionCalibrationActive
-      ? `基础表情标定中：已冻结 ${developerParameterOverrides.size} 个参数；当前显示 ${availableFoundationCount} 个基础参数。`
-      : `当前模型共有 ${developerParameterMetadata.length} 个参数，其中 ${availableFoundationCount} 个可用于基础表情组合。请先选择起点。`;
-  }
-  filterDeveloperParameterControls();
-}
-
-function filterDeveloperParameterControls() {
-  const query = String(dom.devParameterFilterInput?.value || "").trim().toLowerCase();
-  dom.devParameterControls?.querySelectorAll(".dev-parameter-row").forEach(row => {
-    row.hidden = Boolean(query) && !String(row.dataset.parameterSearch || "").includes(query);
-  });
-}
-
-function toggleDeveloperParameterLock() {
-  const enabled = Boolean(dom.devParameterLockInput?.checked);
-  if (enabled && !developerExpressionCalibrationActive) {
-    startDeveloperExpressionCalibration("current");
-    return;
-  }
-  developerParameterLock = enabled;
-  developerExpressionCalibrationActive = enabled;
-  if (dom.devParameterStatus) {
-    dom.devParameterStatus.textContent = developerParameterLock
-      ? `静态标定已开启；${developerParameterOverrides.size} 个基础参数和预制层状态已冻结。`
-      : "静态标定已暂停；自动表情重新接管。要继续标定，请重新选择起点。";
-  }
-}
-
-function toggleDeveloperParameterAdvanced() {
-  developerParameterShowAdvanced = Boolean(dom.devParameterAdvancedInput?.checked);
-  refreshDeveloperParameterControls();
-}
-
-function startDeveloperExpressionCalibration(mode = "default") {
-  if (!DEV_MODE || !coreModel) {
-    toast("Live2D 模型尚未加载");
-    return;
-  }
-  developerParameterMetadata = readLive2DParameters();
-  const foundationIds = developerFoundationParameterIds();
-  developerParameterOverrides.clear();
-  developerParameterBaseline.clear();
-  developerParameterMetadata.forEach(parameter => {
-    if (!foundationIds.has(parameter.id)) return;
-    const value = mode === "current" ? parameter.currentValue : parameter.defaultValue;
-    developerParameterBaseline.set(parameter.id, value);
-    developerParameterOverrides.set(parameter.id, { index: parameter.index, value });
-  });
-  developerParameterMetadata.forEach(parameter => {
-    if (!AUTHOR_FACE_LAYER_IDS.includes(parameter.id)) return;
-    developerParameterOverrides.set(parameter.id, { index: parameter.index, value: 0 });
-  });
-  developerParameterLock = true;
-  developerExpressionCalibrationActive = true;
-  if (dom.devParameterLockInput) dom.devParameterLockInput.checked = true;
-  applyDeveloperParameterOverrides();
-  refreshDeveloperParameterControls();
-  toast(mode === "current"
-    ? "已冻结当前画面；作者预制表情层已关闭"
-    : "已从模型默认脸开始；作者预制表情层已关闭");
-}
-
-function setDeveloperParameterOverride(parameter, value) {
-  if (!developerExpressionCalibrationActive) {
-    startDeveloperExpressionCalibration("current");
-  }
-  const clamped = clamp(toNumber(value, parameter.defaultValue), parameter.minimum, parameter.maximum);
-  developerParameterOverrides.set(parameter.id, { index: parameter.index, value: clamped });
-  developerParameterLock = true;
-  if (dom.devParameterLockInput) dom.devParameterLockInput.checked = true;
-  try {
-    coreModel.setParameterValueByIndex(parameter.index, clamped);
-  } catch {
-    setParam(parameter.id, clamped);
-  }
-  return clamped;
-}
-
-function syncDeveloperParameterRow(index, value) {
-  const row = dom.devParameterControls?.querySelector(`.dev-parameter-row[data-parameter-index="${index}"]`);
-  if (!row) return;
-  row.querySelectorAll("[data-parameter-role]").forEach(input => {
-    input.value = input.dataset.parameterRole === "number"
-      ? formatLive2DParameterValue(value)
-      : String(value);
-  });
-}
-
-function handleDeveloperParameterInput(event) {
-  const input = event.target.closest?.("[data-parameter-index]");
-  if (!input) return;
-  const index = Number(input.dataset.parameterIndex);
-  const parameter = developerParameterMetadata.find(item => item.index === index);
-  if (!parameter) return;
-  const value = setDeveloperParameterOverride(parameter, input.value);
-  syncDeveloperParameterRow(index, value);
-  if (dom.devParameterStatus) {
-    dom.devParameterStatus.textContent = `已锁定 ${parameter.id} = ${formatLive2DParameterValue(value)}；共覆盖 ${developerParameterOverrides.size} 个参数。`;
-  }
-}
-
-function handleDeveloperParameterReset(event) {
-  const button = event.target.closest?.("[data-parameter-reset]");
-  if (!button) return;
-  const index = Number(button.dataset.parameterReset);
-  const parameter = developerParameterMetadata.find(item => item.index === index);
-  if (!parameter) return;
-  const value = setDeveloperParameterOverride(
-    parameter,
-    developerParameterBaseline.get(parameter.id) ?? parameter.defaultValue,
-  );
-  syncDeveloperParameterRow(index, value);
-}
-
-function resetDeveloperParameterControls() {
-  developerParameterOverrides.clear();
-  developerParameterBaseline.clear();
-  developerParameterLock = false;
-  developerExpressionCalibrationActive = false;
-  developerAuthorBlushOpacityOverride = null;
-  developerPupilScaleOverrides.left = null;
-  developerPupilScaleOverrides.right = null;
-  if (dom.devParameterLockInput) dom.devParameterLockInput.checked = false;
-  Object.keys(paramValues).forEach(key => delete paramValues[key]);
-  if (dom.devParameterStatus) dom.devParameterStatus.textContent = "已清除全部手动覆盖，自动情绪与动作重新接管模型。";
-  window.setTimeout(refreshDeveloperParameterControls, 120);
-}
-
-function applyDeveloperParameterOverrides() {
-  if (!DEV_MODE || !developerParameterLock || !coreModel) return;
-  developerParameterOverrides.forEach(({ index, value }, id) => {
-    try {
-      coreModel.setParameterValueByIndex(index, value);
-    } catch {
-      setParam(id, value);
-    }
-  });
-}
-
-function applyDeveloperDrawableOverrides() {
-  if (!coreModel) return;
-  const rawModel = typeof coreModel.getModel === "function" ? coreModel.getModel() : null;
-  const drawables = rawModel?.drawables;
-  if (!drawables) return;
-  const authorBlushOpacity = DEV_MODE && developerAuthorBlushOpacityOverride !== null
-    ? developerAuthorBlushOpacityOverride
-    : runtimeAuthorBlushOpacityValue;
-  if (authorBlushOpacity < 0.9999) {
-    ["lianhong", "lianhong2"].forEach(id => {
-      const index = coreModel.getDrawableIndex(id);
-      if (index >= 0) {
-        drawables.opacities[index] *= clamp(toNumber(authorBlushOpacity, 1), 0, 1);
-      }
-    });
-  }
-  [
-    [
-      "ArtMesh60",
-      DEV_MODE && developerPupilScaleOverrides.left !== null
-        ? developerPupilScaleOverrides.left
-        : runtimePupilScaleValues.left,
-    ],
-    [
-      "ArtMesh98",
-      DEV_MODE && developerPupilScaleOverrides.right !== null
-        ? developerPupilScaleOverrides.right
-        : runtimePupilScaleValues.right,
-    ],
-  ].forEach(([id, rawScale]) => {
-    const index = coreModel.getDrawableIndex(id);
-    const vertices = index >= 0 ? drawables.vertexPositions[index] : null;
-    if (!vertices?.length) return;
-    let centerX = 0;
-    let centerY = 0;
-    const vertexCount = vertices.length / 2;
-    for (let offset = 0; offset < vertices.length; offset += 2) {
-      centerX += vertices[offset];
-      centerY += vertices[offset + 1];
-    }
-    centerX /= vertexCount;
-    centerY /= vertexCount;
-    const scale = clamp(toNumber(rawScale, 1), 0.35, 1.35);
-    for (let offset = 0; offset < vertices.length; offset += 2) {
-      vertices[offset] = centerX + (vertices[offset] - centerX) * scale;
-      vertices[offset + 1] = centerY + (vertices[offset + 1] - centerY) * scale;
-    }
-  });
-  modelGarmentRig?.update();
-}
-
-function developerCaptureCanvas() {
-  const extract = app?.renderer?.plugins?.extract || app?.renderer?.extract;
-  if (extract && typeof extract.canvas === "function") {
-    try {
-      return extract.canvas(app.stage);
-    } catch (error) {
-      console.debug("PIXI stage extraction failed:", error);
-    }
-  }
-  return dom.canvas;
-}
-
-async function captureDeveloperParameterSnapshot() {
-  if (!DEV_MODE || !coreModel) {
-    toast("Live2D 模型尚未加载");
-    return;
-  }
-  const label = String(dom.devParameterCaptureLabelInput?.value || "").trim();
-  if (!label) {
-    toast("请先填写截图标签；它会成为文件名的一部分");
-    dom.devParameterCaptureLabelInput?.focus();
-    return;
-  }
-  if (!developerExpressionCalibrationActive || !developerParameterLock) {
-    toast("请先选择“从模型默认脸开始”或“以当前画面为起点”");
-    return;
-  }
-  dom.devCaptureParametersBtn.disabled = true;
-  try {
-    applyDeveloperParameterOverrides();
-    const canvas = developerCaptureCanvas();
-    const imageDataUrl = canvas.toDataURL("image/png");
-    const foundationIds = developerFoundationParameterIds();
-    const parameters = readLive2DParameters().map(parameter => ({
-      id: parameter.id,
-      index: parameter.index,
-      value: developerParameterOverrides.get(parameter.id)?.value ?? parameter.currentValue,
-      baselineValue: developerParameterBaseline.get(parameter.id) ?? parameter.defaultValue,
-      normalizedDelta: (() => {
-        const value = developerParameterOverrides.get(parameter.id)?.value ?? parameter.currentValue;
-        const baseline = developerParameterBaseline.get(parameter.id) ?? parameter.defaultValue;
-        const span = parameter.maximum - parameter.minimum;
-        return span ? (value - baseline) / span : 0;
-      })(),
-      minimum: parameter.minimum,
-      maximum: parameter.maximum,
-      defaultValue: parameter.defaultValue,
-      name: parameter.name,
-      authorName: parameter.authorName,
-      known: parameter.known,
-      foundation: foundationIds.has(parameter.id),
-    }));
-    const response = await fetch("/api/developer/live2d-expression-capture", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        label,
-        userEmotionLabel: label,
-        calibrationMode: "foundation-composition",
-        presetLayersDisabled: true,
-        emotion: effectiveVisualEmotion(),
-        foregroundEmotion: currentEmotion,
-        emotionIntensity: currentEmotionWeight,
-        modelId: activeModelProfile?.id || "",
-        imageDataUrl,
-        parameters,
-        compositionParameterIds: parameters.filter(item => item.foundation).map(item => item.id),
-        baselineParameters: Object.fromEntries(developerParameterBaseline),
-        manualOverrides: Object.fromEntries(
-          [...developerParameterOverrides.entries()].map(([id, item]) => [id, item.value]),
-        ),
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    if (dom.devParameterStatus) {
-      dom.devParameterStatus.textContent = `已保存：${data.filePath}；同名 JSON 保存完整参数与情绪上下文。`;
-    }
-    toast(`参数截图已保存：${data.fileName}`);
-  } catch (error) {
-    toast(`参数截图保存失败：${error.message}`);
-  } finally {
-    dom.devCaptureParametersBtn.disabled = false;
-  }
-}
-
-async function openDeveloperParameterCaptureDirectory() {
-  if (!window.pywebview?.api?.openLive2DExpressionCaptureDirectory) {
-    toast("参数截图目录：data/runtime/live2d-expression-captures");
-    return;
-  }
-  try {
-    const result = await window.pywebview.api.openLive2DExpressionCaptureDirectory();
-    if (result?.ok === false) throw new Error(result.error || "打开失败");
-    toast("已打开参数截图目录");
-  } catch (error) {
-    toast(`打开参数截图目录失败：${error.message}`);
-  }
-}
-
-function developerExpressionTrainingId(prefix = "sample") {
-  const token = typeof crypto?.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `${prefix}-${token}`.replace(/[^A-Za-z0-9_.-]+/g, "-");
-}
-
-function developerExpressionTrainingParameterSupport(id) {
-  if (["VirtualAuthorBlushOpacity", "VirtualPupilLScale", "VirtualPupilRScale"].includes(id)) return "confirmed";
-  if (AUTHOR_FACE_LAYER_IDS.includes(id)) return "coupled-layer";
-  if (EXPRESSION_TRAINING_UNBOUND_IDS.has(id)) return "unbound";
-  if ([
-    "ParamEyeLOpen", "ParamEyeROpen", "ParamEyeBallX", "ParamEyeBallY",
-    "ParamMouthForm", "ParamMouthOpenY", "ParamAngleX", "ParamAngleY", "ParamAngleZ",
-  ].includes(id)) return "confirmed";
-  return "unverified";
-}
-
-function developerExpressionTrainingParameterIds() {
-  const available = new Set(developerParameterMetadata.map(item => item.id));
-  return EXPRESSION_TRAINING_PARAMETER_GROUPS
-    .flatMap(group => group.ids)
-    .filter((id, index, ids) => (
-      (available.has(id) || ["VirtualAuthorBlushOpacity", "VirtualPupilLScale", "VirtualPupilRScale"].includes(id))
-      && ids.indexOf(id) === index
-    ));
-}
-
-function developerExpressionTrainingParameterById(id) {
-  if (id === "VirtualPupilLScale" || id === "VirtualPupilRScale") {
-    const side = id === "VirtualPupilLScale" ? "left" : "right";
-    const sideLabel = side === "left" ? "画面左侧" : "画面右侧";
-    return {
-      index: -1,
-      id,
-      minimum: 0.35,
-      maximum: 1.35,
-      defaultValue: 1,
-      currentValue: developerPupilScaleOverrides[side] ?? 1,
-      authorName: `${sideLabel}瞳孔/虹膜大小`,
-      name: `${sideLabel}瞳孔/虹膜大小`,
-      adjustment: `以当前眼球位置为中心缩放${sideLabel}的独立虹膜网格。1 为作者原大小；减小可表现震惊，放大用于柔和或呆滞感，不改变眼皮开合。`,
-      known: true,
-    };
-  }
-  if (id === "VirtualAuthorBlushOpacity") {
-    return {
-      index: -1,
-      id,
-      minimum: 0,
-      maximum: 1,
-      defaultValue: 1,
-      currentValue: developerAuthorBlushOpacityOverride ?? 1,
-      authorName: "作者层脸红可见度",
-      name: "作者层脸红可见度",
-      adjustment: "只控制 lianhong / lianhong2 两个独立网格。设为 0 可保留娇羞层的其他变化，同时隐藏它自带的脸红；普通 ParamCheek 不受影响。",
-      known: true,
-    };
-  }
-  return developerParameterMetadata.find(item => item.id === id);
-}
-
-function developerExpressionTrainingCurve(id, strengthBand) {
-  if (strengthBand === "typical") return 1;
-  if (strengthBand === "subtle") {
-    if (id === "ParamCheek") return 0.2;
-    if (/^ParamAngle|^Param1[456]$|^ParamBody/.test(id)) return 0.46;
-    if (/Eye.*Open/.test(id)) return 0.42;
-    if (/Mouth/.test(id)) return 0.36;
-    return 0.4;
-  }
-  if (id === "ParamCheek") return 1.14;
-  if (/^ParamAngle|^Param1[456]$|^ParamBody/.test(id)) return 1.28;
-  if (/Eye.*Open/.test(id)) return 1.08;
-  if (/Mouth/.test(id)) return 1.12;
-  return 1.16;
-}
-
-function recommendedDeveloperExpressionTrainingParameters(emotion, strengthBand) {
-  const result = {};
-  const neutralTargets = emotionTargets.neutral || {};
-  const targets = emotionTargets[emotion] || neutralTargets;
-  const metadataById = new Map(developerParameterMetadata.map(item => [item.id, item]));
-  developerExpressionTrainingParameterIds().forEach(id => {
-    const parameter = developerExpressionTrainingParameterById(id);
-    if (!parameter) return;
-    if (id === "VirtualAuthorBlushOpacity") {
-      result[id] = 1;
-      return;
-    }
-    if (id === "VirtualPupilLScale" || id === "VirtualPupilRScale") {
-      const intensity = strengthBand === "subtle" ? 0.45 : strengthBand === "strong" ? 1.65 : 1;
-      if (emotion === "startled") result[id] = Number(clamp(0.91 - intensity * 0.25, 0.45, 1).toFixed(4));
-      else if (emotion === "flustered") result[id] = Number(clamp(0.97 - intensity * 0.08, 0.78, 1).toFixed(4));
-      else if (emotion === "shy") result[id] = Number(clamp(0.99 - intensity * 0.045, 0.84, 1).toFixed(4));
-      else result[id] = 1;
-      return;
-    }
-    if (AUTHOR_FACE_LAYER_IDS.includes(id)) {
-      result[id] = 0;
-      return;
-    }
-    const baseline = toNumber(neutralTargets[id], parameter.defaultValue);
-    if (EXPRESSION_TRAINING_UNBOUND_IDS.has(id)) {
-      result[id] = parameter.defaultValue;
-      return;
-    }
-    const target = toNumber(targets[id], baseline);
-    const blend = developerExpressionTrainingCurve(id, strengthBand);
-    result[id] = Number(clamp(
-      baseline + (target - baseline) * blend,
-      parameter.minimum,
-      parameter.maximum,
-    ).toFixed(4));
-  });
-  let layer = EXPRESSION_TRAINING_LAYER_BY_EMOTION[emotion] || "";
-  if (emotion === "shy" && strengthBand === "strong") layer = "Param7";
-  if (layer && metadataById.has(layer)) result[layer] = 1;
-  return result;
-}
-
-function developerExpressionTrainingCouplingWarnings(parameters) {
-  const warnings = [];
-  const activeLayers = AUTHOR_FACE_LAYER_IDS.filter(id => Math.abs(toNumber(parameters?.[id], 0)) > 0.0001);
-  AUTHOR_FACE_LAYER_IDS.forEach(id => {
-    if (Math.abs(toNumber(parameters?.[id], 0)) > 0.0001 && EXPRESSION_TRAINING_LAYER_WARNINGS[id]) {
-      warnings.push(EXPRESSION_TRAINING_LAYER_WARNINGS[id]);
-    }
-  });
-  if (activeLayers.length > 1) {
-    warnings.unshift(`当前自由混合 ${activeLayers.length} 个作者分类层：${activeLayers.join(" + ")}。这里只记录观察结果，不限制数值或总量。`);
-  }
-  if (!developerParameterMetadata.some(item => item.id === "ParamEyeBallForm")) {
-    warnings.push("作者没有公开瞳孔缩放参数；训练台已从独立虹膜网格 ArtMesh60 / ArtMesh98 提取出左右缩放，属于运行时虚拟参数，不会再借用害羞或惊讶层冒充。");
-  }
-  return warnings;
-}
-
-function buildInitialDeveloperExpressionTrainingSamples() {
-  const modelId = activeModelProfile?.id || "";
-  const support = Object.fromEntries(
-    developerExpressionTrainingParameterIds().map(id => [id, developerExpressionTrainingParameterSupport(id)]),
-  );
-  return Object.entries(EXPRESSION_TRAINING_EMOTION_LABELS).flatMap(([emotion, emotionLabel]) => (
-    EXPRESSION_TRAINING_STRENGTHS.map(strength => {
-      const parameters = recommendedDeveloperExpressionTrainingParameters(emotion, strength.id);
-      const label = `${emotionLabel}_${strength.label}`;
-      const tags = [emotion, emotionLabel, strength.label, "初始建议"];
-      const notes = "由当前模型结构和已确认有效参数生成的初始假设，等待用户监督修订。";
-      return {
-        id: `seed-${emotion}-${strength.id}`,
-        label,
-        recommendedLabel: label,
-        emotion,
-        strengthBand: strength.id,
-        intensity: strength.intensity,
-        tags,
-        notes,
-        modelId,
-        source: "codex-seed",
-        recommendedParameters: { ...parameters },
-        recommendedMetadata: {
-          emotion,
-          strengthBand: strength.id,
-          intensity: strength.intensity,
-          tags: [...tags],
-          notes,
-        },
-        parameters: { ...parameters },
-        parameterSupport: support,
-        couplingWarnings: developerExpressionTrainingCouplingWarnings(parameters),
-        userEdited: false,
-        revision: 0,
-      };
-    })
-  ));
-}
-
-function replaceDeveloperExpressionTrainingDataset(data) {
-  const samples = Array.isArray(data?.dataset?.samples) ? data.dataset.samples : [];
-  developerExpressionRuntime = data?.dataset?.runtime && typeof data.dataset.runtime === "object"
-    ? data.dataset.runtime
-    : { schemaVersion: 1, activeByModel: {} };
-  settings.expressionRuntime = developerExpressionRuntime;
-  developerExpressionTrainingSamples = samples.map(item => ({
-    ...item,
-    tags: Array.isArray(item.tags) ? item.tags : [],
-    recommendedParameters: { ...(item.recommendedParameters || {}) },
-    recommendedMetadata: {
-      ...(item.recommendedMetadata || {}),
-      tags: Array.isArray(item.recommendedMetadata?.tags)
-        ? [...item.recommendedMetadata.tags]
-        : [...(Array.isArray(item.tags) ? item.tags : [])],
-    },
-    parameters: { ...(item.parameters || {}) },
-    parameterSupport: { ...(item.parameterSupport || {}) },
-    couplingWarnings: Array.isArray(item.couplingWarnings) ? item.couplingWarnings : [],
-  }));
-  developerExpressionTrainingLoaded = true;
-  if (
-    developerExpressionTrainingSelectedId
-    && !developerExpressionTrainingSamples.some(item => item.id === developerExpressionTrainingSelectedId)
-  ) {
-    developerExpressionTrainingSelectedId = "";
-  }
-  renderDeveloperExpressionTrainingGallery();
-}
-
-function populateDeveloperExpressionTrainingSelectors() {
-  const makeOptions = (includeAll = false) => {
-    const options = [];
-    if (includeAll) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "全部情绪";
-      options.push(option);
-    }
-    Object.entries(EXPRESSION_TRAINING_EMOTION_LABELS).forEach(([id, label]) => {
-      const option = document.createElement("option");
-      option.value = id;
-      option.textContent = `${id} / ${label}`;
-      options.push(option);
-    });
-    return options;
-  };
-  if (dom.devTrainingEmotionFilter && !dom.devTrainingEmotionFilter.dataset.populated) {
-    dom.devTrainingEmotionFilter.replaceChildren(...makeOptions(true));
-    dom.devTrainingEmotionFilter.dataset.populated = "1";
-  }
-  if (dom.devTrainingEmotionInput && !dom.devTrainingEmotionInput.dataset.populated) {
-    dom.devTrainingEmotionInput.replaceChildren(...makeOptions(false));
-    dom.devTrainingEmotionInput.dataset.populated = "1";
-  }
-}
-
-async function loadDeveloperExpressionTraining() {
-  if (!DEV_MODE || developerExpressionTrainingLoaded) {
-    renderDeveloperExpressionTrainingGallery();
-    return;
-  }
-  if (!coreModel) {
-    if (dom.devTrainingStatus) dom.devTrainingStatus.textContent = "等待 Live2D 模型";
-    return;
-  }
-  populateDeveloperExpressionTrainingSelectors();
-  developerParameterMetadata = readLive2DParameters();
-  if (dom.devTrainingStatus) dom.devTrainingStatus.textContent = "载入监督样本…";
-  try {
-    let response = await storageScopedFetch("/api/developer/expression-training", { cache: "no-store" });
-    let data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    if (!Array.isArray(data.dataset?.samples) || !data.dataset.samples.length) {
-      response = await storageScopedFetch("/api/developer/expression-training", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "initialize", samples: buildInitialDeveloperExpressionTrainingSamples() }),
-      });
-      data = await response.json();
-      if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    }
-    replaceDeveloperExpressionTrainingDataset(data);
-  } catch (error) {
-    if (dom.devTrainingStatus) dom.devTrainingStatus.textContent = `载入失败：${error.message}`;
-    toast(`训练数据载入失败：${error.message}`);
-  }
-}
-
-function developerExpressionTrainingSelectedSample() {
-  if (
-    developerExpressionTrainingEditorOpen
-    && developerExpressionTrainingDraft?.id === developerExpressionTrainingSelectedId
-  ) {
-    return developerExpressionTrainingDraft;
-  }
-  return developerExpressionTrainingSamples.find(item => item.id === developerExpressionTrainingSelectedId) || null;
-}
-
-function persistedDeveloperExpressionTrainingSelectedSample() {
-  return developerExpressionTrainingSamples.find(item => item.id === developerExpressionTrainingSelectedId) || null;
-}
-
-function developerExpressionRuntimeStatus(sample) {
-  const entry = developerExpressionRuntime?.activeByModel?.[sample?.modelId || ""]?.[sample?.emotion || ""];
-  if (!entry || entry.sampleId !== sample?.id) return "inactive";
-  return Number(entry.sampleRevision || 0) === Number(sample?.revision || 0) ? "active" : "stale";
-}
-
-function cloneDeveloperExpressionTrainingSample(sample) {
-  if (!sample || typeof sample !== "object") return null;
-  return {
-    ...sample,
-    tags: [...(sample.tags || [])],
-    recommendedParameters: { ...(sample.recommendedParameters || {}) },
-    recommendedMetadata: {
-      ...(sample.recommendedMetadata || {}),
-      tags: [...(sample.recommendedMetadata?.tags || sample.tags || [])],
-    },
-    parameters: { ...(sample.parameters || {}) },
-    parameterSupport: { ...(sample.parameterSupport || {}) },
-    couplingWarnings: [...(sample.couplingWarnings || [])],
-  };
-}
-
-function developerExpressionTrainingBaseline(sample) {
-  const metadata = sample?.recommendedMetadata && typeof sample.recommendedMetadata === "object"
-    ? sample.recommendedMetadata
-    : {};
-  return {
-    label: String(sample?.recommendedLabel || sample?.label || ""),
-    emotion: String(metadata.emotion || sample?.emotion || "neutral"),
-    strengthBand: String(metadata.strengthBand || sample?.strengthBand || "custom"),
-    intensity: clamp(toNumber(metadata.intensity, sample?.intensity ?? 1), 0, 2.5),
-    tags: [...(Array.isArray(metadata.tags) ? metadata.tags : (sample?.tags || []))],
-    notes: String(metadata.notes ?? sample?.notes ?? ""),
-    parameters: { ...(sample?.recommendedParameters || {}) },
-  };
-}
-
-function developerExpressionTrainingValuesDiffer(left, right) {
-  const leftKeys = Object.keys(left || {});
-  const rightKeys = Object.keys(right || {});
-  const keys = new Set([...leftKeys, ...rightKeys]);
-  return [...keys].some(key => Math.abs(toNumber(left?.[key], 0) - toNumber(right?.[key], 0)) > 0.000001);
-}
-
-function developerExpressionTrainingHasChanges(sample) {
-  if (!sample) return false;
-  const baseline = developerExpressionTrainingBaseline(sample);
-  const tags = Array.isArray(sample.tags) ? sample.tags : [];
-  return (
-    String(sample.label || "") !== baseline.label
-    || String(sample.emotion || "neutral") !== baseline.emotion
-    || String(sample.strengthBand || "custom") !== baseline.strengthBand
-    || Math.abs(toNumber(sample.intensity, 1) - baseline.intensity) > 0.000001
-    || tags.join("\u0000") !== baseline.tags.join("\u0000")
-    || String(sample.notes || "") !== baseline.notes
-    || developerExpressionTrainingValuesDiffer(sample.parameters, baseline.parameters)
-  );
-}
-
-function setDeveloperExpressionTrainingView(editorOpen) {
-  developerExpressionTrainingEditorOpen = Boolean(editorOpen);
-  dom.devTrainingBrowser?.classList.toggle("hidden", developerExpressionTrainingEditorOpen);
-  dom.devTrainingEditor?.classList.toggle("hidden", !developerExpressionTrainingEditorOpen);
-  if (developerExpressionTrainingEditorOpen) dom.devVoiceReferenceEditor?.classList.add("hidden");
-}
-
-function renderDeveloperExpressionTrainingGallery() {
-  if (!DEV_MODE || !dom.devTrainingGallery) return;
-  const query = String(dom.devTrainingFilterInput?.value || "").trim().toLowerCase();
-  const emotionFilter = String(dom.devTrainingEmotionFilter?.value || "");
-  const runtimeFilter = String(dom.devTrainingRuntimeFilter?.value || "");
-  const filtered = developerExpressionTrainingSamples.filter(sample => {
-    if (emotionFilter && sample.emotion !== emotionFilter) return false;
-    if (runtimeFilter && developerExpressionRuntimeStatus(sample) !== runtimeFilter) return false;
-    if (!query) return true;
-    return [
-      sample.label, sample.recommendedLabel, sample.emotion, sample.strengthBand,
-      ...(sample.tags || []), sample.notes,
-    ].join(" ").toLowerCase().includes(query);
-  });
-  if (!filtered.length) {
-    const empty = document.createElement("div");
-    empty.className = "dev-training-empty";
-    empty.textContent = developerExpressionTrainingLoaded ? "没有符合筛选条件的可编辑图。" : "训练样本尚未载入。";
-    dom.devTrainingGallery.replaceChildren(empty);
-  } else {
-    dom.devTrainingGallery.replaceChildren(...filtered.map(sample => {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.className = [
-        "dev-training-card",
-        sample.id === developerExpressionTrainingSelectedId ? "selected" : "",
-        sample.userEdited ? "edited" : "",
-      ].filter(Boolean).join(" ");
-      card.dataset.trainingSampleId = sample.id;
-      const preview = document.createElement("span");
-      preview.className = "dev-training-card-preview";
-      if (sample.previewFile) {
-        const image = document.createElement("img");
-        const previewSampleId = sample.previewSourceId || sample.id;
-        image.src = `/api/developer/expression-training/preview?id=${encodeURIComponent(previewSampleId)}&revision=${sample.revision || 0}`;
-        image.alt = `${sample.label} 的 Live2D 表情预览`;
-        preview.append(image);
-      } else {
-        const placeholder = document.createElement("span");
-        placeholder.className = "dev-training-card-placeholder";
-        placeholder.textContent = `${EXPRESSION_TRAINING_EMOTION_LABELS[sample.emotion] || sample.emotion}\n${sample.strengthBand || "custom"}`;
-        preview.append(placeholder);
-      }
-      if (sample.userEdited) {
-        const edited = document.createElement("span");
-        edited.className = "dev-training-card-edited";
-        edited.textContent = "已修订";
-        preview.append(edited);
-      }
-      const runtimeStatus = developerExpressionRuntimeStatus(sample);
-      if (runtimeStatus !== "inactive") {
-        const runtime = document.createElement("span");
-        runtime.className = `dev-training-card-runtime ${runtimeStatus}`;
-        runtime.textContent = runtimeStatus === "active" ? "启用中" : "运行版本较旧";
-        preview.append(runtime);
-      }
-      const copy = document.createElement("span");
-      copy.className = "dev-training-card-copy";
-      const label = document.createElement("strong");
-      label.textContent = sample.label;
-      const detail = document.createElement("span");
-      detail.textContent = `${sample.emotion} · ${sample.strengthBand} · ${toNumber(sample.intensity, 1).toFixed(2)}`;
-      copy.append(label, detail);
-      card.append(preview, copy);
-      return card;
-    }));
-  }
-  if (dom.devTrainingStatus) {
-    const edited = developerExpressionTrainingSamples.filter(item => item.userEdited).length;
-    const active = developerExpressionTrainingSamples.filter(
-      item => developerExpressionRuntimeStatus(item) === "active",
-    ).length;
-    dom.devTrainingStatus.textContent = `${developerExpressionTrainingSamples.length} 个样本 / ${active} 个启用中 / ${edited} 个已修订`;
-  }
-  if (dom.devTrainingDuplicateBtn) {
-    dom.devTrainingDuplicateBtn.disabled = !persistedDeveloperExpressionTrainingSelectedSample();
-  }
-}
-
-function handleDeveloperExpressionTrainingGalleryClick(event) {
-  const card = event.target.closest?.("[data-training-sample-id]");
-  if (!card) return;
-  openDeveloperExpressionTrainingEditor(card.dataset.trainingSampleId);
-}
-
-function applyDeveloperExpressionTrainingParameters(parameters) {
-  if (!DEV_MODE || !coreModel) return;
-  developerParameterMetadata = readLive2DParameters();
-  developerAuthorBlushOpacityOverride = clamp(
-    toNumber(parameters?.VirtualAuthorBlushOpacity, 1),
-    0,
-    1,
-  );
-  developerPupilScaleOverrides.left = clamp(toNumber(parameters?.VirtualPupilLScale, 1), 0.35, 1.35);
-  developerPupilScaleOverrides.right = clamp(toNumber(parameters?.VirtualPupilRScale, 1), 0.35, 1.35);
-  const trainingIds = new Set(developerExpressionTrainingParameterIds());
-  developerParameterOverrides.clear();
-  developerParameterBaseline.clear();
-  developerParameterMetadata.forEach(parameter => {
-    if (!trainingIds.has(parameter.id)) return;
-    developerParameterBaseline.set(parameter.id, parameter.defaultValue);
-    const rawValue = Object.hasOwn(parameters || {}, parameter.id)
-      ? parameters[parameter.id]
-      : parameter.defaultValue;
-    developerParameterOverrides.set(parameter.id, {
-      index: parameter.index,
-      value: clamp(toNumber(rawValue, parameter.defaultValue), parameter.minimum, parameter.maximum),
-    });
-  });
-  developerParameterLock = true;
-  developerExpressionCalibrationActive = true;
-  if (dom.devParameterLockInput) dom.devParameterLockInput.checked = true;
-  applyDeveloperParameterOverrides();
-  try {
-    coreModel.update();
-  } catch {
-    // Cubism compatibility wrappers can update on the next renderer frame.
-  }
-  applyDeveloperDrawableOverrides();
-}
-
-function applySelectedDeveloperExpressionTrainingSample() {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample) {
-    toast("请先选择一张可编辑图");
-    return;
-  }
-  applyDeveloperExpressionTrainingParameters(sample.parameters);
-  refreshDeveloperExpressionTrainingEffectiveOutputs();
-  toast(`已应用：${sample.label}`);
-}
-
-function openDeveloperExpressionTrainingEditor(sampleId) {
-  const sample = developerExpressionTrainingSamples.find(item => item.id === sampleId);
-  if (!sample) return;
-  developerExpressionTrainingPreviousSelectedId = developerExpressionTrainingSelectedId;
-  openDeveloperExpressionTrainingDraft(sample, false);
-}
-
-function openDeveloperExpressionTrainingDraft(sample, isNew = false) {
-  if (!sample) return;
-  developerExpressionTrainingSelectedId = sample.id;
-  developerExpressionTrainingDraft = cloneDeveloperExpressionTrainingSample(sample);
-  developerExpressionTrainingDraftIsNew = Boolean(isNew);
-  developerExpressionTrainingDirty = false;
-  setDeveloperExpressionTrainingView(true);
-  if (dom.devTrainingLabelInput) dom.devTrainingLabelInput.value = developerExpressionTrainingDraft.label || "";
-  if (dom.devTrainingRecommendedLabelInput) {
-    dom.devTrainingRecommendedLabelInput.value = developerExpressionTrainingDraft.recommendedLabel || "";
-  }
-  if (dom.devTrainingEmotionInput) dom.devTrainingEmotionInput.value = developerExpressionTrainingDraft.emotion || "neutral";
-  if (dom.devTrainingStrengthInput) {
-    dom.devTrainingStrengthInput.value = developerExpressionTrainingDraft.strengthBand || "custom";
-  }
-  if (dom.devTrainingIntensityInput) {
-    dom.devTrainingIntensityInput.value = String(toNumber(developerExpressionTrainingDraft.intensity, 1));
-  }
-  if (dom.devTrainingIntensityValue) {
-    dom.devTrainingIntensityValue.textContent = toNumber(developerExpressionTrainingDraft.intensity, 1).toFixed(2);
-  }
-  if (dom.devTrainingTagsInput) {
-    dom.devTrainingTagsInput.value = (developerExpressionTrainingDraft.tags || []).join(", ");
-  }
-  if (dom.devTrainingNotesInput) dom.devTrainingNotesInput.value = developerExpressionTrainingDraft.notes || "";
-  if (dom.devTrainingEditorHint) {
-    dom.devTrainingEditorHint.textContent = `样本 ${sample.id}；当前为独立编辑草稿，保存前不会改变列表状态。修订版本 ${sample.revision || 0}。`;
-  }
-  applyDeveloperExpressionTrainingParameters(developerExpressionTrainingDraft.parameters);
-  renderDeveloperExpressionTrainingParameterControls();
-  renderDeveloperExpressionTrainingCouplingWarning();
-  refreshDeveloperExpressionTrainingEffectiveOutputs();
-  renderDeveloperExpressionRuntimeStatus(developerExpressionTrainingDraft);
-  window.requestAnimationFrame(() => {
-    dom.devTrainingEditor?.scrollIntoView({ block: "start", inline: "nearest" });
-  });
-}
-
-function renderDeveloperExpressionRuntimeStatus(sample = developerExpressionTrainingSelectedSample()) {
-  if (!dom.devTrainingRuntimeStatus) return;
-  const status = sample ? developerExpressionRuntimeStatus(sample) : "inactive";
-  const entry = sample
-    ? developerExpressionRuntime?.activeByModel?.[sample.modelId || ""]?.[sample.emotion || ""]
-    : null;
-  dom.devTrainingRuntimeStatus.textContent = status === "active"
-    ? `运行状态：启用中。自动情绪 ${sample.emotion} 正在使用 ${sample.label}（修订 ${sample.revision || 0}）。“你的修订”仍是独立标注。`
-    : status === "stale"
-      ? `运行状态：仍在使用修订 ${entry?.sampleRevision || 0}；当前已保存到修订 ${sample.revision || 0}，需重新启用才会改变真实运行时。`
-      : `运行状态：未启用。当前自动情绪仍使用内置映射；保存只记录修订，不会暗中改变真实表情。`;
-  if (dom.devTrainingActivateBtn) {
-    dom.devTrainingActivateBtn.disabled = !sample || sample.modelId !== (activeModelProfile?.id || "");
-  }
-  if (dom.devTrainingResetRuntimeBtn) dom.devTrainingResetRuntimeBtn.disabled = !entry;
-}
-
-function closeDeveloperExpressionTrainingEditor() {
-  if (
-    developerExpressionTrainingDirty
-    && !window.confirm("当前修改尚未保存。确定放弃这些修改并返回表情列表吗？")
-  ) return;
-  const returnSampleId = developerExpressionTrainingDraftIsNew
-    ? developerExpressionTrainingPreviousSelectedId
-    : developerExpressionTrainingSelectedId;
-  if (developerExpressionTrainingDraftIsNew) {
-    developerExpressionTrainingSelectedId = developerExpressionTrainingPreviousSelectedId;
-  }
-  developerExpressionTrainingDraft = null;
-  developerExpressionTrainingDraftIsNew = false;
-  developerExpressionTrainingDirty = false;
-  setDeveloperExpressionTrainingView(false);
-  resetDeveloperParameterControls();
-  renderDeveloperExpressionTrainingGallery();
-  window.requestAnimationFrame(() => {
-    const selected = dom.devTrainingGallery?.querySelector(".dev-training-card.selected");
-    selected?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  });
-}
-
-function developerExpressionTrainingSupportLabel(support) {
-  if (support === "confirmed") return ["已确认有效", ""];
-  if (support === "coupled-layer") return ["作者耦合层", ""];
-  if (support === "unbound") return ["当前未见绑定", "unbound"];
-  return ["尚待确认", "unbound"];
-}
-
-function renderDeveloperExpressionTrainingParameterControls() {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample || !dom.devTrainingParameterControls) return;
-  const rows = [];
-  EXPRESSION_TRAINING_PARAMETER_GROUPS.forEach(group => {
-    const parameters = group.ids
-      .map(id => developerExpressionTrainingParameterById(id))
-      .filter(Boolean);
-    if (!parameters.length) return;
-    const heading = document.createElement("h3");
-    heading.className = "dev-training-parameter-group";
-    heading.textContent = group.label;
-    rows.push(heading);
-    parameters.forEach(parameter => {
-      const support = sample.parameterSupport?.[parameter.id]
-        || developerExpressionTrainingParameterSupport(parameter.id);
-      const [supportLabel, supportClass] = developerExpressionTrainingSupportLabel(support);
-      const value = toNumber(sample.parameters?.[parameter.id], parameter.defaultValue);
-      const recommended = toNumber(sample.recommendedParameters?.[parameter.id], parameter.defaultValue);
-      const row = document.createElement("section");
-      row.className = `dev-training-parameter${support === "unbound" ? " unsupported" : ""}`;
-      row.dataset.trainingParameterId = parameter.id;
-      const description = document.createElement("div");
-      const title = document.createElement("div");
-      title.className = "dev-training-parameter-title";
-      const code = document.createElement("code");
-      code.textContent = parameter.id;
-      const name = document.createElement("strong");
-      name.textContent = parameter.authorName || parameter.name;
-      const badge = document.createElement("span");
-      badge.className = `dev-training-support ${supportClass}`;
-      badge.textContent = supportLabel;
-      title.append(code, name, badge);
-      const help = document.createElement("div");
-      help.className = "dev-training-parameter-help";
-      help.textContent = parameter.adjustment;
-      description.append(title, help);
-      const editor = document.createElement("div");
-      editor.className = "dev-training-parameter-editor";
-      const range = document.createElement("input");
-      range.type = "range";
-      range.min = String(parameter.minimum);
-      range.max = String(parameter.maximum);
-      range.step = String(live2dParameterStep(parameter));
-      range.value = String(value);
-      range.dataset.trainingParameterInput = parameter.id;
-      const number = document.createElement("input");
-      number.type = "number";
-      number.min = range.min;
-      number.max = range.max;
-      number.step = range.step;
-      number.value = formatLive2DParameterValue(value);
-      number.dataset.trainingParameterInput = parameter.id;
-      const recommendation = document.createElement("span");
-      recommendation.className = "dev-training-recommended-value";
-      recommendation.textContent = `建议 ${formatLive2DParameterValue(recommended)}`;
-      editor.append(range, number, recommendation);
-      row.append(description, editor);
-      rows.push(row);
-    });
-  });
-  dom.devTrainingParameterControls.replaceChildren(...rows);
-}
-
-function syncDeveloperExpressionTrainingParameterInputs(id, value) {
-  dom.devTrainingParameterControls?.querySelectorAll(`[data-training-parameter-input="${id}"]`).forEach(input => {
-    input.value = input.type === "number" ? formatLive2DParameterValue(value) : String(value);
-  });
-}
-
-function handleDeveloperExpressionTrainingParameterInput(event) {
-  const input = event.target.closest?.("[data-training-parameter-input]");
-  if (!input) return;
-  const sample = developerExpressionTrainingSelectedSample();
-  const parameter = developerExpressionTrainingParameterById(input.dataset.trainingParameterInput);
-  if (!sample || !parameter) return;
-  const value = clamp(toNumber(input.value, parameter.defaultValue), parameter.minimum, parameter.maximum);
-  sample.parameters[parameter.id] = value;
-  sample.parameterSupport[parameter.id] = sample.parameterSupport[parameter.id]
-    || developerExpressionTrainingParameterSupport(parameter.id);
-  developerExpressionTrainingDirty = true;
-  syncDeveloperExpressionTrainingParameterInputs(parameter.id, value);
-  if (parameter.id === "VirtualAuthorBlushOpacity") {
-    developerAuthorBlushOpacityOverride = value;
-    applyDeveloperDrawableOverrides();
-  } else if (parameter.id === "VirtualPupilLScale" || parameter.id === "VirtualPupilRScale") {
-    developerPupilScaleOverrides[parameter.id === "VirtualPupilLScale" ? "left" : "right"] = value;
-    try {
-      coreModel.update();
-    } catch {
-      // Cubism compatibility wrappers can update on the next renderer frame.
-    }
-    applyDeveloperDrawableOverrides();
-  } else {
-    setDeveloperParameterOverride(parameter, value);
-  }
-  renderDeveloperExpressionTrainingCouplingWarning();
-  refreshDeveloperExpressionTrainingEffectiveOutputs();
-}
-
-function renderDeveloperExpressionTrainingCouplingWarning() {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample || !dom.devTrainingCouplingWarning) return;
-  const warnings = developerExpressionTrainingCouplingWarnings(sample.parameters);
-  sample.couplingWarnings = warnings;
-  dom.devTrainingCouplingWarning.textContent = warnings.join("\n");
-}
-
-function developerTrainingDrawableIdAt(index, drawables = null) {
-  const candidates = [
-    coreModel?._drawableIds,
-    drawables?.ids,
-  ];
-  for (const ids of candidates) {
-    const raw = typeof ids?.at === "function" ? ids.at(index) : ids?.[index];
-    if (typeof raw === "string" && raw) return raw;
-    const value = typeof raw?.getString === "function" ? raw.getString() : raw;
-    if (value) return String(value);
-  }
-  return `Drawable#${index}`;
-}
-
-function developerTrainingDrawableSnapshot() {
-  const rawModel = typeof coreModel?.getModel === "function" ? coreModel.getModel() : null;
-  const drawables = rawModel?.drawables;
-  if (!drawables?.opacities) return new Map();
-  const result = new Map();
-  const count = drawables.opacities.length;
-  for (let index = 0; index < count; index += 1) {
-    const vertices = drawables.vertexPositions?.[index];
-    let minimumX = Infinity;
-    let maximumX = -Infinity;
-    let minimumY = Infinity;
-    let maximumY = -Infinity;
-    if (vertices?.length) {
-      for (let offset = 0; offset < vertices.length; offset += 2) {
-        minimumX = Math.min(minimumX, vertices[offset]);
-        maximumX = Math.max(maximumX, vertices[offset]);
-        minimumY = Math.min(minimumY, vertices[offset + 1]);
-        maximumY = Math.max(maximumY, vertices[offset + 1]);
-      }
-    }
-    const hasBounds = Number.isFinite(minimumX) && Number.isFinite(minimumY);
-    result.set(developerTrainingDrawableIdAt(index, drawables), {
-      opacity: toNumber(drawables.opacities[index], 0),
-      width: hasBounds ? maximumX - minimumX : 0,
-      height: hasBounds ? maximumY - minimumY : 0,
-      centerX: hasBounds ? (minimumX + maximumX) * 0.5 : 0,
-      centerY: hasBounds ? (minimumY + maximumY) * 0.5 : 0,
-    });
-  }
-  return result;
-}
-
-function developerTrainingRuntimeParameterValue(id) {
-  const parameter = developerExpressionTrainingParameterById(id);
-  if (!parameter || parameter.index < 0) return null;
-  try {
-    return toNumber(coreModel.getParameterValueByIndex(parameter.index), parameter.currentValue);
-  } catch {
-    return toNumber(parameter.currentValue, 0);
-  }
-}
-
-function developerTrainingEffectiveSnapshot() {
-  const parameterIds = [...new Set([
-    ...developerExpressionTrainingParameterIds(),
-    ...AUTHOR_FACE_LAYER_IDS,
-    "ParamEyeLOpen", "ParamEyeROpen", "ParamEyeBallX", "ParamEyeBallY",
-    "ParamMouthForm", "ParamMouthOpenY", "ParamCheek",
-  ])];
-  return {
-    parameters: Object.fromEntries(
-      parameterIds.map(id => [id, developerTrainingRuntimeParameterValue(id)]),
-    ),
-    drawables: developerTrainingDrawableSnapshot(),
-  };
-}
-
-function developerTrainingMetricRatio(current, baseline) {
-  const denominator = Math.abs(toNumber(baseline, 0));
-  if (denominator < 0.000001) return null;
-  return toNumber(current, 0) / denominator;
-}
-
-function developerTrainingDrawableChangeScore(current, baseline) {
-  if (!current || !baseline) return 0;
-  const widthScale = Math.max(Math.abs(baseline.width), 0.01);
-  const heightScale = Math.max(Math.abs(baseline.height), 0.01);
-  return (
-    Math.abs(current.opacity - baseline.opacity) * 2
-    + Math.abs(current.width - baseline.width) / widthScale
-    + Math.abs(current.height - baseline.height) / heightScale
-    + Math.abs(current.centerX - baseline.centerX) / widthScale
-    + Math.abs(current.centerY - baseline.centerY) / heightScale
-  );
-}
-
-function renderDeveloperExpressionTrainingEffectiveOutputs(current, baseline, parameters) {
-  if (!dom.devTrainingEffectiveOutputs) return;
-  const items = [];
-  const appendItem = (title, value, detail = "", changed = false) => {
-    const item = document.createElement("section");
-    item.className = `dev-training-effective-item${changed ? " changed" : ""}`;
-    const heading = document.createElement("strong");
-    heading.textContent = title;
-    const output = document.createElement("code");
-    output.textContent = value;
-    item.append(heading, output);
-    if (detail) {
-      const note = document.createElement("span");
-      note.textContent = detail;
-      item.append(note);
-    }
-    items.push(item);
-  };
-  const activeLayers = AUTHOR_FACE_LAYER_IDS
-    .filter(id => Math.abs(toNumber(parameters?.[id], 0)) > 0.0001)
-    .map(id => `${id}=${formatLive2DParameterValue(parameters[id])}`);
-  appendItem(
-    "当前作者分类层",
-    activeLayers.join(" + ") || "全部为 0",
-    activeLayers.length
-      ? activeLayers.map(entry => {
-          const id = entry.split("=")[0];
-          return `${id}：${EXPRESSION_TRAINING_LAYER_CHANNELS[id] || "作者耦合网格"}`;
-        }).join("；")
-      : "当前只显示公开参数和独立虚拟参数的效果。",
-    activeLayers.length > 0,
-  );
-
-  const pupilRows = [
-    ["左瞳孔 ArtMesh60", "ArtMesh60", toNumber(parameters?.VirtualPupilLScale, 1)],
-    ["右瞳孔 ArtMesh98", "ArtMesh98", toNumber(parameters?.VirtualPupilRScale, 1)],
-  ];
-  pupilRows.forEach(([label, id, explicitScale]) => {
-    const now = current.drawables.get(id);
-    const base = baseline.drawables.get(id);
-    if (!now || !base) return;
-    const widthRatio = developerTrainingMetricRatio(now.width, base.width);
-    const heightRatio = developerTrainingMetricRatio(now.height, base.height);
-    const changed = developerTrainingDrawableChangeScore(now, base) > 0.002;
-    appendItem(
-      label,
-      `最终：宽 ${now.width.toFixed(4)} / 高 ${now.height.toFixed(4)} / 透明度 ${now.opacity.toFixed(3)}`,
-      `直接缩放=${explicitScale.toFixed(3)}；关闭情绪层时宽 ${base.width.toFixed(4)} / 高 ${base.height.toFixed(4)}；情绪层净影响：宽 ${widthRatio === null ? "—" : `${((widthRatio - 1) * 100).toFixed(1)}%`}，高 ${heightRatio === null ? "—" : `${((heightRatio - 1) * 100).toFixed(1)}%`}，中心 Δ(${(now.centerX - base.centerX).toFixed(4)}, ${(now.centerY - base.centerY).toFixed(4)})`,
-      changed,
-    );
-  });
-
-  ["lianhong", "lianhong2"].forEach(id => {
-    const now = current.drawables.get(id);
-    const base = baseline.drawables.get(id);
-    if (!now || !base) return;
-    appendItem(
-      `脸红网格 ${id}`,
-      `透明度 ${base.opacity.toFixed(3)} → ${now.opacity.toFixed(3)}`,
-      `作者层脸红可见度=${toNumber(parameters?.VirtualAuthorBlushOpacity, 1).toFixed(3)}`,
-      Math.abs(now.opacity - base.opacity) > 0.001,
-    );
-  });
-
-  const parameterPairs = [
-    ["眼睛开合", "ParamEyeLOpen", "ParamEyeROpen"],
-    ["视线位置", "ParamEyeBallX", "ParamEyeBallY"],
-    ["嘴部公开轴", "ParamMouthForm", "ParamMouthOpenY"],
-  ];
-  parameterPairs.forEach(([label, leftId, rightId]) => {
-    const left = current.parameters[leftId];
-    const right = current.parameters[rightId];
-    const baselineLeft = baseline.parameters[leftId];
-    const baselineRight = baseline.parameters[rightId];
-    const changed = (
-      left !== null && baselineLeft !== null && Math.abs(left - baselineLeft) > 0.0001
-    ) || (
-      right !== null && baselineRight !== null && Math.abs(right - baselineRight) > 0.0001
-    );
-    appendItem(
-      label,
-      `最终：${leftId}=${left === null ? "—" : formatLive2DParameterValue(left)} / ${rightId}=${right === null ? "—" : formatLive2DParameterValue(right)}`,
-      `关闭情绪层：${leftId}=${baselineLeft === null ? "—" : formatLive2DParameterValue(baselineLeft)} / ${rightId}=${baselineRight === null ? "—" : formatLive2DParameterValue(baselineRight)}；层净变化 Δ(${left === null || baselineLeft === null ? "—" : formatLive2DParameterValue(left - baselineLeft)}, ${right === null || baselineRight === null ? "—" : formatLive2DParameterValue(right - baselineRight)})。若这里 Δ 为 0 但下方网格有变化，说明作者层绕过了公开轴直接改图。`,
-      changed,
-    );
-  });
-
-  const concreteParameterChanges = Object.entries(current.parameters)
-    .filter(([id, value]) => (
-      !AUTHOR_FACE_LAYER_IDS.includes(id)
-      && !id.startsWith("Virtual")
-      && value !== null
-      && baseline.parameters[id] !== null
-      && Math.abs(value - baseline.parameters[id]) > 0.0001
-    ))
-    .map(([id, value]) => ({
-      id,
-      before: baseline.parameters[id],
-      after: value,
-      delta: value - baseline.parameters[id],
-    }))
-    .sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta));
-  appendItem(
-    "情绪层实际影响的参数值",
-    concreteParameterChanges.length
-      ? `${concreteParameterChanges.length} 项：${concreteParameterChanges.map(item => item.id).join("、")}`
-      : "没有额外改写公开参数",
-    concreteParameterChanges.length
-      ? concreteParameterChanges.map(item => (
-          `${item.id}: ${formatLive2DParameterValue(item.before)} → `
-          + `${formatLive2DParameterValue(item.after)} `
-          + `(层净变化 ${formatLive2DParameterValue(item.delta)})`
-        )).join("；")
-      : "作者分类层仍可能直接驱动下方网格；这种影响不会伪装成公开参数变化。",
-    concreteParameterChanges.length > 0,
-  );
-
-  const drawableChanges = [...current.drawables.entries()]
-    .map(([id, metric]) => ({
-      id,
-      current: metric,
-      baseline: baseline.drawables.get(id),
-      score: developerTrainingDrawableChangeScore(metric, baseline.drawables.get(id)),
-    }))
-    .filter(item => item.baseline && item.score > 0.002)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 12);
-  appendItem(
-    "情绪层实际影响的具体网格值",
-    drawableChanges.length
-      ? drawableChanges.map(item => item.id).join("、")
-      : "未检测到明显网格差异",
-    drawableChanges.length
-      ? drawableChanges.map(item => (
-          `${item.id}: 透明度 ${item.baseline.opacity.toFixed(2)}→${item.current.opacity.toFixed(2)} `
-          + `(Δ${(item.current.opacity - item.baseline.opacity).toFixed(2)}), `
-          + `宽 ${item.baseline.width.toFixed(3)}→${item.current.width.toFixed(3)} `
-          + `(Δ${(item.current.width - item.baseline.width).toFixed(3)}), `
-          + `高 ${item.baseline.height.toFixed(3)}→${item.current.height.toFixed(3)} `
-          + `(Δ${(item.current.height - item.baseline.height).toFixed(3)}), `
-          + `中心 Δ(${(item.current.centerX - item.baseline.centerX).toFixed(3)}, ${(item.current.centerY - item.baseline.centerY).toFixed(3)})`
-        )).join("；")
-      : "比较基准保持其他参数完全相同，只把 Param3–Param8 归零。",
-    drawableChanges.length > 0,
-  );
-  dom.devTrainingEffectiveOutputs.replaceChildren(...items);
-}
-
-function refreshDeveloperExpressionTrainingEffectiveOutputs() {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample || !coreModel || !dom.devTrainingEffectiveOutputs) return;
-  const currentParameters = { ...(sample.parameters || {}) };
-  const baselineParameters = { ...currentParameters };
-  AUTHOR_FACE_LAYER_IDS.forEach(id => {
-    baselineParameters[id] = 0;
-  });
-  applyDeveloperExpressionTrainingParameters(baselineParameters);
-  const baseline = developerTrainingEffectiveSnapshot();
-  applyDeveloperExpressionTrainingParameters(currentParameters);
-  const current = developerTrainingEffectiveSnapshot();
-  renderDeveloperExpressionTrainingEffectiveOutputs(current, baseline, currentParameters);
-}
-
-function markDeveloperExpressionTrainingDirty() {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample) return;
-  developerExpressionTrainingDirty = true;
-}
-
-function updateDeveloperExpressionTrainingIntensity() {
-  const sample = developerExpressionTrainingSelectedSample();
-  const value = clamp(toNumber(dom.devTrainingIntensityInput?.value, 1), 0, 2.5);
-  if (dom.devTrainingIntensityValue) dom.devTrainingIntensityValue.textContent = value.toFixed(2);
-  if (sample) {
-    sample.intensity = value;
-    developerExpressionTrainingDirty = true;
-  }
-}
-
-function updateDeveloperExpressionTrainingSampleFromForm(sample) {
-  sample.label = String(dom.devTrainingLabelInput?.value || "").trim();
-  sample.emotion = String(dom.devTrainingEmotionInput?.value || "neutral");
-  sample.strengthBand = String(dom.devTrainingStrengthInput?.value || "custom");
-  sample.intensity = clamp(toNumber(dom.devTrainingIntensityInput?.value, 1), 0, 2.5);
-  sample.tags = String(dom.devTrainingTagsInput?.value || "")
-    .split(/[,，;\n]+/)
-    .map(item => item.trim())
-    .filter((item, index, items) => item && items.indexOf(item) === index)
-    .slice(0, 32);
-  sample.notes = String(dom.devTrainingNotesInput?.value || "").trim();
-  sample.modelId = activeModelProfile?.id || sample.modelId || "";
-  sample.couplingWarnings = developerExpressionTrainingCouplingWarnings(sample.parameters);
-  sample.userEdited = developerExpressionTrainingHasChanges(sample);
-  return sample;
-}
-
-async function saveDeveloperExpressionTrainingSample(options = {}) {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample) {
-    toast("请先选择一张可编辑图");
-    return;
-  }
-  updateDeveloperExpressionTrainingSampleFromForm(sample);
-  if (!sample.label) {
-    toast("请先填写你的表情标签");
-    dom.devTrainingLabelInput?.focus();
-    return;
-  }
-  const previousRevision = Math.max(0, Number(sample.revision) || 0);
-  sample.revision = previousRevision + 1;
-  if (dom.devTrainingSaveBtn) dom.devTrainingSaveBtn.disabled = true;
-  if (dom.devTrainingRestoreBtn) dom.devTrainingRestoreBtn.disabled = true;
-  if (dom.devTrainingCloseEditorBtn) dom.devTrainingCloseEditorBtn.disabled = true;
-  try {
-    applyDeveloperExpressionTrainingParameters(sample.parameters);
-    await new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
-    const canvas = developerCaptureCanvas();
-    const response = await storageScopedFetch("/api/developer/expression-training", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "upsert",
-        sample,
-        imageDataUrl: canvas.toDataURL("image/png"),
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    replaceDeveloperExpressionTrainingDataset(data);
-    developerExpressionTrainingSelectedId = data.sample?.id || sample.id;
-    const saved = developerExpressionTrainingSamples.find(item => item.id === developerExpressionTrainingSelectedId)
-      || data.sample
-      || sample;
-    openDeveloperExpressionTrainingDraft(saved, false);
-    toast(options.reset
-      ? `已重置为默认表情：${sample.recommendedLabel || sample.label}`
-      : `表情监督样本已保存：${sample.label}`);
-    return true;
-  } catch (error) {
-    sample.revision = previousRevision;
-    toast(`表情监督样本保存失败：${error.message}`);
-    developerExpressionTrainingDirty = true;
-    return false;
-  } finally {
-    if (dom.devTrainingSaveBtn) dom.devTrainingSaveBtn.disabled = false;
-    if (dom.devTrainingRestoreBtn) dom.devTrainingRestoreBtn.disabled = false;
-    if (dom.devTrainingCloseEditorBtn) dom.devTrainingCloseEditorBtn.disabled = false;
-  }
-}
-
-async function activateSelectedDeveloperExpressionTrainingSample() {
-  let sample = developerExpressionTrainingSelectedSample();
-  if (!sample) return;
-  if (developerExpressionTrainingDirty || developerExpressionTrainingDraftIsNew) {
-    const saved = await saveDeveloperExpressionTrainingSample();
-    if (!saved) return;
-    sample = persistedDeveloperExpressionTrainingSelectedSample();
-  } else {
-    sample = persistedDeveloperExpressionTrainingSelectedSample();
-  }
-  if (!sample) return;
-  try {
-    const response = await storageScopedFetch("/api/developer/expression-training", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "activate", id: sample.id }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    replaceDeveloperExpressionTrainingDataset(data);
-    developerExpressionTrainingSelectedId = sample.id;
-    const activated = persistedDeveloperExpressionTrainingSelectedSample() || sample;
-    openDeveloperExpressionTrainingDraft(activated, false);
-    renderDeveloperExpressionRuntimeStatus(activated);
-    toast(`已接入真实运行时：${activated.emotion} → ${activated.label}`);
-  } catch (error) {
-    toast(`启用真实表情失败：${error.message}`);
-  }
-}
-
-async function resetSelectedDeveloperExpressionRuntime() {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample) return;
-  try {
-    const response = await storageScopedFetch("/api/developer/expression-training", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "reset_runtime",
-        modelId: sample.modelId || activeModelProfile?.id || "",
-        emotion: sample.emotion,
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    replaceDeveloperExpressionTrainingDataset(data);
-    developerExpressionTrainingSelectedId = sample.id;
-    const persisted = persistedDeveloperExpressionTrainingSelectedSample() || sample;
-    openDeveloperExpressionTrainingDraft(persisted, false);
-    renderDeveloperExpressionRuntimeStatus(persisted);
-    toast(`已恢复 ${sample.emotion} 的内置运行时表情`);
-  } catch (error) {
-    toast(`恢复内置表情失败：${error.message}`);
-  }
-}
-
-async function restoreDeveloperExpressionTrainingRecommendation() {
-  const sample = developerExpressionTrainingSelectedSample();
-  if (!sample) return;
-  const baseline = developerExpressionTrainingBaseline(sample);
-  sample.label = baseline.label;
-  sample.emotion = baseline.emotion;
-  sample.strengthBand = baseline.strengthBand;
-  sample.intensity = baseline.intensity;
-  sample.tags = [...baseline.tags];
-  sample.notes = baseline.notes;
-  sample.parameters = { ...baseline.parameters };
-  sample.userEdited = false;
-  developerExpressionTrainingDirty = true;
-  if (dom.devTrainingLabelInput) dom.devTrainingLabelInput.value = sample.label;
-  if (dom.devTrainingEmotionInput) dom.devTrainingEmotionInput.value = sample.emotion;
-  if (dom.devTrainingStrengthInput) dom.devTrainingStrengthInput.value = sample.strengthBand;
-  if (dom.devTrainingIntensityInput) dom.devTrainingIntensityInput.value = String(sample.intensity);
-  if (dom.devTrainingIntensityValue) dom.devTrainingIntensityValue.textContent = sample.intensity.toFixed(2);
-  if (dom.devTrainingTagsInput) dom.devTrainingTagsInput.value = sample.tags.join(", ");
-  if (dom.devTrainingNotesInput) dom.devTrainingNotesInput.value = sample.notes;
-  applyDeveloperExpressionTrainingParameters(sample.parameters);
-  renderDeveloperExpressionTrainingParameterControls();
-  renderDeveloperExpressionTrainingCouplingWarning();
-  refreshDeveloperExpressionTrainingEffectiveOutputs();
-  await saveDeveloperExpressionTrainingSample({ reset: true });
-}
-
-function newDeveloperExpressionTrainingSample() {
-  if (!coreModel) {
-    toast("Live2D 模型尚未加载");
-    return;
-  }
-  developerParameterMetadata = readLive2DParameters();
-  const parameters = Object.fromEntries(
-    developerExpressionTrainingParameterIds().map(id => {
-      const parameter = developerExpressionTrainingParameterById(id);
-      return [id, AUTHOR_FACE_LAYER_IDS.includes(id) ? 0 : parameter.defaultValue];
-    }),
-  );
-  const sample = {
-    id: developerExpressionTrainingId("user"),
-    label: "新表情",
-    recommendedLabel: "新表情",
-    emotion: "neutral",
-    strengthBand: "custom",
-    intensity: 1,
-    tags: ["用户新建"],
-    notes: "",
-    modelId: activeModelProfile?.id || "",
-    source: "user-new",
-    recommendedParameters: { ...parameters },
-    recommendedMetadata: {
-      emotion: "neutral",
-      strengthBand: "custom",
-      intensity: 1,
-      tags: ["用户新建"],
-      notes: "",
-    },
-    parameters: { ...parameters },
-    parameterSupport: Object.fromEntries(
-      Object.keys(parameters).map(id => [id, developerExpressionTrainingParameterSupport(id)]),
-    ),
-    couplingWarnings: developerExpressionTrainingCouplingWarnings(parameters),
-    userEdited: false,
-    revision: 0,
-  };
-  developerExpressionTrainingPreviousSelectedId = developerExpressionTrainingSelectedId;
-  openDeveloperExpressionTrainingDraft(sample, true);
-  dom.devTrainingLabelInput?.select();
-}
-
-function duplicateDeveloperExpressionTrainingSample() {
-  const source = persistedDeveloperExpressionTrainingSelectedSample();
-  if (!source) return;
-  const parameters = { ...(source.parameters || {}) };
-  const sample = {
-    ...source,
-    id: developerExpressionTrainingId("copy"),
-    label: `${source.label} 副本`,
-    recommendedLabel: `${source.label} 副本`,
-    source: "user-copy",
-    recommendedParameters: { ...parameters },
-    recommendedMetadata: {
-      emotion: source.emotion,
-      strengthBand: source.strengthBand,
-      intensity: source.intensity,
-      tags: [...(source.tags || [])],
-      notes: source.notes || "",
-    },
-    parameters,
-    parameterSupport: { ...(source.parameterSupport || {}) },
-    couplingWarnings: [...(source.couplingWarnings || [])],
-    previewFile: source.previewFile || "",
-    previewSourceId: source.previewSourceId || source.id,
-    userEdited: false,
-    revision: 0,
-    createdAt: "",
-    updatedAt: "",
-  };
-  developerExpressionTrainingPreviousSelectedId = developerExpressionTrainingSelectedId;
-  openDeveloperExpressionTrainingDraft(sample, true);
-  dom.devTrainingLabelInput?.select();
-}
-
-const VOICE_REFERENCE_REVIEW_LABELS = {
-  unreviewed: "未审阅",
-  approved: "合格",
-  rejected: "不合格",
-};
-
-const VOICE_REFERENCE_MAPPING_FIT_LABELS = {
-  unreviewed: "未判断",
-  matched: "匹配",
-  mismatched: "不匹配（原音可用）",
-};
-
-const VOICE_REFERENCE_RECHECK_LABELS = {
-  pending_recheck: "待复检",
-  recheck_passed: "复检通过",
-  recheck_failed: "复检仍不合格",
-};
-
-const VOICE_REFERENCE_USAGE_LABELS = {
-  active: "启用中",
-  inactive: "未启用",
-};
-
-const VOICE_REFERENCE_SYSTEM_LABELS = {
-  eligible: "可合成",
-  high_risk: "高风险",
-  disqualified: "禁用",
-  missing: "文件缺失",
-};
-
-const VOICE_REFERENCE_CANDIDATE_ROLE_LABELS = {
-  audition: "试听候选",
-  replacement: "替换候选",
-};
-
-function developerVoiceReferenceDisplayStatus(item) {
-  const manualStatus = item?.manualReviewStatus || item?.status || "unreviewed";
-  return VOICE_REFERENCE_REVIEW_LABELS[manualStatus] || "未审阅";
-}
-
-function setDeveloperTrainingKind(kind) {
-  if (!DEV_MODE) return;
-  developerTrainingKind = kind === "voice-reference" ? "voice-reference" : "expression";
-  const voiceActive = developerTrainingKind === "voice-reference";
-  dom.devTrainingExpressionTab?.classList.toggle("active", !voiceActive);
-  dom.devTrainingExpressionTab?.setAttribute("aria-selected", String(!voiceActive));
-  dom.devTrainingVoiceReferenceTab?.classList.toggle("active", voiceActive);
-  dom.devTrainingVoiceReferenceTab?.setAttribute("aria-selected", String(voiceActive));
-  dom.devExpressionTrainingBrowserContent?.classList.toggle("hidden", voiceActive);
-  dom.devVoiceReferenceBrowserContent?.classList.toggle("hidden", !voiceActive);
-  if (dom.devExpressionTrainingBrowserContent) {
-    dom.devExpressionTrainingBrowserContent.hidden = voiceActive;
-    dom.devExpressionTrainingBrowserContent.setAttribute("aria-hidden", String(voiceActive));
-  }
-  if (dom.devVoiceReferenceBrowserContent) {
-    dom.devVoiceReferenceBrowserContent.hidden = !voiceActive;
-    dom.devVoiceReferenceBrowserContent.setAttribute("aria-hidden", String(!voiceActive));
-  }
-  // Re-read the backend whenever this workbench is opened so a style-map edit
-  // cannot leave the visual catalog showing a previously cached "current".
-  if (voiceActive) loadDeveloperVoiceReferences(true);
-  else renderDeveloperExpressionTrainingGallery();
-}
-
-function replaceDeveloperVoiceReferenceCatalog(data) {
-  developerVoiceReferenceCatalog = data && typeof data === "object" ? { ...data } : null;
-  developerVoiceReferences = Array.isArray(data?.references) ? data.references.map(item => ({
-    ...item,
-    mappingKeys: Array.isArray(item.mappingKeys) ? [...item.mappingKeys] : [],
-    referenceTexts: Array.isArray(item.referenceTexts) ? [...item.referenceTexts] : [],
-    reasonCodes: Array.isArray(item.reasonCodes) ? [...item.reasonCodes] : [],
-  })) : [];
-  developerVoiceReferenceLoaded = true;
-  if (
-    developerVoiceReferenceSelectedId
-    && !developerVoiceReferences.some(item => item.id === developerVoiceReferenceSelectedId)
-  ) developerVoiceReferenceSelectedId = "";
-  renderDeveloperVoiceReferenceGallery();
-}
-
-async function loadDeveloperVoiceReferences(force = false) {
-  if (!DEV_MODE || (developerVoiceReferenceLoaded && !force)) {
-    renderDeveloperVoiceReferenceGallery();
-    return;
-  }
-  if (dom.devVoiceReferenceStatus) dom.devVoiceReferenceStatus.textContent = "载入参考音…";
-  if (dom.devVoiceReferenceRefreshBtn) dom.devVoiceReferenceRefreshBtn.disabled = true;
-  try {
-    const response = await storageScopedFetch("/api/developer/voice-reference-review", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.message || data.error || `HTTP ${response.status}`);
-    replaceDeveloperVoiceReferenceCatalog(data);
-  } catch (error) {
-    if (dom.devVoiceReferenceStatus) dom.devVoiceReferenceStatus.textContent = `载入失败：${error.message}`;
-    toast(`参考音载入失败：${error.message}`);
-  } finally {
-    if (dom.devVoiceReferenceRefreshBtn) dom.devVoiceReferenceRefreshBtn.disabled = false;
-  }
-}
-
-function developerVoiceReferenceDisplayKeys(item) {
-  return (item.mappingKeys || []).filter(key => key !== "default");
-}
-
-function renderDeveloperVoiceReferenceGallery() {
-  if (!DEV_MODE || !dom.devVoiceReferenceGallery) return;
-  const query = String(dom.devVoiceReferenceFilterInput?.value || "").trim().toLowerCase();
-  const statusFilter = String(dom.devVoiceReferenceStatusFilter?.value || "");
-  const runtimeFilter = String(dom.devVoiceReferenceRuntimeFilter?.value || "");
-  const systemFilter = String(dom.devVoiceReferenceSystemFilter?.value || "");
-  const filtered = developerVoiceReferences.filter(item => {
-    const manualStatus = item.manualReviewStatus || item.status || "unreviewed";
-    if (statusFilter && manualStatus !== statusFilter) return false;
-    if (runtimeFilter === "active" && item.usageStatus !== "active") return false;
-    if (runtimeFilter === "inactive" && item.usageStatus !== "inactive") return false;
-    if (runtimeFilter === "audition" && item.candidateRole !== "audition") return false;
-    if (runtimeFilter === "replacement" && item.candidateRole !== "replacement") return false;
-    if (systemFilter && item.systemStatus !== systemFilter) return false;
-    if (!query) return true;
-    const haystack = [
-      item.voiceId,
-      item.audioFile,
-      ...(item.mappingKeys || []),
-      ...(item.activeMappingKeys || []),
-      ...(item.activeElsewhereMappingKeys || []),
-      ...(item.referenceTexts || []),
-      item.notes,
-      item.emotionLabel,
-      item.mappingFitStatus,
-      item.attentionLabel,
-      item.riskNote,
-      item.recommendation,
-      item.usageStatus,
-      item.systemStatus,
-      item.systemReason,
-      item.candidateRole,
-    ].join("\n").toLowerCase();
-    return haystack.includes(query);
-  });
-  if (!filtered.length) {
-    const empty = document.createElement("div");
-    empty.className = "dev-training-empty";
-    empty.textContent = developerVoiceReferenceLoaded ? "没有符合筛选条件的参考音。" : "尚未载入参考音。";
-    dom.devVoiceReferenceGallery.replaceChildren(empty);
-  } else {
-    dom.devVoiceReferenceGallery.replaceChildren(...filtered.map(item => {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.dataset.referenceId = item.id;
-      const manualStatus = item.manualReviewStatus || item.status || "unreviewed";
-      const usageStatus = item.usageStatus || (item.isCurrentlyEffective ? "active" : "inactive");
-      const systemStatus = item.systemStatus || "eligible";
-      card.className = "dev-training-card dev-voice-reference-card";
-      card.classList.add(`usage-${usageStatus}`, `system-${systemStatus}`, `manual-${manualStatus}`);
-      if (item.attentionLevel) card.classList.add(`attention-${item.attentionLevel}`);
-      if (item.candidateRole && item.candidateRole !== "none") card.classList.add(`role-${item.candidateRole}`);
-      card.classList.toggle("selected", item.id === developerVoiceReferenceSelectedId);
-
-      const icon = document.createElement("div");
-      icon.className = "dev-voice-reference-icon";
-      icon.textContent = "♫";
-      const badge = document.createElement("span");
-      badge.className = `dev-voice-reference-status-badge ${manualStatus}`;
-      badge.textContent = `原音质量：${developerVoiceReferenceDisplayStatus(item)}`;
-      icon.append(badge);
-
-      const copy = document.createElement("div");
-      copy.className = "dev-training-card-copy";
-      const stateRow = document.createElement("div");
-      stateRow.className = "dev-voice-reference-state-row";
-      const usageBadge = document.createElement("span");
-      usageBadge.className = `dev-voice-reference-active-badge ${usageStatus}`;
-      usageBadge.textContent = `映射：${VOICE_REFERENCE_USAGE_LABELS[usageStatus] || usageStatus}`;
-      const systemBadge = document.createElement("span");
-      systemBadge.className = `dev-voice-reference-system-badge ${systemStatus}`;
-      systemBadge.textContent = `合成风险：${VOICE_REFERENCE_SYSTEM_LABELS[systemStatus] || systemStatus}`;
-      stateRow.append(usageBadge, systemBadge);
-      const mappingFitStatus = item.mappingFitStatus || "unreviewed";
-      const fitBadge = document.createElement("span");
-      fitBadge.className = `dev-voice-reference-fit-badge ${mappingFitStatus}`;
-      fitBadge.textContent = `标签匹配：${VOICE_REFERENCE_MAPPING_FIT_LABELS[mappingFitStatus] || mappingFitStatus}`;
-      stateRow.append(fitBadge);
-      if (item.emotionLabel) {
-        const emotionBadge = document.createElement("span");
-        emotionBadge.className = "dev-voice-reference-emotion-badge";
-        emotionBadge.textContent = `情绪：${item.emotionLabel}`;
-        stateRow.append(emotionBadge);
-      }
-      if (item.candidateRole && item.candidateRole !== "none") {
-        const roleBadge = document.createElement("span");
-        roleBadge.className = `dev-voice-reference-role-badge ${item.candidateRole}`;
-        roleBadge.textContent = VOICE_REFERENCE_CANDIDATE_ROLE_LABELS[item.candidateRole] || item.candidateRole;
-        stateRow.append(roleBadge);
-      }
-      const activeElsewhereMappingKeys = Array.isArray(item.activeElsewhereMappingKeys)
-        ? item.activeElsewhereMappingKeys.filter(Boolean)
-        : [];
-      if (activeElsewhereMappingKeys.length) {
-        const elsewhereBadge = document.createElement("span");
-        elsewhereBadge.className = "dev-voice-reference-active-badge active";
-        elsewhereBadge.textContent = `其他用途启用：${activeElsewhereMappingKeys.join(" / ")}`;
-        stateRow.append(elsewhereBadge);
-      }
-      if (item.reviewWorkflowStatus && item.reviewWorkflowStatus !== "none") {
-        const workflowBadge = document.createElement("span");
-        workflowBadge.className = `dev-voice-reference-workflow-badge ${item.reviewWorkflowStatus}`;
-        workflowBadge.textContent = `复检：${VOICE_REFERENCE_RECHECK_LABELS[item.reviewWorkflowStatus] || item.reviewWorkflowStatus}`;
-        stateRow.append(workflowBadge);
-      }
-      copy.append(stateRow);
-      if (item.attentionLabel) {
-        const attention = document.createElement("span");
-        attention.className = `dev-voice-reference-attention ${item.attentionLevel || "candidate"}`;
-        attention.textContent = item.attentionLabel;
-        copy.append(attention);
-      }
-      const title = document.createElement("strong");
-      title.textContent = developerVoiceReferenceDisplayKeys(item).join(" / ") || item.voiceId;
-      const meta = document.createElement("span");
-      const duration = Number.isFinite(Number(item.durationSeconds)) ? `${Number(item.durationSeconds).toFixed(2)} 秒` : "时长未知";
-      meta.textContent = `${item.audioFile || item.voiceId} · ${duration}`;
-      const transcript = document.createElement("span");
-      transcript.textContent = (item.referenceTexts || []).join(" / ") || "未找到参考文本";
-      copy.append(title, meta, transcript);
-      card.append(icon, copy);
-      return card;
-    }));
-  }
-  const approved = developerVoiceReferences.filter(item => (item.manualReviewStatus || item.status) === "approved").length;
-  const rejected = developerVoiceReferences.filter(item => (item.manualReviewStatus || item.status) === "rejected").length;
-  const unreviewed = developerVoiceReferences.length - approved - rejected;
-  const pendingRecheck = developerVoiceReferences.filter(item => item.reviewWorkflowStatus === "pending_recheck").length;
-  const highRisk = developerVoiceReferences.filter(item => item.systemStatus === "high_risk");
-  const systemDisqualified = developerVoiceReferences.filter(item => ["disqualified", "missing"].includes(item.systemStatus));
-  const auditionCandidates = developerVoiceReferences.filter(item => item.candidateRole === "audition");
-  const selectedChoices = auditionCandidates.filter(item => item.isSelectedChoice);
-  const effectiveReferences = developerVoiceReferences.filter(item => item.usageStatus === "active");
-  const inactiveReferences = developerVoiceReferences.filter(item => item.usageStatus === "inactive");
-  const eligibleReferences = developerVoiceReferences.filter(item => item.systemStatus === "eligible");
-  const activeDisqualified = systemDisqualified.filter(item => item.usageStatus === "active");
-  const linkageActive = developerVoiceReferenceCatalog?.linkage?.source === "effective_style_map";
-  if (dom.devVoiceReferenceAttentionBanner) {
-    const hasSystemWarning = Boolean(systemDisqualified.length || highRisk.length);
-    dom.devVoiceReferenceAttentionBanner.hidden = !hasSystemWarning && !linkageActive;
-    dom.devVoiceReferenceAttentionBanner.classList.toggle("hidden", !hasSystemWarning && !linkageActive);
-    dom.devVoiceReferenceAttentionBanner.classList.toggle("synced", !hasSystemWarning && linkageActive);
-    dom.devVoiceReferenceAttentionBanner.textContent = systemDisqualified.length
-      ? `⚠ 合成风险中有 ${systemDisqualified.length} 条禁用或文件缺失参考${activeDisqualified.length ? `，其中 ${activeDisqualified.length} 条仍在启用` : ""}。这是系统判定，不等于“我的标注”。`
-      : (highRisk.length
-        ? `⚠ 系统检测到 ${highRisk.length} 条高风险参考。已提供 ${auditionCandidates.length} 个试听候选；${selectedChoices.length ? `已记录 ${selectedChoices.length} 个待晋升选择` : "尚未记录待晋升选择"}。`
-        : (linkageActive ? `✓ 已与实际生效的 style map 联动；映射、合成风险、原音质量和标签匹配会分别显示。` : ""));
-  }
-  if (dom.devVoiceReferenceStatus) {
-    dom.devVoiceReferenceStatus.textContent = `${developerVoiceReferences.length} 条 · 映射：启用 ${effectiveReferences.length} / 未启用 ${inactiveReferences.length} · 合成风险：可合成 ${eligibleReferences.length} / 高风险 ${highRisk.length} / 禁用或缺失 ${systemDisqualified.length} · 原音质量：合格 ${approved} / 不合格 ${rejected} / 未审阅 ${unreviewed} · 待复检 ${pendingRecheck}（各维度互不覆盖）`;
-  }
-}
-
-function handleDeveloperVoiceReferenceGalleryClick(event) {
-  const card = event.target.closest("[data-reference-id]");
-  if (!card) return;
-  openDeveloperVoiceReferenceEditor(card.dataset.referenceId);
-}
-
-function syncDeveloperVoiceReferenceReasonAvailability() {
-  dom.devVoiceReferenceReasons?.querySelectorAll('input[type="checkbox"]').forEach(input => {
-    input.disabled = false;
-  });
-}
-
-function markDeveloperVoiceReferenceDirty() {
-  developerVoiceReferenceDirty = true;
-  syncDeveloperVoiceReferenceReasonAvailability();
-}
-
-function handleDeveloperVoiceReferenceReasonChange() {
-  const hasQualityReason = Boolean(
-    dom.devVoiceReferenceReasons?.querySelector('input[data-review-axis="quality"]:checked'),
-  );
-  const hasMappingReason = Boolean(
-    dom.devVoiceReferenceReasons?.querySelector('input[data-review-axis="mapping"]:checked'),
-  );
-  if (hasQualityReason && dom.devVoiceReferenceReviewStatusInput) {
-    dom.devVoiceReferenceReviewStatusInput.value = "rejected";
-  }
-  if (hasMappingReason && dom.devVoiceReferenceMappingFitInput) {
-    dom.devVoiceReferenceMappingFitInput.value = "mismatched";
-  }
-  markDeveloperVoiceReferenceDirty();
-}
-
-function handleDeveloperVoiceReferenceStatusChange() {
-  if (dom.devVoiceReferenceReviewStatusInput?.value !== "rejected") {
-    dom.devVoiceReferenceReasons?.querySelectorAll('input[data-review-axis="quality"]').forEach(input => {
-      input.checked = false;
-    });
-  }
-  markDeveloperVoiceReferenceDirty();
-}
-
-function handleDeveloperVoiceReferenceMappingFitChange() {
-  if (dom.devVoiceReferenceMappingFitInput?.value !== "mismatched") {
-    dom.devVoiceReferenceReasons?.querySelectorAll('input[data-review-axis="mapping"]').forEach(input => {
-      input.checked = false;
-    });
-  }
-  markDeveloperVoiceReferenceDirty();
-}
-
-async function loadDeveloperVoiceReferenceAudio(referenceId, variant = "candidate") {
-  const originalVariant = variant === "original";
-  const tokenKey = originalVariant ? "original" : "candidate";
-  const loadToken = ++developerVoiceReferenceAudioLoadTokens[tokenKey];
-  const audioElement = originalVariant ? dom.devVoiceReferenceOriginalAudio : dom.devVoiceReferenceAudio;
-  const previousUrl = originalVariant ? developerVoiceReferenceOriginalAudioUrl : developerVoiceReferenceAudioUrl;
-  if (previousUrl) URL.revokeObjectURL(previousUrl);
-  if (originalVariant) developerVoiceReferenceOriginalAudioUrl = "";
-  else developerVoiceReferenceAudioUrl = "";
-  audioElement?.removeAttribute("src");
-  try {
-    const response = await storageScopedFetch(`/api/developer/voice-reference-review/audio?id=${encodeURIComponent(referenceId)}&variant=${encodeURIComponent(variant)}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const objectUrl = URL.createObjectURL(await response.blob());
-    if (loadToken !== developerVoiceReferenceAudioLoadTokens[tokenKey] || developerVoiceReferenceSelectedId !== referenceId) {
-      URL.revokeObjectURL(objectUrl);
-      return;
-    }
-    if (originalVariant) developerVoiceReferenceOriginalAudioUrl = objectUrl;
-    else developerVoiceReferenceAudioUrl = objectUrl;
-    if (audioElement) {
-      audioElement.src = objectUrl;
-      audioElement.load();
-    }
-  } catch (error) {
-    toast(`参考音读取失败：${error.message}`);
-  }
-}
-
-function openDeveloperVoiceReferenceEditor(referenceId) {
-  const item = developerVoiceReferences.find(entry => entry.id === referenceId);
-  if (!item) return;
-  developerVoiceReferenceSelectedId = item.id;
-  developerVoiceReferenceDraft = {
-    id: item.id,
-    status: item.manualReviewStatus || item.status || "unreviewed",
-    mappingFitStatus: item.mappingFitStatus || "unreviewed",
-    emotionLabel: item.emotionLabel || "",
-    notes: item.notes || "",
-    reasonCodes: [...(item.reasonCodes || [])],
-  };
-  developerVoiceReferenceDirty = false;
-  developerExpressionTrainingEditorOpen = false;
-  dom.devTrainingBrowser?.classList.add("hidden");
-  dom.devTrainingEditor?.classList.add("hidden");
-  dom.devVoiceReferenceEditor?.classList.remove("hidden");
-  const activeElsewhereMappingKeys = Array.isArray(item.activeElsewhereMappingKeys)
-    ? item.activeElsewhereMappingKeys.filter(Boolean)
-    : [];
-  if (dom.devVoiceReferenceEditorHint) {
-    dom.devVoiceReferenceEditorHint.textContent = `${item.audioFile || item.voiceId} · ${Number(item.durationSeconds || 0).toFixed(2)} 秒 · 原音质量：${developerVoiceReferenceDisplayStatus(item)}`;
-  }
-  if (dom.devVoiceReferenceSummary) {
-    const warning = item.attentionLabel ? ` ${item.attentionLabel}。` : "";
-    const usageStatus = item.usageStatus || (item.isCurrentlyEffective ? "active" : "inactive");
-    const systemStatus = item.systemStatus || "eligible";
-    const roleLabel = item.runtimeBehavior === "historical_review"
-      ? "历史审阅记录"
-      : (VOICE_REFERENCE_CANDIDATE_ROLE_LABELS[item.candidateRole] || "正式参考");
-    const workflowLabel = item.reviewWorkflowStatus && item.reviewWorkflowStatus !== "none"
-      ? `；复检流程：${VOICE_REFERENCE_RECHECK_LABELS[item.reviewWorkflowStatus] || item.reviewWorkflowStatus}`
-      : "";
-    const fitStatus = item.mappingFitStatus || "unreviewed";
-    const emotionLabel = item.emotionLabel ? `；你标的情绪：${item.emotionLabel}` : "";
-    const activeElsewhere = activeElsewhereMappingKeys.length
-      ? `；其他已启用用途：${activeElsewhereMappingKeys.join("、")}`
-      : "";
-    dom.devVoiceReferenceSummary.textContent = `参考音 ${item.voiceId}；当前用途映射状态：${VOICE_REFERENCE_USAGE_LABELS[usageStatus] || usageStatus}${activeElsewhere}；合成风险：${VOICE_REFERENCE_SYSTEM_LABELS[systemStatus] || systemStatus}；用途：${roleLabel}；原音质量：${developerVoiceReferenceDisplayStatus(item)}；标签匹配：${VOICE_REFERENCE_MAPPING_FIT_LABELS[fitStatus] || fitStatus}${emotionLabel}${workflowLabel}；当前卡片对应 ${developerVoiceReferenceDisplayKeys(item).join("、") || "默认声音"}。${warning}`;
-  }
-  if (dom.devVoiceReferenceMappings) dom.devVoiceReferenceMappings.value = (item.mappingKeys || []).join("\n");
-  if (dom.devVoiceReferenceTranscript) dom.devVoiceReferenceTranscript.value = (item.referenceTexts || []).join("\n\n");
-  const replacement = item.replacement || null;
-  const comparisonCandidate = Boolean(item.isReplacementCandidate || item.isAuditionCandidate || item.isComparisonCandidate);
-  if (dom.devVoiceReferenceOriginalPlayer) dom.devVoiceReferenceOriginalPlayer.hidden = !comparisonCandidate;
-  if (dom.devVoiceReferenceCandidateLabel) {
-    dom.devVoiceReferenceCandidateLabel.textContent = item.candidateRole === "audition"
-      ? (item.usageStatus === "active"
-        ? "试听候选（当前用途同时启用中）"
-        : (activeElsewhereMappingKeys.length ? "试听候选（当前用途未启用；其他用途已启用）" : "试听候选（未启用）"))
-      : (item.candidateRole === "replacement" ? "替换候选" : "当前参考音");
-  }
-  if (dom.devVoiceReferenceChangeInfo) {
-    const originalFile = String(replacement?.original?.refAudio || "").split(/[\\/]/).pop() || "";
-    dom.devVoiceReferenceChangeInfo.textContent = comparisonCandidate
-      ? `原音 ${originalFile} → 候选 ${item.audioFile}\n${item.candidateRole === "audition" ? "试听依据" : "替换依据"}：${replacement?.reason || "根据人工标注重新筛选"}\n候选来源：${replacement?.source || "本地原作语音库"}${item.systemReason ? `\n系统状态依据：${item.systemReason}` : ""}${item.riskNote ? `\n风险说明：${item.riskNote}` : ""}`
-      : (`${item.systemReason ? `系统状态依据：${item.systemReason}` : "当前参考音尚未被替换。"}${item.riskNote ? `\n风险说明：${item.riskNote}` : ""}`);
-  }
-  if (dom.devVoiceReferenceReviewStatusInput) dom.devVoiceReferenceReviewStatusInput.value = developerVoiceReferenceDraft.status;
-  if (dom.devVoiceReferenceMappingFitInput) dom.devVoiceReferenceMappingFitInput.value = developerVoiceReferenceDraft.mappingFitStatus;
-  if (dom.devVoiceReferenceEmotionLabelInput) dom.devVoiceReferenceEmotionLabelInput.value = developerVoiceReferenceDraft.emotionLabel;
-  if (dom.devVoiceReferenceNotesInput) dom.devVoiceReferenceNotesInput.value = developerVoiceReferenceDraft.notes;
-  dom.devVoiceReferenceReasons?.querySelectorAll('input[type="checkbox"]').forEach(input => {
-    input.checked = developerVoiceReferenceDraft.reasonCodes.includes(input.value);
-  });
-  syncDeveloperVoiceReferenceReasonAvailability();
-  if (dom.devVoiceReferenceSelectCandidateBtn) {
-    const auditionCandidate = item.candidateRole === "audition" || item.isAuditionCandidate;
-    dom.devVoiceReferenceSelectCandidateBtn.hidden = !auditionCandidate;
-    dom.devVoiceReferenceSelectCandidateBtn.classList.toggle("hidden", !auditionCandidate);
-    dom.devVoiceReferenceSelectCandidateBtn.disabled = Boolean(item.isSelectedChoice || item.selectionAllowed === false);
-    dom.devVoiceReferenceSelectCandidateBtn.textContent = item.selectionAllowed === false
-      ? "合成风险判定为禁用或文件缺失，不能选为待晋升候选"
-      : (item.isSelectedChoice ? "✓ 已选为待晋升候选" : "选择为待晋升候选（不会立即应用）");
-  }
-  if (comparisonCandidate) {
-    loadDeveloperVoiceReferenceAudio(item.id, "original");
-    window.setTimeout(() => loadDeveloperVoiceReferenceAudio(item.id, "candidate"), 0);
-  } else {
-    loadDeveloperVoiceReferenceAudio(item.id, "candidate");
-  }
-  window.requestAnimationFrame(() => dom.devVoiceReferenceEditor?.scrollIntoView({ block: "start", inline: "nearest" }));
-}
-
-function closeDeveloperVoiceReferenceEditor() {
-  if (developerVoiceReferenceDirty && !window.confirm("当前参考音标注尚未保存，确定返回吗？")) return;
-  if (dom.devVoiceReferenceAudio) dom.devVoiceReferenceAudio.pause();
-  if (dom.devVoiceReferenceOriginalAudio) dom.devVoiceReferenceOriginalAudio.pause();
-  if (developerVoiceReferenceAudioUrl) URL.revokeObjectURL(developerVoiceReferenceAudioUrl);
-  developerVoiceReferenceAudioUrl = "";
-  if (developerVoiceReferenceOriginalAudioUrl) URL.revokeObjectURL(developerVoiceReferenceOriginalAudioUrl);
-  developerVoiceReferenceOriginalAudioUrl = "";
-  developerVoiceReferenceAudioLoadTokens.candidate += 1;
-  developerVoiceReferenceAudioLoadTokens.original += 1;
-  developerVoiceReferenceDraft = null;
-  developerVoiceReferenceDirty = false;
-  dom.devVoiceReferenceEditor?.classList.add("hidden");
-  dom.devTrainingBrowser?.classList.remove("hidden");
-  setDeveloperTrainingKind("voice-reference");
-}
-
-async function persistDeveloperVoiceReferenceReview(payload) {
-  if (dom.devVoiceReferenceSaveBtn) dom.devVoiceReferenceSaveBtn.disabled = true;
-  if (dom.devVoiceReferenceResetBtn) dom.devVoiceReferenceResetBtn.disabled = true;
-  try {
-    const response = await storageScopedFetch("/api/developer/voice-reference-review", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.message || data.error || `HTTP ${response.status}`);
-    replaceDeveloperVoiceReferenceCatalog(data);
-    developerVoiceReferenceDirty = false;
-    closeDeveloperVoiceReferenceEditor();
-    toast(payload.action === "reset" ? "已重置为未审阅" : "参考音标注已保存");
-  } catch (error) {
-    toast(`参考音标注保存失败：${error.message}`);
-  } finally {
-    if (dom.devVoiceReferenceSaveBtn) dom.devVoiceReferenceSaveBtn.disabled = false;
-    if (dom.devVoiceReferenceResetBtn) dom.devVoiceReferenceResetBtn.disabled = false;
-  }
-}
-
-async function selectDeveloperVoiceReferenceCandidate() {
-  const item = developerVoiceReferences.find(entry => entry.id === developerVoiceReferenceDraft?.id);
-  if (!item?.isAuditionCandidate || item.selectionAllowed === false || !item.choiceSetId || !item.choiceCandidateId) return;
-  if (dom.devVoiceReferenceSelectCandidateBtn) dom.devVoiceReferenceSelectCandidateBtn.disabled = true;
-  try {
-    const response = await storageScopedFetch("/api/developer/voice-reference-review", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "select_candidate",
-        choiceSetId: item.choiceSetId,
-        candidateId: item.choiceCandidateId,
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.message || data.error || `HTTP ${response.status}`);
-    replaceDeveloperVoiceReferenceCatalog(data);
-    openDeveloperVoiceReferenceEditor(item.id);
-    toast(`已记录 ${item.voiceId} 为待晋升候选；运行时参考音未改变`);
-  } catch (error) {
-    toast(`候选选择保存失败：${error.message}`);
-    if (dom.devVoiceReferenceSelectCandidateBtn) dom.devVoiceReferenceSelectCandidateBtn.disabled = false;
-  }
-}
-
-async function saveDeveloperVoiceReferenceReview() {
-  if (!developerVoiceReferenceDraft) return;
-  const selectedReasons = [
-    ...(dom.devVoiceReferenceReasons?.querySelectorAll('input[type="checkbox"]:checked') || []),
-  ].map(input => input.value);
-  const qualityReasons = selectedReasons.filter(code => !["emotion_weak", "emotion_mismatch"].includes(code));
-  const mappingReasons = selectedReasons.filter(code => ["emotion_weak", "emotion_mismatch"].includes(code));
-  const status = qualityReasons.length
-    ? "rejected"
-    : String(dom.devVoiceReferenceReviewStatusInput?.value || "unreviewed");
-  const mappingFitStatus = mappingReasons.length
-    ? "mismatched"
-    : String(dom.devVoiceReferenceMappingFitInput?.value || "unreviewed");
-  await persistDeveloperVoiceReferenceReview({
-    action: "upsert",
-    id: developerVoiceReferenceDraft.id,
-    status,
-    qualityStatus: status,
-    mappingFitStatus,
-    emotionLabel: String(dom.devVoiceReferenceEmotionLabelInput?.value || "").trim(),
-    reasonCodes: selectedReasons,
-    notes: String(dom.devVoiceReferenceNotesInput?.value || "").trim(),
-  });
-}
-
-async function resetDeveloperVoiceReferenceReview() {
-  if (!developerVoiceReferenceDraft) return;
-  await persistDeveloperVoiceReferenceReview({ action: "reset", id: developerVoiceReferenceDraft.id });
-}
-
 function loadDeveloperTrainingData() {
-  loadDeveloperVoiceReferences();
-  loadDeveloperExpressionTraining();
-}
-
-function renderDeveloperModelEditor() {
-  if (!DEV_MODE || !dom.devModelProfileInput) return;
-  const previous = dom.devModelProfileInput.value;
-  const selectedId = live2dModelProfiles.some(item => item.id === previous)
-    ? previous
-    : MODEL_PREVIEW_ID || activeModelProfile.id;
-  dom.devModelProfileInput.replaceChildren(...live2dModelProfiles.map(profile => {
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.textContent = profile.label || profile.id;
-    return option;
-  }));
-  dom.devModelProfileInput.value = selectedId;
-  const profile = live2dModelProfiles.find(item => item.id === selectedId) || activeModelProfile;
-  const override = live2dModelOverrides[selectedId] || {};
-  dom.devModelScaleInput.value = toNumber(profile.scaleMultiplier, 1);
-  dom.devModelOffsetXInput.value = toNumber(profile.offsetX, 0);
-  dom.devModelOffsetYInput.value = toNumber(profile.offsetY, 0);
-  const advancedKeys = [
-    "supportsNativeExpressions",
-    "interactionSummary",
-    "lipSync",
-    "eyeVisibilityCompensation",
-    "headTurn",
-    "fullScaleMultiplier",
-    "displayBounds",
-    "expressionMap",
-    "fixedParameters",
-    "hiddenParameters",
-    "hiddenParts",
-    "parameterAliases",
-    "motionMap",
-  ];
-  const advanced = {};
-  advancedKeys.forEach(key => {
-    if (Object.prototype.hasOwnProperty.call(profile, key)) advanced[key] = profile[key];
-  });
-  if (dom.devModelOverrideJson && document.activeElement !== dom.devModelOverrideJson) {
-    dom.devModelOverrideJson.value = JSON.stringify(advanced, null, 2);
-  }
-  if (dom.devModelProfileHint) {
-    const active = profile.id === activeModelProfile.id ? "当前正在预览" : "尚未预览";
-    const custom = Object.keys(override).length ? "已有开发覆盖" : "使用注册表默认值";
-    dom.devModelProfileHint.textContent = `${profile.description || profile.label} / ${active} / ${custom}`;
-  }
-  if (dom.devModelOverrideStatus) {
-    dom.devModelOverrideStatus.textContent = "覆盖文件：data/live2d_model_overrides.json；不会修改普通模式当前皮肤。";
-  }
-}
-
-function selectedDeveloperModelId() {
-  return dom.devModelProfileInput?.value || activeModelProfile.id;
-}
-
-function previewDeveloperModel() {
-  if (!DEV_MODE) return;
-  const modelId = selectedDeveloperModelId();
-  const url = new URL(window.location.href);
-  url.searchParams.set("dev", "1");
-  url.searchParams.set("skipBoot", "1");
-  url.searchParams.set("modelPreview", modelId);
-  url.searchParams.delete("previewOnly");
-  window.location.assign(url.toString());
-}
-
-async function reloadDeveloperModels() {
-  if (!DEV_MODE) return;
-  try {
-    await loadLive2DModelRegistry();
-    renderDeveloperModelEditor();
-    toast("Live2D 皮肤覆盖配置已重载");
-  } catch (error) {
-    toast(`模型配置重载失败：${error.message}`);
-  }
-}
-
-async function saveDeveloperModelOverride() {
-  if (!DEV_MODE) return;
-  const modelId = selectedDeveloperModelId();
-  let override;
-  try {
-    override = JSON.parse(dom.devModelOverrideJson?.value.trim() || "{}");
-    if (!override || Array.isArray(override) || typeof override !== "object") {
-      throw new Error("高级覆盖必须是 JSON 对象");
-    }
-  } catch (error) {
-    toast(`模型覆盖 JSON 无效：${error.message}`);
-    return;
-  }
-  override.scaleMultiplier = clamp(toNumber(dom.devModelScaleInput?.value, 1), 0.5, 2.5);
-  override.offsetX = clamp(toNumber(dom.devModelOffsetXInput?.value, 0), -1200, 1200);
-  override.offsetY = clamp(toNumber(dom.devModelOffsetYInput?.value, 0), -1200, 1200);
-  dom.devSaveModelOverrideBtn.disabled = true;
-  try {
-    const response = await fetch("/api/developer/live2d-models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ modelId, override }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    toast("皮肤覆盖已保存，正在重载预览");
-    previewDeveloperModel();
-  } catch (error) {
-    toast(`模型覆盖保存失败：${error.message}`);
-  } finally {
-    dom.devSaveModelOverrideBtn.disabled = false;
-  }
-}
-
-async function resetDeveloperModelOverride() {
-  if (!DEV_MODE) return;
-  const modelId = selectedDeveloperModelId();
-  if (!window.confirm("恢复这套皮肤的注册表默认值吗？")) return;
-  dom.devResetModelOverrideBtn.disabled = true;
-  try {
-    const response = await fetch("/api/developer/live2d-models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ modelId, reset: true }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    toast("皮肤覆盖已恢复默认，正在重载预览");
-    previewDeveloperModel();
-  } catch (error) {
-    toast(`恢复默认失败：${error.message}`);
-  } finally {
-    dom.devResetModelOverrideBtn.disabled = false;
-  }
+  voiceReferenceController?.loadTrainingData?.();
 }
 
 async function saveSettings(update, message = "设置已保存", applyWindow = false) {
-  const previousSettings = settings;
-  const optimisticSettings = normalizeSettings({ ...settings, ...update });
-  settings = optimisticSettings;
-  fillSettingsForm();
-  let response, data;
-  try {
-    response = await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ settings: update }),
-    });
-    data = await response.json();
-  } catch (error) {
-    settings = previousSettings;
-    fillSettingsForm();
-    throw error;
-  }
-  if (!response.ok || !data || data.ok === false) {
-    settings = previousSettings;
-    fillSettingsForm();
-    throw new Error(data?.error || `HTTP ${response.status}`);
-  }
-  settings = normalizeSettings({ ...optimisticSettings, ...(data.settings || {}) });
-  const apiChanged = ["apiEndpoint", "apiModel", "apiNetworkMode", "apiProxyUrl", "useResponseFormat"]
-    .some(key => Object.hasOwn(update, key) && update[key] !== previousSettings[key])
-    || (Object.hasOwn(update, "apiKey") && update.apiKey !== "__KEEP__");
-  if (apiChanged) {
-    apiConfigurationRevision += 1;
-    setApiVerification("unverified");
-    if (dom.apiTestStatus) {
-      dom.apiTestStatus.textContent = "API 设置已更改，请保存后测试连接。";
-      dom.apiTestStatus.classList.remove("error");
-    }
-  }
-  applySettingsToUi();
-  fillSettingsForm();
-  if (applyWindow && window.pywebview?.api?.applyWindowSettings) {
-    try {
-      const nativeResult = await window.pywebview.api.applyWindowSettings(settings);
-      if (nativeResult?.ok === false) {
-        throw new Error(nativeResult.error || "原生窗口设置应用失败");
-      }
-    } catch (error) {
-      const rollback = Object.fromEntries(
-        Object.keys(update || {}).map(key => [key, previousSettings[key]]),
-      );
-      try {
-        await fetch("/api/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ settings: rollback }),
-        });
-        await window.pywebview.api.applyWindowSettings(previousSettings);
-      } catch {
-        // Preserve the original native error; rollback is best effort.
-      }
-      settings = previousSettings;
-      applySettingsToUi();
-      fillSettingsForm();
-      throw error;
-    }
-  }
-  toast(message);
-  return settings;
+  return settingsController.save(update, message, applyWindow);
 }
 
 function storageScopedFetch(resource, options = {}) {
@@ -5749,304 +3130,43 @@ function storageScopedFetch(resource, options = {}) {
   return fetch(resource, { ...options, headers });
 }
 
-function openBookmarkPanel() {
-  setChatCollapsed(false, { scroll: false });
-  closeConversationPicker();
-  closeChatHistorySearch();
-  dom.bookmarkPanel?.classList.remove("hidden");
-  dom.bookmarkBtn?.setAttribute("aria-expanded", "true");
-  loadBookmarks();
-  window.setTimeout(() => dom.bookmarkQuickName?.focus(), 0);
-}
-
-function closeBookmarkPanel() {
-  closeBookmarkEditor();
-  dom.bookmarkPanel?.classList.add("hidden");
-  dom.bookmarkBtn?.setAttribute("aria-expanded", "false");
-}
-
-async function bookmarkApi(body) {
-  const response = await storageScopedFetch("/api/bookmarks", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+async function requestConversationHistorySearch({ query, role, limit, offset, signal }) {
+  const params = new URLSearchParams({
+    q: String(query || ""),
+    role: String(role || "all"),
+    limit: String(limit),
+    offset: String(offset),
   });
-  const data = await response.json().catch(() => ({}));
+  const response = await storageScopedFetch(
+    `/api/conversation/search?${params.toString()}`,
+    { cache: "no-store", signal },
+  );
+  const data = await response.json();
   if (!response.ok || data.ok === false) {
-    throw new Error(data.message || data.error || `bookmark request failed (${response.status})`);
+    throw new Error(data.error || `HTTP ${response.status}`);
   }
   return data;
-}
-
-async function loadBookmarks() {
-  if (!dom.bookmarkList) return;
-  if (bookmarkLoadInFlight) {
-    bookmarkLoadPending = true;
-    return;
-  }
-  bookmarkLoadInFlight = true;
-  try {
-    const response = await storageScopedFetch("/api/bookmarks", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || "bookmark load failed");
-    bookmarkItems = Array.isArray(data.items) ? data.items : [];
-    renderBookmarks();
-  } catch (error) {
-    console.warn("bookmark load failed:", error);
-    toast("收藏夹加载失败");
-  } finally {
-    bookmarkLoadInFlight = false;
-    if (bookmarkLoadPending) {
-      bookmarkLoadPending = false;
-      window.queueMicrotask(loadBookmarks);
-    }
-  }
-}
-
-function bookmarkHost(value) {
-  try {
-    return new URL(String(value || "")).host;
-  } catch {
-    return String(value || "");
-  }
-}
-
-function renderBookmarks() {
-  if (!dom.bookmarkList) return;
-  dom.bookmarkList.replaceChildren();
-  dom.bookmarkEmpty?.classList.toggle("hidden", bookmarkItems.length > 0);
-  if (dom.bookmarkCount) dom.bookmarkCount.textContent = `${bookmarkItems.length} 个`;
-  for (const item of bookmarkItems) {
-    const row = document.createElement("article");
-    row.className = "bookmark-item";
-    row.dataset.bookmarkId = String(item.bookmarkId || "");
-
-    const main = document.createElement("div");
-    main.className = "bookmark-item-main";
-    const name = document.createElement("div");
-    name.className = "bookmark-item-name";
-    name.textContent = String(item.name || "未命名收藏");
-    const host = document.createElement("div");
-    host.className = "bookmark-item-host";
-    host.textContent = bookmarkHost(item.url);
-    host.title = String(item.url || "");
-    main.append(name, host);
-
-    const actions = document.createElement("div");
-    actions.className = "bookmark-item-actions";
-    const open = document.createElement("button");
-    open.type = "button";
-    open.dataset.bookmarkAction = "open";
-    open.textContent = "打开";
-    open.setAttribute("aria-label", `打开收藏：${String(item.name || "未命名收藏")}`);
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.dataset.bookmarkAction = "edit";
-    edit.textContent = "⚙";
-    edit.title = "编辑收藏";
-    edit.setAttribute("aria-label", `编辑收藏：${String(item.name || "未命名收藏")}`);
-    actions.append(open, edit);
-    row.append(main, actions);
-    dom.bookmarkList.append(row);
-  }
-}
-
-function bookmarkFromEvent(event) {
-  const row = event.target?.closest?.("[data-bookmark-id]");
-  return bookmarkItems.find(item => (
-    String(item.bookmarkId || "") === String(row?.dataset.bookmarkId || "")
-  ));
-}
-
-async function openStoredBookmark(item) {
-  try {
-    const response = await storageScopedFetch("/api/actions/open-browser", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: String(item.url || ""),
-        actionId: `bookmark_open_${String(item.bookmarkId || "")}_${Date.now()}`,
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.ok === false) {
-      throw new Error(data.message || data.error || "浏览器没有接受请求");
-    }
-  } catch (error) {
-    toast("打开失败：" + error.message);
-  }
-}
-
-function handleBookmarkListClick(event) {
-  const action = event.target?.closest?.("[data-bookmark-action]")?.dataset.bookmarkAction;
-  const item = bookmarkFromEvent(event);
-  if (!item) return;
-  if (action === "open") openStoredBookmark(item);
-  if (action === "edit") openBookmarkEditor(item);
-}
-
-async function createQuickBookmark(event) {
-  event?.preventDefault();
-  const name = String(dom.bookmarkQuickName?.value || "").trim();
-  const url = String(dom.bookmarkQuickUrl?.value || "").trim();
-  if (!name || !url) return;
-  try {
-    await bookmarkApi({ action: "create", name, url });
-    dom.bookmarkQuickName.value = "";
-    dom.bookmarkQuickUrl.value = "";
-    await loadBookmarks();
-    toast("网页已收藏");
-  } catch (error) {
-    await loadBookmarks();
-    toast("收藏失败：" + error.message);
-  }
-}
-
-function openBookmarkEditor(item) {
-  bookmarkEditorId = String(item.bookmarkId || "");
-  bookmarkEditorVersion = Number(item.version || 0);
-  dom.bookmarkEditorName.value = String(item.name || "");
-  dom.bookmarkEditorUrl.value = String(item.url || "");
-  dom.bookmarkEditor?.classList.remove("hidden");
-  dom.bookmarkEditorName?.focus();
-}
-
-function closeBookmarkEditor() {
-  bookmarkEditorId = "";
-  bookmarkEditorVersion = 0;
-  dom.bookmarkEditor?.classList.add("hidden");
-}
-
-async function saveBookmarkEditor(event) {
-  event?.preventDefault();
-  if (!bookmarkEditorId) return;
-  try {
-    await bookmarkApi({
-      action: "update",
-      bookmarkId: bookmarkEditorId,
-      expectedVersion: bookmarkEditorVersion,
-      name: String(dom.bookmarkEditorName?.value || "").trim(),
-      url: String(dom.bookmarkEditorUrl?.value || "").trim(),
-    });
-    closeBookmarkEditor();
-    await loadBookmarks();
-    toast("收藏已更新");
-  } catch (error) {
-    await loadBookmarks();
-    toast("保存失败：" + error.message);
-  }
-}
-
-async function deleteEditedBookmark() {
-  if (!bookmarkEditorId) return;
-  const bookmarkId = bookmarkEditorId;
-  const expectedVersion = bookmarkEditorVersion;
-  try {
-    await bookmarkApi({ action: "delete", bookmarkId, expectedVersion });
-    closeBookmarkEditor();
-    await loadBookmarks();
-    toast("收藏已删除");
-  } catch (error) {
-    await loadBookmarks();
-    toast("删除失败：" + error.message);
-  }
-}
-
-function acceptedBookmarkMutation(data) {
-  const receipts = [
-    data?.actionReceipt,
-    ...(Array.isArray(data?.actionReceipts) ? data.actionReceipts : []),
-  ].filter(receipt => receipt && typeof receipt === "object");
-  return receipts.some(receipt => (
-    String(receipt.tool || "") === "bookmark_manage"
-    && String(receipt.status || "") === "accepted"
-  ));
-}
-
-function refreshBookmarksAfterAssistantAction(data) {
-  if (acceptedBookmarkMutation(data)) loadBookmarks();
 }
 
 function setTodoDrawerOpen(open) {
-  if (!dom.todoDrawer) return;
-  dom.todoDrawer.classList.toggle("open", Boolean(open));
-  dom.todoDrawer.setAttribute("aria-expanded", String(Boolean(open)));
-  dom.todoToggleBtn?.setAttribute("aria-label", open ? "收起待办" : "展开待办");
-  window.localStorage.setItem(TODO_DRAWER_OPEN_KEY, open ? "1" : "0");
-  if (open) {
-    markTodosSeen(todoLatestRevision);
-    loadTodos({ markSeen: true });
-  }
-}
-
-async function todoApi(body) {
-  const response = await storageScopedFetch("/api/todos", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.ok === false) {
-    throw new Error(data.error || ("todo request failed (" + response.status + ")"));
-  }
-  return data;
-}
-
-function markTodosSeen(revision = todoLatestRevision) {
-  todoSeenRevision = Math.max(todoSeenRevision, Math.max(0, Number(revision) || 0));
-  todoUnseenCount = 0;
-  window.localStorage.setItem(TODO_SEEN_REVISION_KEY, String(todoSeenRevision));
-  renderTodoBadge();
-}
-
-function renderTodoBadge() {
-  if (!dom.todoCountBadge) return;
-  dom.todoCountBadge.textContent = String(Math.min(99, todoUnseenCount));
-  dom.todoCountBadge.hidden = todoUnseenCount === 0;
-  dom.todoCountBadge.title = todoUnseenCount > 0
-    ? `${todoUnseenCount} 项待办变更尚未查看`
-    : "没有未查看的待办变更";
-  if (dom.todoToggleBtn) {
-    dom.todoToggleBtn.title = `待办：${todoActiveCount} 项未完成`;
-  }
+  return todoController?.setDrawerOpen(open);
 }
 
 async function loadTodos(options = {}) {
-  const markSeen = Boolean(options?.markSeen);
-  if (!dom.todoList) return;
-  if (todoLoadInFlight) {
-    todoLoadPending = true;
-    todoMarkSeenPending ||= markSeen;
-    return;
-  }
-  todoLoadInFlight = true;
-  try {
-    const scope = String(dom.todoFilterInput?.value || "active");
-    const response = await storageScopedFetch(
-      "/api/todos?scope=" + encodeURIComponent(scope)
-        + "&sinceRevision=" + encodeURIComponent(todoSeenRevision)
-    );
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || "todo load failed");
-    todoItems = Array.isArray(data.items) ? data.items : [];
-    todoActiveCount = Math.max(0, Number(data.activeCount) || 0);
-    todoLatestRevision = Math.max(0, Number(data.revision) || 0);
-    todoUnseenCount = Math.max(0, Number(data.unseenCount) || 0);
-    if (markSeen || dom.todoDrawer?.classList.contains("open")) {
-      markTodosSeen(todoLatestRevision);
-    }
-    renderTodoItems();
-  } catch (error) {
-    console.warn("todo load failed:", error);
-    toast("待办加载失败");
-  } finally {
-    todoLoadInFlight = false;
-    if (todoLoadPending) {
-      const pendingMarkSeen = todoMarkSeenPending;
-      todoLoadPending = false;
-      todoMarkSeenPending = false;
-      window.queueMicrotask(() => loadTodos({ markSeen: pendingMarkSeen }));
-    }
+  return todoController?.load(options);
+}
+
+function renderTodoBadge(state = {}) {
+  if (!dom.todoCountBadge) return;
+  const unseenCount = Math.max(0, Number(state.unseenCount) || 0);
+  const activeCount = Math.max(0, Number(state.activeCount) || 0);
+  dom.todoCountBadge.textContent = String(Math.min(99, unseenCount));
+  dom.todoCountBadge.hidden = unseenCount === 0;
+  dom.todoCountBadge.title = unseenCount > 0
+    ? `${unseenCount} 项待办变更尚未查看`
+    : "没有未查看的待办变更";
+  if (dom.todoToggleBtn) {
+    dom.todoToggleBtn.title = `待办：${activeCount} 项未完成`;
   }
 }
 
@@ -6066,12 +3186,11 @@ function todoDateTimeInputValue(value) {
     + pad(parsed.getDate()) + "T" + pad(parsed.getHours()) + ":" + pad(parsed.getMinutes());
 }
 
-function renderTodoItems() {
+function renderTodoItems(items = []) {
   if (!dom.todoList) return;
   dom.todoList.replaceChildren();
-  renderTodoBadge();
-  dom.todoEmpty?.classList.toggle("hidden", todoItems.length > 0);
-  for (const item of todoItems) {
+  dom.todoEmpty?.classList.toggle("hidden", items.length > 0);
+  for (const item of items) {
     const taskId = String(item.taskId || "");
     const row = document.createElement("article");
     row.className = "todo-item" + (item.status === "completed" ? " is-completed" : "");
@@ -6139,232 +3258,12 @@ function refreshTodosAfterAssistantAction(data) {
   loadTodos({ markSeen: Boolean(dom.todoDrawer?.classList.contains("open")) });
 }
 
-async function createQuickTodo(event) {
-  event?.preventDefault();
-  const title = String(dom.todoQuickTitle?.value || "").trim();
-  if (!title) return;
-  try {
-    await todoApi({ action: "create", title });
-    dom.todoQuickTitle.value = "";
-    await loadTodos();
-    toast("已加入待办");
-  } catch (error) {
-    toast("添加失败：" + error.message);
-  }
-}
-
-function todoItemFromEvent(event) {
-  const row = event.target?.closest?.("[data-task-id]");
-  return todoItems.find(item => String(item.taskId) === String(row?.dataset.taskId || ""));
-}
-
-function handleTodoListClick(event) {
-  const action = event.target?.closest?.("[data-todo-action]")?.dataset.todoAction;
-  const item = todoItemFromEvent(event);
-  if (!item) return;
-  if (action === "edit") openTodoEditor(item);
-  if (action === "snooze") {
-    mutateTodo({
-      action: "snooze",
-      taskId: item.taskId,
-      expectedVersion: Number(item.version || 0),
-      snoozeMinutes: 10,
-    });
-  }
-}
-
-function handleTodoListChange(event) {
-  if (!event.target?.matches?.(".todo-item-check")) return;
-  const item = todoItemFromEvent(event);
-  if (!item) return;
-  mutateTodo({
-    action: event.target.checked ? "complete" : "reopen",
-    taskId: item.taskId,
-    expectedVersion: Number(item.version || 0),
-  });
-}
-
-async function mutateTodo(command, successMessage = "待办已更新") {
-  try {
-    await todoApi(command);
-    await loadTodos();
-    toast(successMessage);
-  } catch (error) {
-    await loadTodos();
-    toast("更新失败：" + error.message);
-  }
-}
-
-function openTodoEditor(item) {
-  todoEditorTaskId = String(item.taskId || "");
-  todoEditorVersion = Number(item.version || 0);
-  dom.todoEditorTitle.value = String(item.title || "");
-  dom.todoEditorDetails.value = String(item.details || "");
-  dom.todoEditorDueAt.value = todoDateTimeInputValue(item.dueAt);
-  dom.todoEditorDueDate.value = String(item.dueDate || "");
-  dom.todoEditorPriority.value = String(item.priority || "normal");
-  dom.todoEditorRemindBefore.value = String(item.remindBeforeMinutes || 0);
-  dom.todoEditorRecurrence.value = String(item.recurrenceRule || "");
-  dom.todoEditor.classList.remove("hidden");
-  dom.todoEditorTitle.focus();
-}
-
-function closeTodoEditor() {
-  todoEditorTaskId = "";
-  todoEditorVersion = 0;
-  dom.todoEditor?.classList.add("hidden");
-}
-
-async function saveTodoEditor(event) {
-  event.preventDefault();
-  if (!todoEditorTaskId) return;
-  const dueValue = String(dom.todoEditorDueAt.value || "");
-  await mutateTodo({
-    action: "update",
-    taskId: todoEditorTaskId,
-    expectedVersion: todoEditorVersion,
-    title: String(dom.todoEditorTitle.value || "").trim(),
-    details: String(dom.todoEditorDetails.value || "").trim(),
-    dueAt: dueValue ? new Date(dueValue).toISOString() : "",
-    dueDate: dueValue ? "" : String(dom.todoEditorDueDate.value || ""),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-    remindBeforeMinutes: Number(dom.todoEditorRemindBefore.value || 0),
-    recurrenceRule: String(dom.todoEditorRecurrence.value || ""),
-    priority: String(dom.todoEditorPriority.value || "normal"),
-  }, "精细设置已保存");
-  closeTodoEditor();
-}
-
-async function deleteEditedTodo() {
-  if (!todoEditorTaskId) return;
-  const taskId = todoEditorTaskId;
-  const expectedVersion = todoEditorVersion;
-  closeTodoEditor();
-  await mutateTodo({ action: "delete", taskId, expectedVersion }, "待办已删除");
-}
-
-function renderSalieriTranscript(payload) {
-  salieriRecorderEnabled = Boolean(payload?.enabled);
-  dom.salieriUnlockForm?.classList.toggle("hidden", salieriRecorderEnabled);
-  dom.salieriTranscriptWrap?.classList.toggle("hidden", !salieriRecorderEnabled);
-  if (!salieriRecorderEnabled) {
-    if (dom.salieriMessage) dom.salieriMessage.textContent = "AWAITING IDENTIFIER";
-    return;
-  }
-  const transcript = String(payload?.content || "");
-  if (dom.salieriTranscript) {
-    const nearBottom = (
-      dom.salieriTranscript.scrollHeight
-      - dom.salieriTranscript.scrollTop
-      - dom.salieriTranscript.clientHeight
-    ) < 64;
-    dom.salieriTranscript.textContent = `${payload?.truncated ? "[仅显示文件尾部]\n\n" : ""}${transcript}`;
-    if (nearBottom || !dom.salieriTranscript.dataset.loaded) {
-      dom.salieriTranscript.scrollTop = dom.salieriTranscript.scrollHeight;
-    }
-    dom.salieriTranscript.dataset.loaded = "1";
-  }
-  if (dom.salieriStatus) {
-    dom.salieriStatus.textContent = payload?.updatedAt
-      ? `RECORDING / ${String(payload.updatedAt).replace("T", " ").slice(0, 19)}`
-      : "RECORDING";
-  }
-  if (dom.salieriPath) dom.salieriPath.textContent = String(payload?.filePath || "");
-  if (dom.salieriMessage) dom.salieriMessage.textContent = "ARCHIVE IS OUTSIDE MEMORY CONTROL";
-}
-
-async function refreshSalieriTranscript({ quiet = false } = {}) {
-  try {
-    const response = await fetch("/api/salieri", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    renderSalieriTranscript(await response.json());
-  } catch (error) {
-    if (!quiet && dom.salieriMessage) {
-      dom.salieriMessage.textContent = `CHANNEL ERROR / ${error.message}`;
-    }
-  }
-}
-
-async function unlockSalieriRecorder(event) {
-  event.preventDefault();
-  const code = String(dom.salieriCodeInput?.value || "").trim();
-  try {
-    const response = await fetch("/api/salieri/unlock", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload?.enabled) {
-      if (dom.salieriMessage) dom.salieriMessage.textContent = "ACCESS DENIED";
-      return;
-    }
-    if (dom.salieriCodeInput) dom.salieriCodeInput.value = "";
-    renderSalieriTranscript(payload);
-  } catch (error) {
-    if (dom.salieriMessage) dom.salieriMessage.textContent = `CHANNEL ERROR / ${error.message}`;
-  }
-}
-
-function startSalieriRefreshPolling() {
-  window.clearInterval(salieriRefreshTimer);
-  salieriRefreshTimer = window.setInterval(
-    () => refreshSalieriTranscript({ quiet: true }),
-    10000,
-  );
-}
-
 function startTodoReminderPolling() {
-  window.clearInterval(todoReminderTimer);
-  window.clearInterval(todoRefreshTimer);
-  window.setTimeout(pollTodoReminders, 2500);
-  todoReminderTimer = window.setInterval(pollTodoReminders, 10000);
-  todoRefreshTimer = window.setInterval(loadTodos, 30000);
+  return reminderPollingController?.start();
 }
 
-async function pollTodoReminders() {
-  if (
-    todoReminderInFlight || bootSequenceActive || chatRequestInFlight
-    || proactiveInteractionInFlight || touchState.requestInFlight
-    || speechState.pending || isSpeaking(performance.now())
-  ) return;
-  todoReminderInFlight = true;
-  let reminderId = "";
-  try {
-    const response = await storageScopedFetch("/api/todos/reminders/poll", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || "reminder poll failed");
-    if (data.suppressed) {
-      applyProactiveControl(data.proactiveControl);
-      return;
-    }
-    reminderId = String(data.reminderId || "");
-    if (!reminderId) return;
-    const delivered = await applyAssistant(data);
-    await storageScopedFetch("/api/todos/reminders/ack", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reminderId, delivered: Boolean(delivered) }),
-    });
-    await loadTodos();
-  } catch (error) {
-    console.warn("todo reminder failed:", error);
-    if (reminderId) {
-      await storageScopedFetch("/api/todos/reminders/ack", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reminderId, delivered: false, error: String(error.message || error),
-        }),
-      }).catch(() => {});
-    }
-  } finally {
-    todoReminderInFlight = false;
-  }
+function pollTodoReminders() {
+  return reminderPollingController?.poll();
 }
 
 function normalizeSpeechLanguage(value, voiceLocale = "", targetLanguage = "") {
@@ -6677,8 +3576,10 @@ function applySettingsToUi() {
   setChatCollapsed(settings.hudCollapsed, { scroll: false });
   document.body.classList.toggle("full-layout", settings.layoutMode === "full");
   document.body.classList.toggle("lite-layout", settings.layoutMode !== "full");
-  connectionStatus = apiConnectionLabel();
-  renderApiVerification();
+  if (apiVerificationController) {
+    connectionStatus = apiVerificationController.label();
+    apiVerificationController.render();
+  }
   updateModelStateLabel();
   updatePinWindowButton();
   fitModel();
@@ -6737,54 +3638,6 @@ async function openScreenCaptureDirectory() {
   }
 }
 
-async function saveApiSettings() {
-  try {
-    const visibleApiKey = dom.apiKeyInput.value.trim();
-    const visibleVisionKey = dom.visionApiKeyInput?.value.trim() || "";
-    await saveSettings({
-      apiEndpoint: dom.apiEndpointInput.value.trim(),
-      apiModel: dom.apiModelInput.value.trim(),
-      cognitiveRepairModel: dom.cognitiveRepairModelInput.value,
-      apiKey: !visibleApiKey || visibleApiKey === SAVED_API_KEY_MASK ? "__KEEP__" : visibleApiKey,
-      visionEnabled: dom.visionEnabledInput?.checked ?? true,
-      visionApiKey: !visibleVisionKey || visibleVisionKey === SAVED_API_KEY_MASK ? "__KEEP__" : visibleVisionKey,
-      apiNetworkMode: dom.apiNetworkModeInput?.value || "auto",
-      apiProxyUrl: dom.apiProxyUrlInput?.value.trim() || "",
-      useResponseFormat: dom.responseFormatInput.checked,
-    }, "API 设置已保存");
-  } catch (error) {
-    toast(`API 设置保存失败：${error.message}`);
-  }
-}
-
-async function testApiConnection() {
-  const revision = apiConfigurationRevision;
-  dom.apiTestStatus.textContent = "正在连接 DeepSeek...";
-  try {
-    const response = await fetch("/api/test-api", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    const data = await response.json();
-    if (revision !== apiConfigurationRevision) return;
-    const verified = response.ok && data.ok === true;
-    const transport = data.transport && typeof data.transport === "object" ? data.transport : null;
-    const routeSummary = transport
-      ? `；路线 ${transport.networkMode || "auto"} / ${transport.proxyConfigured ? `代理(${transport.proxySource || "configured"})` : "直连"}`
-      : "";
-    dom.apiTestStatus.textContent = `${data.message || (data.ok ? "API 连接正常" : "API 连接失败")}${routeSummary}`;
-    dom.apiTestStatus.classList.toggle("error", !verified);
-    setApiVerification(verified ? "verified" : data.code === "http_401" ? "invalid" : "failed");
-    connectionStatus = apiConnectionLabel();
-    updateModelStateLabel();
-  } catch (error) {
-    if (revision !== apiConfigurationRevision) return;
-    const detail = connectionErrorSummary(error);
-    dom.apiTestStatus.textContent = `测试失败：${detail}`;
-    dom.apiTestStatus.classList.add("error");
-    setApiVerification("failed");
-    connectionStatus = apiConnectionLabel();
-    updateModelStateLabel();
-  }
-}
-
 async function saveDisplaySettings() {
   const draft = backgroundDraft;
   const update = collectDisplaySettings();
@@ -6794,9 +3647,9 @@ async function saveDisplaySettings() {
   dom.saveDisplayBtn.disabled = true;
   dom.saveDisplayBtn.textContent = "正在保存…";
   try {
-    const previousModelId = activeModelProfile.id;
+    const previousModelId = sceneSnapshot().activeProfile.id;
     await saveSettings(update, "显示设置已保存", true);
-    backgroundRevision += 1;
+    backgroundRenderer?.bumpRevision();
     drawPixiBackground();
     if (!dom.settingsModal.classList.contains("hidden")) backgroundDraft = newBackgroundDraft();
     updateBackgroundControls();
@@ -6827,7 +3680,7 @@ function collectDisplaySettings() {
     offsetX: dom.modelOffsetXInput.value,
     offsetY: dom.modelOffsetYInput.value,
   });
-  const ordinaryModelId = settings.live2dModelId || activeModelProfile?.id || FALLBACK_MODEL_PROFILE.id;
+  const ordinaryModelId = settings.live2dModelId || sceneSnapshot().activeProfile?.id || FALLBACK_MODEL_PROFILE.id;
   const ordinaryTransform = normalizedModelTransform(settings.modelTransforms?.[ordinaryModelId] || {
     scale: settings.modelScale,
     offsetX: settings.modelOffsetX,
@@ -6912,259 +3765,43 @@ async function saveDebugSettings() {
   }
 }
 
-async function loadPersona() {
-  try {
-    const response = await fetch("/api/persona");
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    renderPersona(data.persona || {});
-    if (DEV_MODE || !dom.settingsModal?.classList.contains("hidden")) {
-      toast("人格配置已加载");
-    }
-  } catch (error) {
-    if (dom.devPersonaStatus) dom.devPersonaStatus.textContent = `加载失败：${error.message}`;
-    if (dom.settingsPersonaStatus) dom.settingsPersonaStatus.textContent = `加载失败：${error.message}`;
-    toast(`人格加载失败：${error.message}`);
-  }
-}
-
-async function savePersonaOverride(sourceInput = dom.devPersonaOverride, saveButton = dom.savePersonaBtn) {
-  const oldText = saveButton?.textContent || "";
-  try {
-    if (saveButton) {
-      saveButton.disabled = true;
-      saveButton.textContent = "保存中";
-    }
-    const response = await fetch("/api/persona", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ override: sourceInput?.value || "" }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    renderPersona(data.persona || {});
-    toast("人格补丁已保存，下一轮对话生效");
-  } catch (error) {
-    toast(`人格补丁保存失败：${error.message}`);
-  } finally {
-    if (saveButton) {
-      saveButton.disabled = false;
-      saveButton.textContent = oldText || "保存人格补丁";
-    }
-  }
-}
-
-function renderPersona(persona) {
-  const summary = persona.summary || {};
-  const generatedRules = persona.generatedRules || {};
-  const emotionalSceneAnchors = persona.emotionalSceneAnchors || {};
-  const emotionalAnchors = Array.isArray(emotionalSceneAnchors.anchors)
-    ? emotionalSceneAnchors.anchors
-    : [];
-  const global = generatedRules.global || {};
-  if (dom.devPersonaStatus) {
-    dom.devPersonaStatus.textContent = [
-      `DeepSeek: ${summary.deepseekReady ? "READY" : "UNKNOWN"}`,
-      `蒸馏来源: ${summary.distillationSource || generatedRules.source || "unknown"}`,
-      `抽象标注: ${summary.distilledRows || generatedRules.rowCount || 0}`,
-      `补丁: ${persona.override ? "已启用" : "未设置"}`,
-    ].join(" / ");
-  }
-  if (dom.settingsPersonaStatus) {
-    dom.settingsPersonaStatus.textContent = persona.override ? "补丁已启用" : "当前未设置临时补丁";
-    dom.settingsPersonaStatus.title = persona.overridePath || "";
-  }
-  if (dom.devPersonaSummary) {
-    const lines = [
-      summary.agentPositioning || "",
-      summary.integration || "",
-      `情绪标签: ${(global.emotion || []).join("、") || "-"}`,
-      `动作标签: ${(global.gesture || []).join("、") || "-"}`,
-      `语气标签: ${(global.voiceTone || []).join("、") || "-"}`,
-      `名场面情绪锚点 (${emotionalAnchors.length}): ${emotionalAnchors.map((item) => item.title || item.id).join("、") || "-"}`,
-      `限制: ${(summary.limits || []).join("；") || "-"}`,
-      `人格补丁文件: ${persona.overridePath || "-"}`,
-      `名场面配置: ${persona.emotionalSceneAnchorsPath || "-"}`,
-    ].filter(Boolean);
-    dom.devPersonaSummary.textContent = lines.join("\n");
-  }
-  if (dom.devPersonaOverride && document.activeElement !== dom.devPersonaOverride) {
-    dom.devPersonaOverride.value = persona.override || "";
-  }
-  if (dom.settingsPersonaOverride && document.activeElement !== dom.settingsPersonaOverride) {
-    dom.settingsPersonaOverride.value = persona.override || "";
-  }
-  if (dom.devGeneratedSkill) {
-    dom.devGeneratedSkill.value = persona.generatedSkill || "";
-  }
-}
-
-async function loadDeveloperRelationship() {
-  if (!DEV_MODE) return;
-  const scopeValue = String(dom.devRelationshipScopeInput?.value || "release");
-  const requestedScope = ["release", "normal", "developer"].includes(scopeValue)
-    ? scopeValue
-    : "release";
-  try {
-    const response = await storageScopedFetch(
-      `/api/developer/relationship?scope=${encodeURIComponent(requestedScope)}`,
-    );
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    renderDeveloperRelationship(data.relationship || {});
-    if (dom.devRelationshipScopeStatus) {
-      dom.devRelationshipScopeStatus.textContent = data.scope === "release"
-        ? "正在查看正式 release 用户数据（只读）；不会写入 release，也不会切换开发者运行态。"
-        : data.scope === "normal"
-          ? "正在查看源码普通模式数据（只读）；开发者对话、记忆和关系运行态仍保持隔离。"
-          : "正在查看开发者隔离数据（只读）；此页面不会修改关系运行态。";
-    }
-  } catch (error) {
-    if (dom.devRelationshipStage) dom.devRelationshipStage.textContent = `加载失败：${error.message}`;
-    if (dom.devRelationshipScopeStatus) dom.devRelationshipScopeStatus.textContent = "关系数据加载失败，未切换任何运行状态。";
-  }
-}
-
 function renderDeveloperRelationship(relationship) {
-  if (!DEV_MODE) return;
-  const stageLabels = {
-    close_companion: "亲密同伴：朋友以上，尚未进入承诺关系",
-    trusted_intimacy: "深度信赖：亲密与信任已经稳定形成",
-    committed_partner: "稳定伴侣：已进入明确、持续的恋人关系",
-    life_partner: "生活伴侣：日常计划与共同习惯深度交织",
-    old_married: "长期伴侣：接近老夫老妻般的稳定默契",
-  };
-  const stage = String(relationship.stage || "close_companion");
-  const developerView = relationship.developerView || {};
-  if (dom.devRelationshipStage) {
-    dom.devRelationshipStage.textContent = `${stage} / ${stageLabels[stage] || "未知阶段"}`;
-  }
-  if (dom.devRelationshipMeters) {
-    const metrics = [
-      ["熟悉度", relationship.familiarity],
-      ["信任", relationship.trust],
-      ["打趣默契", relationship.teasingLevel],
-      ["关心程度", relationship.careLevel],
-      ["关系稳定", relationship.stability],
-    ];
-    dom.devRelationshipMeters.replaceChildren(...metrics.map(([label, rawValue]) => {
-      const value = clamp(toNumber(rawValue, 0), 0, 1);
-      const row = document.createElement("div");
-      row.className = "relationship-meter";
-      const name = document.createElement("span");
-      name.textContent = label;
-      const meter = document.createElement("i");
-      meter.style.setProperty("--value", `${(value * 100).toFixed(1)}%`);
-      const number = document.createElement("code");
-      number.textContent = value.toFixed(3);
-      row.append(name, meter, number);
-      return row;
-    }));
-  }
-  const radarValues = [
-    relationship.familiarity,
-    relationship.trust,
-    relationship.teasingLevel,
-    relationship.careLevel,
-    relationship.stability,
-  ].map(value => clamp(toNumber(value, 0), 0, 1));
-  const radarPoints = radarValues.map((value, index) => {
-    const angle = (-90 + index * 72) * Math.PI / 180;
-    const radius = 60 * value;
-    return [100 + Math.cos(angle) * radius, 80 + Math.sin(angle) * radius];
-  });
-  if (dom.devRelationshipRadarValue) {
-    dom.devRelationshipRadarValue.setAttribute(
-      "points",
-      radarPoints.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" "),
-    );
-  }
-  if (dom.devRelationshipRadarDots) {
-    const svgNamespace = "http://www.w3.org/2000/svg";
-    dom.devRelationshipRadarDots.replaceChildren(...radarPoints.map(([x, y]) => {
-      const dot = document.createElementNS(svgNamespace, "circle");
-      dot.setAttribute("cx", x.toFixed(2));
-      dot.setAttribute("cy", y.toFixed(2));
-      dot.setAttribute("r", "2.8");
-      return dot;
-    }));
-  }
-  if (dom.devRelationshipRadar) {
-    dom.devRelationshipRadar.setAttribute(
-      "aria-label",
-      `关系五维：熟悉 ${(radarValues[0] * 100).toFixed(0)}%，信任 ${(radarValues[1] * 100).toFixed(0)}%，` +
-      `默契 ${(radarValues[2] * 100).toFixed(0)}%，关心 ${(radarValues[3] * 100).toFixed(0)}%，稳定 ${(radarValues[4] * 100).toFixed(0)}%`,
-    );
-  }
-  const nextStage = developerView.nextStage || null;
-  const readiness = nextStage ? clamp(toNumber(nextStage.readiness, 0), 0, 1) : 1;
-  if (dom.devRelationshipNextTitle) {
-    dom.devRelationshipNextTitle.textContent = nextStage ? `下一阶段：${nextStage.label}` : "已到最高关系阶段";
-  }
-  if (dom.devRelationshipReadiness) {
-    dom.devRelationshipReadiness.style.setProperty("--value", `${(readiness * 100).toFixed(1)}%`);
-  }
-  if (dom.devRelationshipReadinessValue) {
-    dom.devRelationshipReadinessValue.textContent = nextStage
-      ? `瓶颈进度 ${(readiness * 100).toFixed(1)}%`
-      : "全部阶段已达成";
-  }
-  if (dom.devRelationshipReactionProfile) {
-    dom.devRelationshipReactionProfile.textContent = `成人视觉反应：${developerView.visualReactionProfile || "按当前关系自然调整"}`;
-  }
-  if (dom.devRelationshipStagePath) {
-    const stagePath = Array.isArray(developerView.stagePath) ? developerView.stagePath : [];
-    dom.devRelationshipStagePath.replaceChildren(...stagePath.map(item => {
-      const node = document.createElement("span");
-      node.className = `relationship-stage-node ${item.state || "locked"}`;
-      node.textContent = item.label || item.id || "-";
-      node.title = item.state === "current" ? "当前阶段" : item.state === "reached" ? "已达成" : "未解锁";
-      return node;
-    }));
-  }
-  if (dom.devRelationshipRequirements) {
-    const requirements = nextStage && Array.isArray(nextStage.requirements) ? nextStage.requirements : [];
-    dom.devRelationshipRequirements.replaceChildren(...requirements.map(item => {
-      const row = document.createElement("div");
-      row.className = `relationship-requirement ${item.met ? "met" : "pending"}`;
+  return relationshipController?.render(relationship);
+}
+
+function loadDeveloperRelationship() {
+  return relationshipController?.load();
+}
+
+function renderDeveloperTouchRegions(profile, labels = {}) {
+  if (!DEV_MODE || !dom.devTouchOverlay || !profile) return;
+  dom.devTouchOverlay.replaceChildren();
+  for (const zone of [...(profile.priority || [])].reverse()) {
+    for (const polygon of profile.zones?.[zone] || []) {
+      const visual = document.createElement("div");
+      visual.className = "touch-region-visual";
+      visual.dataset.touchRegion = zone;
+      const shape = document.createElement("div");
+      shape.className = "touch-zone-shape";
+      shape.style.clipPath = "polygon(" + polygon.map(([x, y]) => x * 100 + "% " + y * 100 + "%").join(",") + ")";
       const label = document.createElement("span");
-      label.textContent = `${item.met ? "✓" : "○"} ${item.label}`;
-      const meter = document.createElement("i");
-      meter.style.setProperty("--value", `${(clamp(toNumber(item.progress, 0), 0, 1) * 100).toFixed(1)}%`);
-      const value = document.createElement("code");
-      value.textContent = `${item.current} / ${item.required}`;
-      value.title = item.met ? "已满足" : `还差 ${item.remaining}`;
-      row.append(label, meter, value);
-      return row;
-    }));
-  }
-  if (dom.devRelationshipExplanation) {
-    dom.devRelationshipExplanation.textContent = developerView.metricExplanation ||
-      "关系阶段采用多条件门槛制，不由单个数值决定。";
-  }
-  if (dom.devRelationshipDetail) {
-    dom.devRelationshipDetail.textContent = formatDeveloperJson({
-      interactionCount: relationship.interactionCount || 0,
-      positiveEvents: relationship.positiveEvents || 0,
-      sharedRoutineEvents: relationship.sharedRoutineEvents || 0,
-      repairEvents: relationship.repairEvents || 0,
-      lastEmotionalEvent: relationship.lastEmotionalEvent || "",
-      milestones: relationship.milestones || [],
-      nextStage: developerView.nextStage || null,
-      visualReactionProfile: developerView.visualReactionProfile || "",
-      updatedAt: relationship.updatedAt || "",
-    });
+      label.className = "touch-zone-label";
+      label.textContent = (labels[zone] || zone).split(" /")[0];
+      label.style.left = polygon.reduce((sum, point) => sum + point[0], 0) / polygon.length * 100 + "%";
+      label.style.top = polygon.reduce((sum, point) => sum + point[1], 0) / polygon.length * 100 + "%";
+      visual.append(shape, label);
+      dom.devTouchOverlay.appendChild(visual);
+    }
   }
 }
 
-function renderDeveloperTouchHit(hit, now = performance.now()) {
+function renderDeveloperTouchHit(hit, _now = performance.now(), labels = {}) {
   if (!DEV_MODE || !hit) return;
-  lastDeveloperTouchAt = now;
   if (dom.devTouchHit) {
     dom.devTouchHit.textContent = [
-      `命中：${TOUCH_ZONE_LABELS[hit.zone] || hit.zone}`,
-      `模型归一化坐标：x=${toNumber(hit.x, 0).toFixed(4)}, y=${toNumber(hit.y, 0).toFixed(4)}`,
-      `屏幕坐标：x=${toNumber(hit.screenX, 0).toFixed(1)}, y=${toNumber(hit.screenY, 0).toFixed(1)}`,
+      "命中：" + (labels[hit.zone] || hit.zone),
+      "模型归一化坐标：x=" + toNumber(hit.x, 0).toFixed(4) + ", y=" + toNumber(hit.y, 0).toFixed(4),
+      "屏幕坐标：x=" + toNumber(hit.screenX, 0).toFixed(1) + ", y=" + toNumber(hit.screenY, 0).toFixed(1),
       hit.zone === "body" ? "结果：不向 Agent 发送触摸事件" : "结果：进入触摸事件防抖与边界判定",
     ].join("\n");
   }
@@ -7173,25 +3810,16 @@ function renderDeveloperTouchHit(hit, now = performance.now()) {
   });
 }
 
-function updateDeveloperTouchOverlay() {
-  if (!DEV_MODE || !model || !dom.devTouchOverlay) return;
-  let bounds;
-  try {
-    bounds = model.getBounds();
-  } catch {
-    return;
-  }
-  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
-  const touchBounds = normalizedTouchBounds();
+function updateDeveloperTouchOverlay({ bounds, touchBounds, stale = false } = {}) {
+  if (!DEV_MODE || !sceneSnapshot().model || !dom.devTouchOverlay || !bounds || !touchBounds) return;
   Object.assign(dom.devTouchOverlay.style, {
-    left: `${bounds.x + bounds.width * touchBounds.x}px`,
-    top: `${bounds.y + bounds.height * touchBounds.y}px`,
-    width: `${bounds.width * touchBounds.width}px`,
-    height: `${bounds.height * touchBounds.height}px`,
+    left: bounds.x + bounds.width * touchBounds.x + "px",
+    top: bounds.y + bounds.height * touchBounds.y + "px",
+    width: bounds.width * touchBounds.width + "px",
+    height: bounds.height * touchBounds.height + "px",
   });
-  if (lastDeveloperTouchAt && performance.now() - lastDeveloperTouchAt > 1100) {
+  if (stale) {
     document.querySelectorAll("[data-touch-region].active").forEach(node => node.classList.remove("active"));
-    lastDeveloperTouchAt = 0;
   }
 }
 
@@ -7618,13 +4246,8 @@ async function clearShortMemory() {
   const oldText = dom.clearShortMemoryBtn.textContent;
   dom.clearShortMemoryBtn.textContent = "清除中";
   try {
-    chatAbortController?.abort();
-    chatAbortController = null;
-    chatRequestGeneration += 1;
-    chatRequestInFlight = false;
-    activeChatRequestId = "";
-    activeAnswerRequestId = "";
-    supersededChatRequestId = "";
+    invalidateConversationHistoryHydration();
+    chatController?.invalidateForContextChange({ notifyBackend: true, interruptSpeech: false });
     activeConversationInputs = [];
     activeConversationAttachments = [];
     activeConversationGroup = "";
@@ -7632,15 +4255,11 @@ async function clearShortMemory() {
     activeConversationUserMessageId = "";
     conversationWasInterrupted = false;
     clearPendingReplyAnchor();
-    deferredTouchAssistant = null;
-    proactiveState.returnContext = "";
+    clearProactiveReturnContext();
     resetProactiveSequence();
     interruptCurrentSpeech();
-    if (touchRequestAbortController) touchRequestAbortController.abort();
-    touchRequestAbortController = null;
-    touchRequestGeneration += 1;
-    touchState.requestInFlight = false;
-    proactivePersistenceInFlight.clear();
+    touchInteractionController?.invalidateForContextChange();
+    clearPendingProactivePersistence();
     const response = await storageScopedFetch("/api/conversation/short-memory/clear", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -7674,236 +4293,15 @@ function resetActiveConversationRequestState() {
 }
 
 function prepareForConversationNavigation() {
-  const requestId = String(activeChatRequestId || activeAnswerRequestId || "").trim();
-  const stoppedGeneration = chatRequestGeneration;
-  chatAbortController?.abort();
-  chatAbortController = null;
-  chatRequestGeneration += 1;
-  chatRequestInFlight = false;
-  stopThinkingProgressPolling(requestId);
-  hideThinkingIndicator(stoppedGeneration);
-  notifyBackendAnswerCancellation(requestId);
-  activeChatRequestId = "";
-  activeAnswerRequestId = "";
-  supersededChatRequestId = "";
+  invalidateConversationHistoryHydration();
+  chatController?.invalidateForContextChange({ notifyBackend: true, interruptSpeech: false });
   resetActiveConversationRequestState();
   clearPendingReplyAnchor();
-  deferredTouchAssistant = null;
-  proactiveState.returnContext = "";
+  touchInteractionController?.clearDeferredResponse();
+  clearProactiveReturnContext();
   resetProactiveSequence();
   interruptCurrentSpeech();
   syncChatSubmitButton();
-}
-
-async function startNewConversation() {
-  dom.newConversationBtn.disabled = true;
-  if (dom.conversationCreateBtn) dom.conversationCreateBtn.disabled = true;
-  try {
-    prepareForConversationNavigation();
-    const response = await storageScopedFetch("/api/conversation/new", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    state.contextEpoch = Math.max(0, Number(data.context?.conversationEpoch) || 0);
-    state.conversationId = String(data.context?.conversationId || `conv_${state.contextEpoch}`);
-    state.messages = [];
-    applyProactiveControl(data.context?.proactiveControl, { persistState: false });
-    renderMessages();
-    persist();
-    closeConversationPicker();
-    dom.userInput?.focus();
-    toast("已开始新对话；长期记忆和关系仍然保留");
-    return true;
-  } catch (error) {
-    toast(`新对话创建失败：${error.message}`);
-    return false;
-  } finally {
-    dom.newConversationBtn.disabled = false;
-    if (dom.conversationCreateBtn) dom.conversationCreateBtn.disabled = false;
-  }
-}
-
-function closeConversationPicker() {
-  conversationPickerState.controller?.abort();
-  conversationPickerState.controller = null;
-  conversationPickerState.loading = false;
-  dom.conversationPicker?.classList.add("hidden");
-  dom.newConversationBtn?.setAttribute("aria-expanded", "false");
-}
-
-function renderConversationPicker() {
-  if (!dom.conversationPickerList) return;
-  dom.conversationPickerList.replaceChildren();
-  if (dom.conversationPickerCount) {
-    dom.conversationPickerCount.textContent = `${conversationPickerState.conversations.length} 个`;
-  }
-  if (!conversationPickerState.conversations.length) {
-    const empty = document.createElement("div");
-    empty.className = "chat-history-search-empty";
-    empty.textContent = "还没有历史对话";
-    dom.conversationPickerList.appendChild(empty);
-    return;
-  }
-  conversationPickerState.conversations.forEach(conversation => {
-    const conversationId = String(conversation.conversationId || "");
-    const active = conversationId === String(state.conversationId || "");
-    const row = document.createElement("div");
-    row.className = `conversation-picker-row${active ? " active" : ""}`;
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "conversation-picker-item";
-    item.dataset.conversationId = conversationId;
-    if (active) item.setAttribute("aria-current", "true");
-    const head = document.createElement("span");
-    head.className = "conversation-picker-item-head";
-    const title = document.createElement("strong");
-    title.className = "conversation-picker-item-title";
-    title.textContent = String(conversation.title || "新对话");
-    const at = document.createElement("span");
-    at.className = "conversation-picker-item-time";
-    at.textContent = formatHistorySearchTime(conversation.updatedAt || conversation.createdAt);
-    head.append(title, at);
-    const preview = document.createElement("span");
-    preview.className = "conversation-picker-item-preview";
-    preview.textContent = String(conversation.preview || "还没有消息");
-    item.append(head, preview);
-    item.addEventListener("click", () => switchToConversation(conversationId));
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "conversation-picker-delete-btn";
-    deleteButton.textContent = "×";
-    deleteButton.title = `删除对话：${String(conversation.title || "新对话")}`;
-    deleteButton.setAttribute("aria-label", deleteButton.title);
-    deleteButton.addEventListener("click", () => deleteConversation(conversation));
-    row.append(item, deleteButton);
-    dom.conversationPickerList.appendChild(row);
-  });
-}
-
-async function loadConversationPicker() {
-  conversationPickerState.controller?.abort();
-  const controller = new AbortController();
-  conversationPickerState.controller = controller;
-  conversationPickerState.loading = true;
-  if (dom.conversationPickerStatus) dom.conversationPickerStatus.textContent = "正在读取对话…";
-  try {
-    const response = await storageScopedFetch("/api/conversations", {
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    conversationPickerState.conversations = Array.isArray(data.conversations)
-      ? data.conversations : [];
-    renderConversationPicker();
-    if (dom.conversationPickerStatus) {
-      dom.conversationPickerStatus.textContent = "选择一条旧对话继续，或新建对话";
-    }
-  } catch (error) {
-    if (error?.name === "AbortError") return;
-    if (dom.conversationPickerStatus) dom.conversationPickerStatus.textContent = "对话列表读取失败";
-    toast(`对话列表读取失败：${error.message}`);
-  } finally {
-    if (conversationPickerState.controller === controller) {
-      conversationPickerState.controller = null;
-      conversationPickerState.loading = false;
-    }
-  }
-}
-
-function openConversationPicker() {
-  if (!dom.settingsModal?.classList.contains("hidden")) closeSettings();
-  setChatCollapsed(false, { scroll: false });
-  closeBookmarkPanel();
-  closeChatHistorySearch();
-  dom.conversationPicker?.classList.remove("hidden");
-  dom.newConversationBtn?.setAttribute("aria-expanded", "true");
-  loadConversationPicker();
-}
-
-async function deleteConversation(conversation) {
-  const requestedId = String(conversation?.conversationId || "").trim();
-  if (!requestedId) return;
-  const title = String(conversation?.title || "新对话").trim() || "新对话";
-  if (!window.confirm(`确定删除对话“${title}”吗？\n删除后无法恢复。`)) return;
-  const active = requestedId === String(state.conversationId || "");
-  if (dom.conversationPickerStatus) dom.conversationPickerStatus.textContent = "正在删除对话…";
-  try {
-    if (active) prepareForConversationNavigation();
-    const response = await storageScopedFetch("/api/conversation/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId: requestedId }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    if (data.activeDeleted) {
-      state.contextEpoch = Math.max(0, Number(data.context?.conversationEpoch) || 0);
-      state.conversationId = String(
-        data.context?.conversationId || data.activeConversationId || `conv_${state.contextEpoch}`,
-      );
-      state.messages = [];
-      applyProactiveControl(data.context?.proactiveControl, { persistState: false });
-      resetActiveConversationRequestState();
-      clearPendingReplyAnchor();
-      renderMessages();
-      persist();
-    }
-    conversationPickerState.conversations = Array.isArray(data.conversations)
-      ? data.conversations : [];
-    renderConversationPicker();
-    if (dom.conversationPickerStatus) {
-      dom.conversationPickerStatus.textContent = data.activeDeleted
-        ? "当前对话已删除，已进入新的空白对话"
-        : "对话已删除";
-    }
-    toast(data.activeDeleted ? "当前对话已删除，已开始新对话" : "对话已删除");
-  } catch (error) {
-    if (dom.conversationPickerStatus) dom.conversationPickerStatus.textContent = "删除失败，请重试";
-    toast(`删除对话失败：${error.message}`);
-  }
-}
-
-async function switchToConversation(conversationId) {
-  const requestedId = String(conversationId || "").trim();
-  if (!requestedId) return;
-  if (requestedId === String(state.conversationId || "")) {
-    closeConversationPicker();
-    dom.userInput?.focus();
-    return;
-  }
-  dom.newConversationBtn.disabled = true;
-  if (dom.conversationCreateBtn) dom.conversationCreateBtn.disabled = true;
-  if (dom.conversationPickerStatus) dom.conversationPickerStatus.textContent = "正在打开对话…";
-  try {
-    prepareForConversationNavigation();
-    const response = await storageScopedFetch("/api/conversation/switch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId: requestedId }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    state.contextEpoch = Math.max(0, Number(data.context?.conversationEpoch) || 0);
-    state.conversationId = String(data.context?.conversationId || requestedId);
-    state.messages = [];
-    applyProactiveControl(data.context?.proactiveControl, { persistState: false });
-    await hydrateConversationHistory();
-    renderMessages();
-    persist();
-    closeConversationPicker();
-    dom.userInput?.focus();
-    toast("已打开历史对话，可以接着聊");
-  } catch (error) {
-    toast(`打开对话失败：${error.message}`);
-    if (dom.conversationPickerStatus) dom.conversationPickerStatus.textContent = "打开失败，请重试";
-  } finally {
-    dom.newConversationBtn.disabled = false;
-    if (dom.conversationCreateBtn) dom.conversationCreateBtn.disabled = false;
-  }
 }
 
 function createClientMessageId() {
@@ -7956,19 +4354,6 @@ function replyToMessage(role, content, metaData = {}) {
   dom.userInput?.focus();
 }
 
-function scrollToQuotedMessage(messageId) {
-  const target = [...(dom.chatLog?.querySelectorAll(".msg") || [])].find(
-    item => String(item.dataset.messageId || "") === String(messageId || ""),
-  );
-  if (!target) {
-    toast("被回复的消息不在当前窗口中");
-    return;
-  }
-  target.classList.add("history-search-hit");
-  target.scrollIntoView({ block: "center", behavior: "smooth" });
-  window.setTimeout(() => target.classList.remove("history-search-hit"), 1800);
-}
-
 function messageIdentityMeta(result, role) {
   const identity = result?.turnIdentity;
   if (!identity || typeof identity !== "object") return {};
@@ -7999,23 +4384,14 @@ function bindCompletedTurnIdentity(result, assistantMessage = null) {
 
 async function clearChat() {
   if (!window.confirm("确定清除当前对话吗？长期记忆不会被删除。")) return;
-  chatAbortController?.abort();
-  chatAbortController = null;
-  chatRequestGeneration += 1;
-  chatRequestInFlight = false;
-  activeChatRequestId = "";
-  activeAnswerRequestId = "";
-  supersededChatRequestId = "";
+  invalidateConversationHistoryHydration();
+  chatController?.invalidateForContextChange({ notifyBackend: true, interruptSpeech: false });
   resetActiveConversationRequestState();
   clearPendingReplyAnchor();
-  deferredTouchAssistant = null;
-  proactiveState.returnContext = "";
+  clearProactiveReturnContext();
   resetProactiveSequence();
-  if (touchRequestAbortController) touchRequestAbortController.abort();
-  touchRequestAbortController = null;
-  touchRequestGeneration += 1;
-  touchState.requestInFlight = false;
-  proactivePersistenceInFlight.clear();
+  touchInteractionController?.invalidateForContextChange();
+  clearPendingProactivePersistence();
   interruptCurrentSpeech();
   try {
     const response = await storageScopedFetch("/api/conversation/clear", {
@@ -8185,8 +4561,7 @@ function closeSettings() {
 }
 
 function closeSalieriWindow() {
-  dom.salieriWindow?.classList.add("hidden");
-  dom.salieriWindowToggle?.setAttribute("aria-expanded", "false");
+  salieriController?.close();
 }
 
 function activateSettingsTab(tab) {
@@ -8197,214 +4572,12 @@ function activateSettingsTab(tab) {
 }
 
 function fitModel() {
-  drawPixiBackground();
-  if (!model) return;
-  const w = window.innerWidth, h = window.innerHeight;
-  const display = modelDisplayBounds(modelNaturalBounds());
-  const transform = modelTransformFor(activeModelProfile?.id);
-  const full = settings.layoutMode === "full";
-  // Framing follows the window/layout only. The overlay conversation panel
-  // can move, resize or collapse without shrinking or displacing the model.
-  const portraitWidth = full ? Math.max(360, w - Math.min(460, Math.max(380, w * 0.38))) : w;
-  const area = { x: 12, y: 12, width: Math.max(1, portraitWidth - 24), height: Math.max(1, h - 24) };
-  if (modelFitReference.layoutMode !== settings.layoutMode || modelFitReference.width <= 0 || modelFitReference.height <= 0) {
-    modelFitReference = { width: w, height: h, layoutMode: settings.layoutMode };
-  }
-  const offsetX = (transform.offsetX + toNumber(activeModelProfile?.offsetX, 0)) * w / modelFitReference.width;
-  const offsetY = (transform.offsetY + toNumber(activeModelProfile?.offsetY, 0)) * h / modelFitReference.height;
-  const profileScale = clamp(toNumber(full ? activeModelProfile?.fullScaleMultiplier : activeModelProfile?.scaleMultiplier,
-    full ? activeModelProfile?.scaleMultiplier || 1 : 1), 0.5, 2);
-  const baseScale = Math.min(area.width / display.width, area.height / display.height);
-  modelHome = window.AmadeusPortraitFraming.fitPortrait(display, area,
-    baseScale * transform.scale * profileScale, offsetX, offsetY);
-  model.scale.set(modelHome.scale);
-  model.x = modelHome.x;
-  model.y = modelHome.y;
-}
-
-function modelNaturalBounds() {
-  try {
-    if (model && typeof model.getLocalBounds === "function") {
-      const bounds = model.getLocalBounds();
-      if (bounds.width > 0 && bounds.height > 0) {
-        return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
-      }
-    }
-  } catch {
-    // Fall back below when bounds are not ready.
-  }
-  const scale = model?.scale?.x || 1;
-  return {
-    x: 0,
-    y: 0,
-    width: Math.max(1, (model?.width || window.innerWidth) / scale),
-    height: Math.max(1, (model?.height || window.innerHeight) / scale),
-  };
-}
-
-function modelDisplayBounds(natural) {
-  const values = activeModelProfile?.displayBounds;
-  if (!Array.isArray(values) || values.length !== 4) return natural;
-  const x = clamp(toNumber(values[0], 0), 0, 0.99);
-  const y = clamp(toNumber(values[1], 0), 0, 0.99);
-  const width = clamp(toNumber(values[2], 1), 0.01, 1 - x);
-  const height = clamp(toNumber(values[3], 1), 0.01, 1 - y);
-  return {
-    x: natural.x + natural.width * x,
-    y: natural.y + natural.height * y,
-    width: natural.width * width,
-    height: natural.height * height,
-  };
+  return sceneController?.fitModel?.() || null;
 }
 
 function drawPixiBackground() {
-  if (!app || !backgroundLayer || !window.PIXI) return;
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  const preset = BACKGROUND_PRESETS.has(settings.backgroundPreset) ? settings.backgroundPreset : "grid";
-  const imageUrl = backgroundImageUrl(settings);
-  backgroundLayer.x = 0;
-  backgroundLayer.y = 0;
-  backgroundLayer.rotation = 0;
-  // Keep the same image while dragging the window; only its centered crop changes.
-  if (imageUrl && backgroundImageState?.url === imageUrl) {
-    backgroundImageState.fit();
-    return;
-  }
-  backgroundImageState = null;
-  for (const child of backgroundLayer.removeChildren()) child.destroy({ children: true });
-  const base = new PIXI.Graphics();
-  base.beginFill(settings.backgroundPreset === "solid" ? 0x020505 : 0x071011, 1);
-  base.drawRect(0, 0, w, h);
-  base.endFill();
-  backgroundLayer.addChild(base);
-  if (preset === "boot") {
-    drawCoverBackgroundImage(BOOT_BACKGROUND_URL, w, h, 0.9);
-  } else if (preset === "custom" && settings.customBackgroundPath) {
-    drawCoverBackgroundImage(`/api/background-image?v=${backgroundRevision}`, w, h, 1);
-  } else if (BACKGROUND_IMAGE_PRESETS.has(preset)) {
-    drawCoverBackgroundImage(BACKGROUND_IMAGE_PRESETS.get(preset), w, h, 1);
-  } else if (preset === "grid") {
-    drawResearchGridBackground(w, h);
-  }
-  backgroundLayer.x = 0;
-  backgroundLayer.y = 0;
-  backgroundLayer.rotation = 0;
+  backgroundRenderer?.draw(settings);
 }
-
-function drawCoverBackgroundImage(url, w, h, alpha = 1) {
-  const texture = PIXI.Texture.from(url);
-  const sprite = new PIXI.Sprite(texture);
-  const base = backgroundLayer.children[0];
-  const shade = new PIXI.Graphics();
-  sprite.anchor.set(0.5);
-  sprite.alpha = alpha;
-  const fit = () => {
-    if (sprite.destroyed) return;
-    // An image may finish loading after a resize. Always use the current viewport.
-    w = window.innerWidth;
-    h = window.innerHeight;
-    const textureWidth = texture.orig?.width || texture.baseTexture?.realWidth || texture.width || w;
-    const textureHeight = texture.orig?.height || texture.baseTexture?.realHeight || texture.height || h;
-    const position = window.AmadeusBackgroundEditor.layout(textureWidth, textureHeight, w, h, backgroundView(settings));
-    sprite.width = position.width;
-    sprite.height = position.height;
-    sprite.x = position.x + position.width * 0.5;
-    sprite.y = position.y + position.height * 0.5;
-    base.clear();
-    base.beginFill(0x071011, 1);
-    base.drawRect(0, 0, w, h);
-    base.endFill();
-    shade.clear();
-    shade.beginFill(0x020606, 0.18);
-    shade.drawRect(0, 0, w, h);
-    shade.endFill();
-  };
-  backgroundImageState = { url, fit };
-  fit();
-  if (!texture.valid && texture.baseTexture && typeof texture.baseTexture.once === "function") {
-    texture.baseTexture.once("loaded", () => {
-      fit();
-    });
-  }
-  backgroundLayer.addChild(sprite);
-  backgroundLayer.addChild(shade);
-}
-
-function drawContainedCroppedBackgroundImage(url, w, h, crop, alpha = 1) {
-  const texture = PIXI.Texture.from(url);
-  const sprite = new PIXI.Sprite(texture);
-  const matte = new PIXI.Graphics();
-  const fit = () => {
-    const sourceWidth = texture.orig?.width || texture.baseTexture?.width || 1920;
-    const sourceHeight = texture.orig?.height || texture.baseTexture?.height || 1080;
-    const cropX = crop.x * sourceWidth;
-    const cropY = crop.y * sourceHeight;
-    const cropWidth = crop.width * sourceWidth;
-    const cropHeight = crop.height * sourceHeight;
-    const scale = Math.min(w / cropWidth, h / cropHeight);
-    const viewportWidth = cropWidth * scale;
-    const viewportHeight = cropHeight * scale;
-    const viewportX = (w - viewportWidth) * 0.5;
-    const viewportY = (h - viewportHeight) * 0.5;
-    sprite.width = sourceWidth * scale;
-    sprite.height = sourceHeight * scale;
-    sprite.x = viewportX - cropX * scale;
-    sprite.y = viewportY - cropY * scale;
-    sprite.alpha = alpha;
-    matte.clear();
-    matte.beginFill(0x071011, 1);
-    if (viewportY > 0) matte.drawRect(0, 0, w, viewportY + 1);
-    if (viewportY + viewportHeight < h) matte.drawRect(0, viewportY + viewportHeight - 1, w, h - viewportY - viewportHeight + 1);
-    if (viewportX > 0) matte.drawRect(0, viewportY, viewportX + 1, viewportHeight);
-    if (viewportX + viewportWidth < w) matte.drawRect(viewportX + viewportWidth - 1, viewportY, w - viewportX - viewportWidth + 1, viewportHeight);
-    matte.endFill();
-  };
-  fit();
-  if (!texture.valid && texture.baseTexture && typeof texture.baseTexture.once === "function") texture.baseTexture.once("loaded", fit);
-  backgroundLayer.addChild(sprite);
-  backgroundLayer.addChild(matte);
-}
-
-function drawResearchGridBackground(w, h) {
-  const grid = new PIXI.Graphics();
-  grid.lineStyle(1, 0xec922d, 0.08);
-  const step = 36;
-  for (let x = (w * 0.5) % step; x <= w; x += step) {
-    grid.moveTo(x, 0);
-    grid.lineTo(x, h);
-  }
-  for (let y = (h * 0.5) % step; y <= h; y += step) {
-    grid.moveTo(0, y);
-    grid.lineTo(w, y);
-  }
-  backgroundLayer.addChild(grid);
-}
-
-function activeLipSyncProfile() {
-  const profile = activeModelProfile?.lipSync || {};
-  return {
-    openMultiplier: clamp(toNumber(profile.openMultiplier, 1.2), 0.5, 2.2),
-    formMultiplier: clamp(toNumber(profile.formMultiplier, 1.12), 0.4, 1.8),
-    formOffset: clamp(toNumber(profile.formOffset, 0), -0.5, 0.5),
-    openSmoothing: clamp(toNumber(profile.openSmoothing, 0.5), 0.08, 0.8),
-    formSmoothing: clamp(toNumber(profile.formSmoothing, 0.34), 0.08, 0.8),
-  };
-}
-
-const DEFAULT_EYE_VISIBILITY_COMPENSATION = Object.freeze({
-  sustainedDelayMs: 240,
-  minimumVisibleOpening: 0.42,
-  closeThreshold: 0.32,
-  families: Object.freeze({
-    default: Object.freeze([
-      Object.freeze([0, 0, 0, 0]),
-      Object.freeze([0.18, 0.08, 0, 0]),
-      Object.freeze([0.42, 0.54, -0.08, -0.12]),
-      Object.freeze([0.62, 1, 0, 0]),
-    ]),
-  }),
-});
 
 const DEFAULT_HEAD_TURN_PROFILE = Object.freeze({
   maxYaw: 30,
@@ -8415,72 +4588,8 @@ const DEFAULT_HEAD_TURN_PROFILE = Object.freeze({
   springDamping: 0.88,
 });
 
-function eyeVisibilityFamily() {
-  const visualEmotion = effectiveVisualEmotion();
-  if (visualEmotion === "furious") return "coldGlance";
-  if (["amused", "laughing", "teasing", "affectionate"].includes(visualEmotion)) return "smile";
-  return "default";
-}
-
-function activeEyeVisibilityCompensation() {
-  const configured = activeModelProfile?.eyeVisibilityCompensation;
-  const profile = configured && typeof configured === "object"
-    ? configured
-    : DEFAULT_EYE_VISIBILITY_COMPENSATION;
-  const families = profile.families && typeof profile.families === "object"
-    ? profile.families
-    : DEFAULT_EYE_VISIBILITY_COMPENSATION.families;
-  const requested = families[eyeVisibilityFamily()];
-  const fallback = families.default || DEFAULT_EYE_VISIBILITY_COMPENSATION.families.default;
-  return {
-    sustainedDelayMs: clamp(toNumber(profile.sustainedDelayMs, 240), 80, 1200),
-    minimumVisibleOpening: clamp(toNumber(profile.minimumVisibleOpening, 0.42), 0.32, 0.62),
-    closeThreshold: clamp(toNumber(profile.closeThreshold, 0.32), 0.16, 0.46),
-    points: Array.isArray(requested) && requested.length >= 2 ? requested : fallback,
-  };
-}
-
-function sampleEyeVisibilityCurve(points, eyeOpening) {
-  const valid = (Array.isArray(points) ? points : [])
-    .filter(point => Array.isArray(point) && point.length >= 3)
-    .map(point => [
-      clamp(toNumber(point[0], 0), 0, 1),
-      clamp(toNumber(point[1], 1), 0, 1),
-      clamp(toNumber(point[2], 0), -0.35, 0.35),
-      clamp(toNumber(point[3], 0), -0.25, 0.1),
-    ])
-    .sort((a, b) => a[0] - b[0]);
-  if (!valid.length) return { gazeGain: 1, offsetY: 0, pupilScale: 0 };
-  if (eyeOpening <= valid[0][0]) {
-    return { gazeGain: valid[0][1], offsetY: valid[0][2], pupilScale: valid[0][3] };
-  }
-  for (let index = 1; index < valid.length; index += 1) {
-    const left = valid[index - 1];
-    const right = valid[index];
-    if (eyeOpening > right[0]) continue;
-    const amount = smoothstep((eyeOpening - left[0]) / Math.max(0.001, right[0] - left[0]));
-    return {
-      gazeGain: left[1] + (right[1] - left[1]) * amount,
-      offsetY: left[2] + (right[2] - left[2]) * amount,
-      pupilScale: left[3] + (right[3] - left[3]) * amount,
-    };
-  }
-  const last = valid[valid.length - 1];
-  return { gazeGain: last[1], offsetY: last[2], pupilScale: last[3] };
-}
-
-function stableExpressionEyeOpening(rawOpening, profile) {
-  const opening = clamp(toNumber(rawOpening, 1), 0, 1);
-  const closeThreshold = Math.min(
-    profile.minimumVisibleOpening - 0.04,
-    profile.closeThreshold
-  );
-  if (opening <= closeThreshold) return 0;
-  return Math.max(profile.minimumVisibleOpening, opening);
-}
-
 function activeHeadTurnProfile() {
-  const configured = activeModelProfile?.headTurn;
+  const configured = sceneSnapshot().activeProfile?.headTurn;
   const profile = configured && typeof configured === "object"
     ? configured
     : DEFAULT_HEAD_TURN_PROFILE;
@@ -8495,122 +4604,83 @@ function activeHeadTurnProfile() {
 }
 
 function updateFuriousTurnMotion(delta) {
-  const profile = activeHeadTurnProfile();
-  if (effectiveVisualEmotion() === "furious") {
-    if (pointer.x > profile.pointerSwitchThreshold) furiousTurnTarget = -1;
-    else if (pointer.x < -profile.pointerSwitchThreshold) furiousTurnTarget = 1;
-  } else {
-    furiousTurnTarget = 0;
-  }
-  const seconds = clamp(toNumber(delta, 1) / 60, 0.001, 0.05);
-  const omega = profile.springFrequency;
-  const acceleration = (
-    (furiousTurnTarget - furiousTurnDirection) * omega * omega
-    - 2 * profile.springDamping * omega * furiousTurnVelocity
-  );
-  furiousTurnVelocity += acceleration * seconds;
-  furiousTurnDirection = clamp(
-    furiousTurnDirection + furiousTurnVelocity * seconds,
-    -1.05,
-    1.05
-  );
-  if (Math.abs(furiousTurnTarget - furiousTurnDirection) < 0.001 && Math.abs(furiousTurnVelocity) < 0.001) {
-    furiousTurnDirection = furiousTurnTarget;
-    furiousTurnVelocity = 0;
-  }
-  return profile;
+  return expressionController?.updateFuriousTurnMotion(delta) || activeHeadTurnProfile();
 }
 
 function furiousColdGlanceWeight(now = performance.now()) {
   if (effectiveVisualEmotion() !== "furious") return 0;
-  const age = Math.max(0, now - emotionEnteredAt);
+  const age = Math.max(0, now - expressionSnapshot().emotionEnteredAt);
   if (age < 2400) return 0;
   const phase = (age - 2400) % 8200;
   if (phase > 760) return 0;
   return Math.pow(Math.sin((phase / 760) * Math.PI), 2);
 }
 
-function startledPupilScale(now = performance.now()) {
-  if (effectiveVisualEmotion() !== "startled") return 0;
-  const age = Math.max(0, now - emotionEnteredAt);
-  const snapIn = easeOutCubic(clamp(age / 180, 0, 1));
-  const visualWeight = visualEmotionIntensityWeight(currentEmotionWeight);
-  const intensity = smoothstep(clamp((visualWeight - 0.5) / 1.25, 0, 1));
-  // Param8 already carries the author's surprise-eye deformation. This
-  // virtual channel is only a secondary accent; a second full contraction
-  // made the iris collapse into a dot at ordinary intensity.
-  return -(0.08 + intensity * 0.30) * snapIn * emotionLifecycleWeight(now);
-}
-
 function updateLive2D(delta) {
-  if (!coreModel) return;
+  const scene = sceneSnapshot();
+  if (!scene.coreModel) return;
   try {
-    if (model && typeof model.update === "function") model.update(delta * (1000 / 60));
+    if (scene.model && typeof scene.model.update === "function") scene.model.update(delta * (1000 / 60));
   } catch (error) {
     console.debug("Live2D native update failed:", error);
   }
   const now = performance.now();
-  tickerTime += delta / 60;
-
-  if (now > nextBlink) {
-    blinkUntil = now + 105;
-    nextBlink = now + 1800 + Math.random() * 3400;
-  }
-
-  const blink = now < blinkUntil ? Math.max(0, (blinkUntil - now) / 105) : 0;
-  const eyeOpen = 1 - Math.sin(blink * Math.PI);
-  const breath = 0.5 + Math.sin(tickerTime * 2.2) * 0.42;
-  const idleSway = Math.sin(tickerTime * 0.9);
+  frameController?.advance(delta, { now });
   const speaking = isSpeaking(now);
   updateEmotionLifecycle(now);
   updateProactiveAmbientMood(now);
   updatePositiveAmbientMood(now);
   updateInteractionCoordinator(now);
   updateProactiveInteraction(now);
+  // 生命周期、主动交互和语音协调都可能切换表情；逐帧渲染必须读取同一
+  // 个最新快照，避免恢复动作后仍沿用旧代次的手势或细节。
+  const expression = expressionSnapshot();
+  const visualEmotion = effectiveVisualEmotion();
   const emotion = blendedEmotionTarget();
-  const gesture = now < gestureUntil ? activeGesture : "";
-  const motion = gestureMotion(gesture, currentEmotion, now, speaking);
-  updateLookTargets(now);
-  updateAudioMouthLevel();
-  model.x = modelHome.x;
-  model.y = modelHome.y;
-  model.rotation = 0;
+  const gesture = now < expression.gestureUntil ? expression.activeGesture : "";
+  const motion = gestureMotion(gesture, expression.currentEmotion, now, speaking);
+  updateLookTargets(now, expression, visualEmotion);
+  const frame = frameSnapshot();
+  const { eyeOpen, breath, idleSway } = frame;
+  const lipSample = speechPlayback.sampleLipSync(now, settings.lipSyncEnabled);
+  scene.model.x = scene.modelHome.x;
+  scene.model.y = scene.modelHome.y;
+  scene.model.rotation = 0;
   updateBackgroundMotion(motion, speaking, now);
 
-  const mouthTalk = settings.lipSyncEnabled ? speechMouthOpen(now) : 0;
-  const mouthFormSync = settings.lipSyncEnabled ? speechMouthForm(now) : 0;
-  const lipSync = activeLipSyncProfile();
-  const speakNod = speaking ? Math.sin(tickerTime * 4.2) * 0.28 : 0;
+  const speakNod = speaking ? Math.sin(frame.tickerTime * 4.2) * 0.28 : 0;
   const shyIntensity = Math.max(
     emotionIntensity("shy", now),
     emotionIntensity("flustered", now),
     emotionIntensity("affectionate", now) * 0.55
   );
-  const shyTremble = shyIntensity > 0 ? Math.sin(tickerTime * 8.4) * 0.45 * shyIntensity : 0;
+  const shyTremble = shyIntensity > 0 ? Math.sin(frame.tickerTime * 8.4) * 0.45 * shyIntensity : 0;
   const shyCheekPulse = shyIntensity > 0
-    ? (Math.sin(tickerTime * 3.6) * 0.045 + Math.sin(tickerTime * 1.7) * 0.025) * shyIntensity
+    ? (Math.sin(frame.tickerTime * 3.6) * 0.045 + Math.sin(frame.tickerTime * 1.7) * 0.025) * shyIntensity
     : 0;
   const lifecycle = emotionLifecycleWeight(now);
   const blushLifecycle = blushLifecycleWeight(now);
-  const visualEmotion = effectiveVisualEmotion();
   const annotatedExpressionPlan = activeAnnotatedExpressionPlan(
     visualEmotion,
     lifecycle,
   );
 
-  const eyeContact = clamp(0.68 + (toNumber(currentExpressionDetail.eyeContact, 0.68) - 0.68) * lifecycle, 0, 1);
-  const gazeX = clamp(toNumber(currentExpressionDetail.gazeX, 0) * lifecycle, -0.6, 0.6);
-  const gazeY = clamp(toNumber(currentExpressionDetail.gazeY, 0) * lifecycle, -0.6, 0.6);
-  const tension = clamp(toNumber(currentExpressionDetail.tension, 0) * lifecycle, 0, 1);
+  const eyeContact = clamp(0.68 + (toNumber(expression.currentExpressionDetail.eyeContact, 0.68) - 0.68) * lifecycle, 0, 1);
+  const gazeX = clamp(toNumber(expression.currentExpressionDetail.gazeX, 0) * lifecycle, -0.6, 0.6);
+  const gazeY = clamp(toNumber(expression.currentExpressionDetail.gazeY, 0) * lifecycle, -0.6, 0.6);
+  const tension = clamp(toNumber(expression.currentExpressionDetail.tension, 0) * lifecycle, 0, 1);
   const headTurn = updateFuriousTurnMotion(delta);
+  // 转向弹簧在本帧推进了 controller 状态；角度计算要读推进后的方向，
+  // 其余表达细节仍沿用本帧统一快照。
+  const turnExpression = expressionSnapshot();
   const furiousTurnDegrees = visualEmotion === "furious"
-    ? furiousTurnDirection * headTurn.maxYaw * lifecycle
+    ? turnExpression.furiousTurnDirection * headTurn.maxYaw * lifecycle
     : 0;
   const furiousBodyTurn = visualEmotion === "furious"
-    ? furiousTurnDirection * headTurn.bodyMax * lifecycle
+    ? turnExpression.furiousTurnDirection * headTurn.bodyMax * lifecycle
     : 0;
   const angleX = clamp(
-    headLook.x * (16 + eyeContact * 6)
+    frame.headLook.x * (16 + eyeContact * 6)
       + idleSway * 1.1
       + shyTremble
       + motion.headX
@@ -8619,24 +4689,24 @@ function updateLive2D(delta) {
     -60,
     60
   );
-  const angleY = clamp(-headLook.y * (14 + eyeContact * 5) + Math.sin(tickerTime * 0.7) * 1.2 + speakNod + motion.headY + (emotion.ParamAngleY || 0), -30, 30);
-  const angleZ = clamp(headLook.x * -3.2 + Math.sin(tickerTime * 0.55) * 1.2 - shyTremble * 1.3 + motion.headZ + (emotion.ParamAngleZ || 0), -30, 30);
-  const bodyX = clamp(headLook.x * 2.2 + idleSway * 1.5 + (speaking ? Math.sin(tickerTime * 3.2) * 0.75 : 0) + motion.bodyX + furiousBodyTurn, -10, 10);
-  const bodyY = clamp(Math.sin(tickerTime * 1.05) * 0.55 + (speaking ? Math.sin(tickerTime * 2.6) * 0.42 : 0) + motion.bodyY, -10, 10);
-  const bodyZ = clamp(Math.sin(tickerTime * 0.38) * 0.82 + (speaking ? Math.sin(tickerTime * 2.15) * 0.48 : 0) + motion.bodyZ, -10, 10);
+  const angleY = clamp(-frame.headLook.y * (14 + eyeContact * 5) + Math.sin(frame.tickerTime * 0.7) * 1.2 + speakNod + motion.headY + (emotion.ParamAngleY || 0), -30, 30);
+  const angleZ = clamp(frame.headLook.x * -3.2 + Math.sin(frame.tickerTime * 0.55) * 1.2 - shyTremble * 1.3 + motion.headZ + (emotion.ParamAngleZ || 0), -30, 30);
+  const bodyX = clamp(frame.headLook.x * 2.2 + idleSway * 1.5 + (speaking ? Math.sin(frame.tickerTime * 3.2) * 0.75 : 0) + motion.bodyX + furiousBodyTurn, -10, 10);
+  const bodyY = clamp(Math.sin(frame.tickerTime * 1.05) * 0.55 + (speaking ? Math.sin(frame.tickerTime * 2.6) * 0.42 : 0) + motion.bodyY, -10, 10);
+  const bodyZ = clamp(Math.sin(frame.tickerTime * 0.38) * 0.82 + (speaking ? Math.sin(frame.tickerTime * 2.15) * 0.48 : 0) + motion.bodyZ, -10, 10);
   const furiousGlance = furiousColdGlanceWeight(now);
   const shyAvertedGazeX = ["shy", "flustered"].includes(visualEmotion)
-    ? shyGazeAwayDirection * (
-      0.12 + clamp(visualEmotionIntensityWeight(currentEmotionWeight), 0, 1.55) * 0.06
+    ? frame.shyGazeAwayDirection * (
+      0.12 + clamp(visualEmotionIntensityWeight(expression.currentEmotionWeight), 0, 1.55) * 0.06
     )
     : 0;
   const semanticGazeX = visualEmotion === "furious"
-    ? furiousTurnDirection * 0.52 * furiousGlance
+    ? turnExpression.furiousTurnDirection * 0.52 * furiousGlance
     : ["shy", "flustered"].includes(visualEmotion)
       ? shyAvertedGazeX
       : gazeX;
-  const rawEyeBallX = clamp(eyeLook.x * 1.15 * eyeContact + semanticGazeX + motion.eyeX + (emotion.ParamEyeBallX || 0), -1, 1);
-  const rawEyeBallY = clamp(-eyeLook.y * 1.22 * eyeContact + gazeY + motion.eyeY + (emotion.ParamEyeBallY || 0), -1, 1);
+  const rawEyeBallX = clamp(frame.eyeLook.x * 1.15 * eyeContact + semanticGazeX + motion.eyeX + (emotion.ParamEyeBallX || 0), -1, 1);
+  const rawEyeBallY = clamp(-frame.eyeLook.y * 1.22 * eyeContact + gazeY + motion.eyeY + (emotion.ParamEyeBallY || 0), -1, 1);
   const gestureEyeOpen = clamp(1 - (motion.eyeClose || 0), 0, 1);
   const expressionEyeLOpen = clamp(
     Math.max(emotion.ParamEyeLOpen ?? 1, furiousGlance * 0.34),
@@ -8648,164 +4718,52 @@ function updateLive2D(delta) {
     0,
     1
   );
-  const eyeVisibility = activeEyeVisibilityCompensation();
-  const stableExpressionEyeLOpen = stableExpressionEyeOpening(
-    expressionEyeLOpen * gestureEyeOpen,
-    eyeVisibility
-  );
-  const stableExpressionEyeROpen = stableExpressionEyeOpening(
-    expressionEyeROpen * gestureEyeOpen,
-    eyeVisibility
-  );
-  const persistentEyeOpening = Math.min(stableExpressionEyeLOpen, stableExpressionEyeROpen);
-  if (persistentEyeOpening < 0.68) {
-    if (!narrowEyeExpressionSince) narrowEyeExpressionSince = now;
-  } else {
-    narrowEyeExpressionSince = 0;
-  }
-  const sustainedNarrowEye = narrowEyeExpressionSince > 0
-    && now - narrowEyeExpressionSince >= eyeVisibility.sustainedDelayMs;
-  const curve = sampleEyeVisibilityCurve(eyeVisibility.points, persistentEyeOpening);
-  // A normal blink crosses the ugly half-open interval too quickly to justify
-  // visible Y movement. Sustained expression squints use the model-specific
-  // curve; momentary blinks only recenter gaze.
-  const blinkGazeGain = 0.12 + eyeOpen * 0.88;
-  const gazeGain = sustainedNarrowEye ? curve.gazeGain : blinkGazeGain;
-  const eyeBallX = clamp(rawEyeBallX * gazeGain, -1, 1);
-  const eyeBallY = clamp(
-    rawEyeBallY * gazeGain + (sustainedNarrowEye ? curve.offsetY : 0),
-    -1,
-    1
-  );
-  const visibilityPupilScale = sustainedNarrowEye ? curve.pupilScale : 0;
-  const shockPupilScale = startledPupilScale(now);
-  // Both channels use negative values for a smaller iris/pupil. Keep the
-  // stronger contraction instead of allowing the eye-visibility guard to
-  // overwrite the shock response.
-  const pupilScale = Math.min(visibilityPupilScale, shockPupilScale);
-  const annotatedPupilScales = annotatedExpressionPlan?.pupilScales || [1, 1];
-  runtimeAuthorBlushOpacityTarget = clamp(
-    toNumber(annotatedExpressionPlan?.authorBlushOpacity, 1),
-    0,
-    1,
-  );
-  runtimeAuthorBlushOpacityValue += (
-    runtimeAuthorBlushOpacityTarget - runtimeAuthorBlushOpacityValue
-  ) * 0.24;
-  const pupilVisibilityMultiplier = clamp(1 + pupilScale, 0.26, 1);
-  runtimePupilScaleTargets.left = clamp(
-    toNumber(annotatedPupilScales[0], 1) * pupilVisibilityMultiplier,
-    0.35,
-    1.35,
-  );
-  runtimePupilScaleTargets.right = clamp(
-    toNumber(annotatedPupilScales[1], 1) * pupilVisibilityMultiplier,
-    0.35,
-    1.35,
-  );
-  runtimePupilScaleValues.left += (
-    runtimePupilScaleTargets.left - runtimePupilScaleValues.left
-  ) * 0.24;
-  runtimePupilScaleValues.right += (
-    runtimePupilScaleTargets.right - runtimePupilScaleValues.right
-  ) * 0.24;
-  const leftEyeOpen = clamp(stableExpressionEyeLOpen * eyeOpen, 0, 1);
-  const rightEyeOpen = clamp(stableExpressionEyeROpen * eyeOpen, 0, 1);
-
   // AiPoet's original random motions use yaw well beyond ±30 degrees. Each
   // model declares its own safe limit so the classic model can turn strongly
   // without forcing the same range onto ordinary Cubism rigs.
   const yawLimit = visualEmotion === "furious" ? headTurn.maxYaw : 30;
-  setSmoothParam("ParamAngleX", clamp(angleX, -yawLimit, yawLimit), visualEmotion === "furious" ? 0.28 : 0.2);
-  setSmoothParam("ParamAngleY", angleY, 0.18);
-  setSmoothParam("ParamAngleZ", angleZ, 0.18);
-  setSmoothParam(
-    "Param14",
-    visualEmotion === "furious"
-      ? furiousTurnDirection * headTurn.auxiliaryMax * lifecycle
+  visualParameterController?.render({
+    now,
+    frame,
+    speaking,
+    expression,
+    visualEmotion,
+    emotion,
+    motion,
+    lipSample,
+    tension,
+    blushLifecycle,
+    shyCheekPulse,
+    annotatedExpressionPlan,
+    angleX: clamp(angleX, -yawLimit, yawLimit),
+    angleY,
+    angleZ,
+    param14: visualEmotion === "furious"
+      ? turnExpression.furiousTurnDirection * headTurn.auxiliaryMax * lifecycle
       : clamp(angleX / 30, -1, 1),
-    visualEmotion === "furious" ? 0.28 : 0.16
-  );
-  setSmoothParam("Param15", clamp(angleY / 30, -1, 1), 0.16);
-  setSmoothParam("ParamBodyAngleX", bodyX, 0.16);
-  setSmoothParam("ParamBodyAngleY", bodyY, 0.16);
-  setSmoothParam("ParamBodyAngleZ", bodyZ, 0.16);
-  setSmoothParam("Param17", clamp(bodyX / 10 + motion.stageX / 28, -1, 1), 0.14);
-  setSmoothParam("ParamEyeBallX", eyeBallX, 0.22);
-  setSmoothParam("ParamEyeBallY", eyeBallY, 0.22);
-  setMappedSmoothParam("pupilScale", pupilScale, 0.24);
-  setSmoothParam("ParamEyeLOpen", leftEyeOpen, 0.42);
-  setSmoothParam("ParamEyeROpen", rightEyeOpen, 0.42);
-  setMappedSmoothParam(
-    "eyeSmile",
-    clamp((emotion.ParamEyeSmile || 0) + motion.eyeSmile, 0, 1),
-    0.42,
-    "ParamEyeLSmile"
-  );
-  setSmoothParam(
-    "ParamMouthOpenY",
-    clamp(Math.max(
-      mouthTalk * lipSync.openMultiplier,
-      Number.isFinite(annotatedExpressionPlan?.mouthOpenY)
-        ? annotatedExpressionPlan.mouthOpenY
-        : emotion.ParamMouthOpenY || 0,
-    ), 0, 1),
-    lipSync.openSmoothing
-  );
-  setSmoothParam(
-    "ParamMouthForm",
-    mouthCurveWithSpeech(
-      mouthTemplateCurveForEmotion(
-        visualEmotion,
-        clamp(
-          (emotion.ParamMouthForm || 0) + motion.mouthSmile + lipSync.formOffset,
-          -1,
-          1
-        ),
-        annotatedExpressionPlan,
-      ),
-      mouthFormSync * lipSync.formMultiplier
-    ),
-    lipSync.formSmoothing
-  );
-  setMappedSmoothParam("browLY", clamp(emotion.ParamBrowLY || 0, -1, 1), 0.42, "ParamBrowLY");
-  setMappedSmoothParam("browRY", clamp(emotion.ParamBrowRY || 0, -1, 1), 0.42, "ParamBrowRY");
-  setMappedSmoothParam("browLForm", clamp(emotion.ParamBrowLForm || 0, -1, 1), 0.42, "ParamBrowLForm");
-  setMappedSmoothParam("browRForm", clamp(emotion.ParamBrowRForm || 0, -1, 1), 0.42, "ParamBrowRForm");
-  applyAnnotatedFaceLayers(annotatedExpressionPlan);
-  // The arm controller owns time-based easing; a second per-frame filter
-  // would slow it again and prolong the rig's blended sleeve state.
-  setSmoothParam("Param16", modelArmPoseTarget((emotion.Param16 ?? 0.22) + motion.arms, now), 1);
-  setSmoothParam("Param11", clamp((emotion.Param11 || 0) + tension * 0.12, -1, 1), 0.34);
-  setSmoothParam("Param12", clamp((emotion.Param12 || 0) + tension * 0.1, -1, 1), 0.34);
-  const blushIntensity = clamp(toNumber(currentExpressionDetail.blushIntensity, emotion.ParamCheek || 0), 0, 1);
-  const dynamicBlush = blushIntensity > 0
-    ? blushIntensity * blushLifecycle
-      + shyCheekPulse * Math.max(0.35, blushLifecycle)
-      + (speaking ? 0.025 * blushLifecycle : 0)
-    : 0;
-  setMappedSmoothParam(
-    "blush",
-    clamp(dynamicBlush, 0, 1),
-    ["shy", "flustered", "affectionate"].includes(visualEmotion) ? 0.12 : 0.14,
-    "ParamCheek"
-  );
-  setSmoothParam("ParamBreath", clamp(breath + motion.breath, 0, 1), 0.16);
+    param15: clamp(angleY / 30, -1, 1),
+    bodyX,
+    bodyY,
+    bodyZ,
+    param17: clamp(bodyX / 10 + motion.stageX / 28, -1, 1),
+    eyeData: {
+      rawEyeBallX,
+      rawEyeBallY,
+      expressionEyeLOpen: expressionEyeLOpen * gestureEyeOpen,
+      expressionEyeROpen: expressionEyeROpen * gestureEyeOpen,
+    },
+  });
   updateNativeInteraction(now);
   freezeModelBoundBackground();
   if (DEV_MODE) updateDeveloperSpeechPanel();
-  if (DEV_MODE) updateDeveloperTouchOverlay();
+  if (DEV_MODE) touchInteractionController?.updateDeveloperOverlay();
+  // 头发参数保持在 native 固定层之后写入，沿用旧有覆盖顺序。
+  visualParameterController?.renderHair({ frame, motion });
 
-  const hair = Math.sin(tickerTime * 1.25) * 0.28 + headLook.x * 0.14 + motion.hair;
-  setSmoothParam("ParamHairFront", clamp(hair, -1, 1), 0.12);
-  setSmoothParam("ParamHairSide", clamp(hair * 0.82, -1, 1), 0.12);
-  setSmoothParam("ParamHairBack", clamp(hair * 0.64, -1, 1), 0.12);
-  setSmoothParam("Param13", clamp(hair * 0.42, -1, 1), 0.12);
-  setSmoothParam("Param18", clamp(hair * 0.36, -1, 1), 0.12);
-  applyDeveloperParameterOverrides();
+  developerParameterLabController?.applyParameterOverrides();
   try {
-    coreModel.update();
-    applyDeveloperDrawableOverrides();
+    sceneSnapshot().coreModel.update();
+    developerParameterLabController?.applyDrawableOverrides();
   } catch {
     // Cubism 2 compatibility wrappers may update drawables elsewhere.
   }
@@ -8816,35 +4774,34 @@ function emotionSemanticsFor(emotion) {
 }
 
 function effectiveVisualEmotion() {
-  return emotionSemanticsFor(currentEmotion).role === "cognitive"
-    ? cognitiveOverlayBaseEmotion
-    : currentEmotion;
+  return expressionController?.effectiveVisualEmotion() || "neutral";
 }
 
 function effectiveExpressionRuntime() {
-  if (DEV_MODE && developerExpressionTrainingLoaded) return developerExpressionRuntime;
+  const developerRuntime = developerParameterLabController?.getExpressionRuntime?.();
+  if (DEV_MODE && developerRuntime) return developerRuntime;
   return settings.expressionRuntime && typeof settings.expressionRuntime === "object"
     ? settings.expressionRuntime
     : { activeByModel: {} };
 }
 
 function activeRigModelId() {
-  return activeModelProfile?.baseModelId || activeModelProfile?.id || "";
+  return sceneSnapshot().activeProfile?.baseModelId || sceneSnapshot().activeProfile?.id || "";
 }
 
 function modelArmPoseTarget(value, now = performance.now()) {
   return armMotionController.update(value, {
     now,
-    mode: activeModelProfile?.armPoseMode || "continuous",
-    modelId: activeModelProfile?.id || "",
+    mode: sceneSnapshot().activeProfile?.armPoseMode || "continuous",
+    modelId: sceneSnapshot().activeProfile?.id || "",
   });
 }
 
-function activeRuntimeExpressionEntry(emotion = currentEmotion) {
+function activeRuntimeExpressionEntry(emotion = expressionSnapshot().currentEmotion) {
   const activeByModel = effectiveExpressionRuntime()?.activeByModel || {};
   // Clothing variants share a rig and its trained face, while allowing their
   // own per-emotion overrides without copying or migrating saved samples.
-  const modelIds = [activeModelProfile?.id, activeRigModelId()];
+  const modelIds = [sceneSnapshot().activeProfile?.id, activeRigModelId()];
   for (const modelId of modelIds) {
     const entry = activeByModel[modelId]?.[emotion];
     if (entry?.parameters && typeof entry.parameters === "object") return entry;
@@ -8859,19 +4816,21 @@ function runtimeEmotionTarget(emotion = "neutral") {
 }
 
 function visualTargetForEmotionState() {
+  const expression = expressionSnapshot();
   const neutral = runtimeEmotionTarget("neutral");
-  const foreground = runtimeEmotionTarget(currentEmotion);
+  const foreground = runtimeEmotionTarget(expression.currentEmotion);
   // Developer emotion controls are a visual inspection tool: show the chosen
   // face itself instead of composing it over whichever stable emotion happened
   // to be active before the tester selected it.
-  if (DEV_MODE && developerEmotionManualBlush !== null) return foreground;
-  const semantics = emotionSemanticsFor(currentEmotion);
+  const manualBlush = developerEmotionController?.getManualBlush?.();
+  if (DEV_MODE && manualBlush !== null && manualBlush !== undefined) return foreground;
+  const semantics = emotionSemanticsFor(expression.currentEmotion);
   const overlayStrength = EMOTION_OVERLAY_STRENGTH[semantics.role];
   if (!overlayStrength) return foreground;
 
   const baseEmotion = semantics.role === "cognitive"
-    ? cognitiveOverlayBaseEmotion
-    : stableEmotion;
+    ? expression.cognitiveOverlayBaseEmotion
+    : expression.stableEmotion;
   const base = runtimeEmotionTarget(baseEmotion);
   const weakBaseIntensity = visualEmotionIntensityWeight(COGNITIVE_BASE_RAW_INTENSITY);
   const keys = new Set([
@@ -8898,7 +4857,7 @@ function visualTargetForEmotionState() {
   return composed;
 }
 
-function visualEmotionIntensityWeight(rawIntensity = currentEmotionWeight) {
+function visualEmotionIntensityWeight(rawIntensity = expressionSnapshot().currentEmotionWeight) {
   const mapper = globalThis.AmadeusEmotionIntensity;
   if (mapper && typeof mapper.map === "function") {
     return clamp(mapper.map(rawIntensity), 0.15, 1.55);
@@ -8910,6 +4869,7 @@ function activeAnnotatedExpressionPlan(
   visualEmotion = effectiveVisualEmotion(),
   lifecycle = emotionLifecycleWeight()
 ) {
+  const expression = expressionSnapshot();
   const runtimeEntry = activeRuntimeExpressionEntry(visualEmotion);
   if (runtimeEntry) {
     const parameters = runtimeEntry.parameters || {};
@@ -8938,9 +4898,9 @@ function activeAnnotatedExpressionPlan(
   if (activeRigModelId() !== "aipoet-kurisu") return null;
   const mapper = globalThis.AmadeusAnnotatedExpressionMap;
   if (!mapper || typeof mapper.plan !== "function") return null;
-  const planIntensity = emotionSemanticsFor(currentEmotion).role === "cognitive"
+  const planIntensity = emotionSemanticsFor(expression.currentEmotion).role === "cognitive"
     ? visualEmotionIntensityWeight(COGNITIVE_BASE_RAW_INTENSITY)
-    : visualEmotionIntensityWeight(currentEmotionWeight);
+    : visualEmotionIntensityWeight(expression.currentEmotionWeight);
   return mapper.plan(
     visualEmotion,
     planIntensity,
@@ -8993,10 +4953,11 @@ function emotionParameterWeight(key, emotionWeight, lifecycle) {
 }
 
 function blendedEmotionTarget() {
+  const expression = expressionSnapshot();
   const neutral = emotionTargets.neutral;
   const target = visualTargetForEmotionState();
   const lifecycle = emotionLifecycleWeight();
-  const emotionWeight = visualEmotionIntensityWeight(currentEmotionWeight);
+  const emotionWeight = visualEmotionIntensityWeight(expression.currentEmotionWeight);
   const keys = new Set([...Object.keys(neutral), ...Object.keys(target)]);
   const result = {};
   keys.forEach(key => {
@@ -9008,203 +4969,40 @@ function blendedEmotionTarget() {
   return mirrorAnnotatedExpressionParameters(result, effectiveVisualEmotion());
 }
 
-function updateLookTargets(now = performance.now()) {
-  const visualEmotion = effectiveVisualEmotion();
-  const avoidsDirectGaze = ["shy", "flustered"].includes(visualEmotion);
-  // Use a centre dead-zone so crossing the face does not make the eyes snap
-  // left/right. Shy eyes choose the side opposite the pointer and retain it
-  // until the pointer clearly crosses the centre.
-  if (avoidsDirectGaze) {
-    if (pointer.x > 0.14) shyGazeAwayDirection = -1;
-    else if (pointer.x < -0.14) shyGazeAwayDirection = 1;
-  }
-  if (now > eyeDrift.nextAt) {
-    const shyBias = avoidsDirectGaze ? shyGazeAwayDirection * 0.08 : 0;
-    eyeDrift = {
-      x: clamp((Math.random() - 0.5) * 0.26 + shyBias, -0.32, 0.32),
-      y: clamp((Math.random() - 0.5) * 0.16 + (currentEmotion === "thinking" ? -0.08 : 0), -0.22, 0.22),
-      nextAt: now + 850 + Math.random() * 1700,
-    };
-  }
-  // Eyes lead; near the edge, the head joins because eyeball-only tracking is exhausted.
-  const overflowX = Math.sign(pointer.x) * clamp((Math.abs(pointer.x) - 0.56) / 0.44, 0, 1);
-  const overflowY = Math.sign(pointer.y) * clamp((Math.abs(pointer.y) - 0.48) / 0.52, 0, 1);
-  const headTarget = visualEmotion === "furious"
-    ? { x: 0, y: 0 }
-    : {
-      x: clamp(pointer.x * 0.18 + overflowX * 0.38, -0.54, 0.54),
-      y: clamp(pointer.y * 0.16 + overflowY * 0.4, -0.54, 0.54),
-    };
-  const eyeTarget = visualEmotion === "furious"
-    ? { x: 0, y: 0 }
-    : avoidsDirectGaze
-      ? {
-        x: shyGazeAwayDirection * (0.48 + clamp(Math.abs(pointer.x), 0, 1) * 0.14),
-        y: clamp(pointer.y * 0.38 + eyeDrift.y * 0.22, -0.46, 0.46),
-      }
-    : {
-      x: clamp(pointer.x * 0.9 + eyeDrift.x * 0.55, -0.92, 0.92),
-      y: clamp(pointer.y * 0.98 + eyeDrift.y * 0.45, -0.96, 0.96),
-    };
-  headLook.x += (headTarget.x - headLook.x) * 0.055;
-  headLook.y += (headTarget.y - headLook.y) * 0.055;
-  eyeLook.x += (eyeTarget.x - eyeLook.x) * 0.2;
-  eyeLook.y += (eyeTarget.y - eyeLook.y) * 0.2;
+function updateLookTargets(
+  now = performance.now(),
+  expression = expressionSnapshot(),
+  visualEmotion = effectiveVisualEmotion(),
+) {
+  return frameController?.updateLookTargets({ now, expression, visualEmotion });
 }
 
 function gestureMotion(gesture, emotion, now = performance.now(), speaking = false) {
-  const elapsed = Math.max(0, now - gestureEnteredAt);
-  const enter = easeOutCubic(clamp(elapsed / 340, 0, 1));
-  const exit = clamp((gestureUntil - now) / 340, 0, 1);
-  const weight = clamp(Math.min(enter, exit) || 0, 0, 1);
-  const phase = elapsed / 1000;
-  const talk = speaking ? Math.sin(tickerTime * 3.1) * 0.7 : 0;
-  const motion = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0, stageX: 0, stageY: 0, stageTilt: 0, eyeX: 0, eyeY: 0, eyeClose: 0, eyeSmile: 0, mouthSmile: 0, breath: 0, hair: 0, arms: 0 };
-
-  if (gesture === "nod") {
-    motion.headY = (Math.sin(phase * Math.PI * 4.2) * 5.2 - 2.1) * weight;
-    motion.bodyX = Math.sin(phase * Math.PI * 2.1) * 2.8 * weight;
-    motion.stageY = Math.sin(phase * Math.PI * 4.2) * 5 * weight;
-    motion.eyeY = -0.08 * weight;
-    motion.arms = 0.08 * weight;
-  } else if (gesture === "tilt") {
-    motion.headX = -3.2 * weight;
-    motion.headZ = (10.8 + Math.sin(phase * Math.PI * 1.6) * 3.8) * weight;
-    motion.bodyX = -7.2 * weight;
-    motion.bodyZ = -1.2 * weight;
-    motion.stageTilt = 2.2 * weight;
-    motion.eyeX = 0.18 * weight;
-    motion.arms = 0.18 * weight;
-  } else if (gesture === "look_away") {
-    const direction = emotion === "furious"
-      ? furiousTurnDirection
-      : (lookAwayDirection || 1);
-    const baseTurn = emotion === "furious" ? 0 : emotion === "annoyed" ? 8.5 : 18;
-    const turn = baseTurn + Math.sin(phase * Math.PI * 1.15) * (emotion === "annoyed" ? 1.2 : 2);
-    motion.headX = direction * turn * weight;
-    motion.headZ = -direction * 2.8 * weight;
-    motion.bodyX = direction * (emotion === "annoyed" ? 2.6 : 5.2) * weight;
-    motion.bodyZ = direction * 2.2 * weight;
-    motion.stageX = direction * 3.2 * weight;
-    motion.stageTilt = -direction * 0.7 * weight;
-    motion.eyeX = direction * (emotion === "furious" ? 0 : emotion === "annoyed" ? 0.14 : 0.28) * weight;
-    motion.eyeY = 0.04 * weight;
-    motion.arms = 0.08 * weight;
-  } else if (gesture === "lean") {
-    motion.headY = -2.2 * weight + talk * 0.35 * weight;
-    motion.bodyX = 8.5 * weight;
-    motion.bodyY = -1.5 * weight;
-    motion.stageY = -12 * weight;
-    motion.stageX = 5 * weight;
-    motion.eyeY = 0.08 * weight;
-    motion.breath = 0.08 * weight;
-    motion.arms = -0.12 * weight;
-  } else if (gesture === "soften") {
-    motion.headY = -4.5 * weight;
-    motion.headZ = -2.1 * weight;
-    motion.bodyX = -4.2 * weight;
-    motion.stageY = 6 * weight;
-    motion.stageTilt = -0.8 * weight;
-    motion.eyeY = 0.16 * weight;
-    motion.breath = -0.08 * weight;
-    motion.arms = 0.22 * weight;
-  } else if (gesture === "smile") {
-    motion.headY = -3.8 * weight;
-    motion.headZ = Math.sin(phase * Math.PI * 1.4) * 1.6 * weight;
-    motion.bodyX = 3.6 * weight;
-    motion.stageY = -5 * weight;
-    motion.eyeClose = 0.98 * weight;
-    motion.eyeSmile = 0.38 * weight;
-    motion.mouthSmile = 0.08 * weight;
-    motion.breath = 0.1 * weight;
-    motion.arms = 0.14 * weight;
-  } else if (gesture === "laugh") {
-    const laughBeat = Math.sin(phase * Math.PI * 4.6);
-    const laughPulse = Math.abs(laughBeat);
-    motion.headY = (-2.8 + laughBeat * 2.6) * weight;
-    motion.headZ = Math.sin(phase * Math.PI * 1.8) * 2.2 * weight;
-    motion.bodyX = 4.8 * weight;
-    motion.bodyY = laughPulse * 1.8 * weight;
-    motion.stageY = (-7 + laughPulse * 3.2) * weight;
-    motion.eyeClose = (0.28 + laughPulse * 0.22) * weight;
-    motion.eyeSmile = 0.18 * weight;
-    motion.mouthSmile = 0.12 * weight;
-    motion.breath = (0.08 + laughPulse * 0.1) * weight;
-    motion.hair = laughBeat * 0.12 * weight;
-    motion.arms = 0.18 * weight;
-  } else if (gesture === "glitch") {
-    const snap = Math.sign(Math.sin(phase * 42)) * (0.7 + Math.sin(phase * 17) * 0.3);
-    motion.headX = snap * 5.8 * weight;
-    motion.headZ = -snap * 6.5 * weight;
-    motion.bodyZ = snap * 3.4 * weight;
-    motion.stageX = snap * 7 * weight;
-    motion.stageTilt = snap * 1.8 * weight;
-    motion.hair = snap * 0.5 * weight;
-    motion.arms = snap * 0.12 * weight;
-  } else if (gesture === "tap") {
-    motion.headZ = Math.sin(phase * Math.PI * 5) * 3.4 * weight;
-    motion.bodyX = Math.sin(phase * Math.PI * 3) * 1.7 * weight;
-    motion.arms = -0.18 * weight;
-  } else if (gesture === "recoil") {
-    motion.headY = 4.5 * weight;
-    motion.bodyX = -9.2 * weight;
-    motion.bodyZ = -2.6 * weight;
-    motion.stageY = 14 * weight;
-    motion.stageX = -9 * weight;
-    motion.eyeY = -0.14 * weight;
-    motion.arms = -0.34 * weight;
-  } else if (gesture === "explain") {
-    motion.headX = Math.sin(phase * Math.PI * 1.7) * 3.2 * weight;
-    motion.bodyX = Math.sin(phase * Math.PI * 1.2) * 5.2 * weight;
-    motion.bodyZ = Math.sin(phase * Math.PI * 1.4) * 1.8 * weight;
-    motion.stageX = Math.sin(phase * Math.PI * 1.2) * 4 * weight;
-    motion.stageTilt = Math.sin(phase * Math.PI * 1.4) * 0.9 * weight;
-    motion.eyeX = Math.sin(phase * Math.PI * 1.7) * 0.08 * weight;
-    // Explain with one opening, a hold, and a return. A sine wave repeatedly
-    // crossed the arm-pose threshold while the same sentence was playing.
-    motion.arms = -0.26 * weight;
-  } else if (gesture === "perk") {
-    motion.headY = -5.2 * weight;
-    motion.bodyX = 6.4 * weight;
-    motion.stageY = -13 * weight;
-    motion.eyeY = -0.18 * weight;
-    motion.breath = 0.12 * weight;
-    motion.hair = 0.28 * weight;
-    motion.arms = -0.2 * weight;
-  }
-
-  if (!gesture) {
-    const idleEmotion = emotion === "thinking" ? -1 : ["excited", "laughing"].includes(emotion) ? 1 : 0;
-    motion.headX += Math.sin(tickerTime * 0.42) * 1.2;
-    motion.bodyX += Math.sin(tickerTime * 0.34) * (2.4 + Math.abs(idleEmotion) * 0.6);
-    motion.bodyZ += Math.sin(tickerTime * 0.27) * 0.7;
-    motion.stageY += Math.sin(tickerTime * 0.46) * 2.2;
-    motion.stageTilt += Math.sin(tickerTime * 0.25) * 0.28;
-    motion.eyeX += Math.sin(tickerTime * 0.31) * 0.025;
-    motion.arms += Math.sin(tickerTime * 0.33) * 0.04;
-  }
-
-  return motion;
+  return gestureMotionController?.resolve(gesture, emotion, {
+    now,
+    speaking,
+    expression: expressionSnapshot(),
+    frame: frameSnapshot(),
+  }) || {
+    headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0,
+    stageX: 0, stageY: 0, stageTilt: 0, eyeX: 0, eyeY: 0, eyeClose: 0,
+    eyeSmile: 0, mouthSmile: 0, breath: 0, hair: 0, arms: 0,
+  };
 }
-
 function updateBackgroundMotion(motion, speaking, now = performance.now()) {
-  if (backgroundLayer) {
-    backgroundLayer.x = 0;
-    backgroundLayer.y = 0;
-    backgroundLayer.rotation = 0;
-  }
+  backgroundRenderer?.resetMotion();
 }
 
 function setParam(id, value) {
   try {
-    coreModel.setParameterValueById(id, value);
+    sceneSnapshot().coreModel.setParameterValueById(id, value);
   } catch {
     // Imported models can omit optional params.
   }
 }
 
 function installPostMotionRetargeting() {
-  const internalModel = model?.internalModel;
+  const internalModel = sceneSnapshot().model?.internalModel;
   if (!internalModel || typeof internalModel.update !== "function" || internalModel.__amadeusRetargetingInstalled) return;
   const originalUpdate = internalModel.update.bind(internalModel);
   internalModel.update = (...args) => {
@@ -9216,33 +5014,31 @@ function installPostMotionRetargeting() {
 }
 
 function reapplyRetargetedParameters() {
-  if (!coreModel) return;
-  Object.entries(paramValues).forEach(([id, value]) => setParam(id, value));
+  if (!sceneSnapshot().coreModel) return;
+  parameterRenderer?.reapply();
+  mouthParameterRenderer?.reapply();
   freezeModelBoundBackground();
-  applyDeveloperParameterOverrides();
+  developerParameterLabController?.applyParameterOverrides();
   try {
-    coreModel.update();
-    applyDeveloperDrawableOverrides();
+    sceneSnapshot().coreModel.update();
+    developerParameterLabController?.applyDrawableOverrides();
   } catch {
     // Cubism 2 compatibility wrappers may update drawables elsewhere.
   }
 }
 
 function setSmoothParam(id, target, factor = 0.18) {
-  const current = Object.prototype.hasOwnProperty.call(paramValues, id) ? paramValues[id] : target;
-  const value = current + (target - current) * factor;
-  paramValues[id] = value;
-  setParam(id, value);
+  return parameterRenderer?.setSmoothParam(id, target, factor) ?? setParam(id, target);
 }
 
 function mappedParameterIds(channel, fallbackId = "") {
-  const aliases = activeModelProfile?.parameterAliases?.[channel];
+  const aliases = sceneSnapshot().activeProfile?.parameterAliases?.[channel];
   if (Array.isArray(aliases) && aliases.length) return aliases;
   return fallbackId ? [fallbackId] : [];
 }
 
 function setMappedSmoothParam(channel, target, factor = 0.18, fallbackId = "") {
-  mappedParameterIds(channel, fallbackId).forEach(id => setSmoothParam(id, target, factor));
+  parameterRenderer?.setMappedSmoothParam(channel, target, factor, fallbackId);
 }
 
 function setExpressionFix() {
@@ -9251,205 +5047,28 @@ function setExpressionFix() {
 }
 
 function hideModelUiLayers() {
-  const profileHidden = Array.isArray(activeModelProfile?.hiddenParameters)
-    ? activeModelProfile.hiddenParameters
+  const profileHidden = Array.isArray(sceneSnapshot().activeProfile?.hiddenParameters)
+    ? sceneSnapshot().activeProfile.hiddenParameters
     : [];
   [...new Set([...MODEL_UI_HIDE_PARAMS, ...profileHidden])].forEach(id => setParam(id, 0));
 }
 
 function freezeModelBoundBackground() {
-  Object.entries(activeModelProfile?.fixedParameters || {}).forEach(([id, value]) => {
+  Object.entries(sceneSnapshot().activeProfile?.fixedParameters || {}).forEach(([id, value]) => {
     setParam(id, toNumber(value, 0));
   });
-  const hiddenParts = Array.isArray(activeModelProfile?.hiddenParts) ? activeModelProfile.hiddenParts : [];
+  const hiddenParts = Array.isArray(sceneSnapshot().activeProfile?.hiddenParts) ? sceneSnapshot().activeProfile.hiddenParts : [];
   hiddenParts.forEach(id => {
     try {
-      coreModel.setPartOpacityById(id, 0);
+      sceneSnapshot().coreModel.setPartOpacityById(id, 0);
     } catch {
       // Model profiles can list optional background parts.
     }
   });
 }
 
-function planEmotionTransition(nextEmotion, previousEmotion) {
-  const semantics = emotionSemanticsFor(nextEmotion);
-  const previousSemantics = emotionSemanticsFor(previousEmotion);
-  let recovery = semantics.recovery || stableEmotion || "neutral";
-
-  if (semantics.role === "stable") {
-    stableEmotion = nextEmotion;
-    recovery = semantics.recovery || "neutral";
-  } else if (semantics.role === "cognitive" || semantics.role === "stance") {
-    recovery = stableEmotion || "neutral";
-  } else if (nextEmotion === "startled") {
-    recovery = stableEmotion || "neutral";
-  } else if (nextEmotion === "excited") {
-    recovery = emotionSemanticsFor(stableEmotion).family === "positive"
-      ? stableEmotion
-      : "amused";
-  } else if (nextEmotion === "furious") {
-    recovery = "annoyed";
-  }
-
-  emotionRecoveryTarget = recovery === nextEmotion ? "neutral" : recovery;
-  return {
-    semantics,
-    sameFamily: previousSemantics.family === semantics.family,
-    previousRole: previousSemantics.role,
-  };
-}
-
 function setEmotion(emotion = "neutral", gesture = "idle", detail = {}) {
-  if (DEV_MODE && developerEmotionOverride && !detail.developerOverride) {
-    updateDeveloperEmotionPanel();
-    return;
-  }
-  if (DEV_MODE && developerEmotionManualBlush !== null && !detail.developerOverride) {
-    developerEmotionManualBlush = null;
-  }
-  const nextEmotion = emotionTargets[emotion] ? emotion : "neutral";
-  const now = performance.now();
-  const previousEmotion = currentEmotion;
-  const transition = planEmotionTransition(nextEmotion, previousEmotion);
-  const previousDetail = { ...currentExpressionDetail };
-  const previousWeight = currentEmotionWeight;
-  const accumulate = Boolean(detail.accumulateExpression);
-  const composeCognitiveOverlay = transition.semantics.role === "cognitive";
-  if (composeCognitiveOverlay && transition.previousRole !== "cognitive") {
-    cognitiveOverlayBaseEmotion = previousEmotion;
-    cognitiveOverlayBaseDetail = { ...previousDetail };
-  }
-  const cognitiveBaseDetail = cognitiveOverlayBaseDetail || previousDetail;
-  const canReuseFamily = transition.sameFamily
-    && transition.semantics.role !== "transient"
-    && transition.previousRole !== "transient"
-    && nextEmotion !== "furious";
-  const shouldRestartLifecycle = nextEmotion !== currentEmotion || detail.restart !== false;
-  const shouldRestartNativeExpression = detail.restart === true || (
-    detail.restart !== false
-    && (nextEmotion === currentEmotion || !canReuseFamily)
-  );
-  if (shouldRestartLifecycle) {
-    emotionEnteredAt = now;
-    emotionSpeechProtectedUntil = 0;
-  }
-  if (
-    !composeCognitiveOverlay
-    && shouldRestartLifecycle
-    && (
-      nextEmotion !== annotatedExpressionStyleEmotion
-      || detail.restart !== false
-    )
-  ) {
-    annotatedExpressionStyleEmotion = nextEmotion;
-    const requestedVariantUnit = Number(detail.annotatedVariantUnit);
-    annotatedExpressionVariantUnit = Number.isFinite(requestedVariantUnit)
-      ? clamp(requestedVariantUnit, 0, 0.999999)
-      : Math.random();
-    annotatedExpressionMirrorSide = Math.random() < 0.5 ? -1 : 1;
-  }
-  if (shouldRestartNativeExpression) {
-    // Native expression files cannot be reduced to the weakest intensity.
-    // Keep their neutral base while procedural parameters retain only a faint
-    // trace of the previous tag underneath the thinking overlay.
-    applyLive2DExpression(
-      composeCognitiveOverlay ? "neutral" : nextEmotion
-    );
-  }
-  currentEmotion = nextEmotion;
-  const timing = emotionTimingFor(nextEmotion, detail);
-  currentEmotionHoldMs = timing.holdMs;
-  currentEmotionFadeMs = timing.fadeMs;
-  const defaults = expressionDefaultsFor(nextEmotion);
-  const emotionDelta = clamp(toNumber(detail.emotionDelta, 0), -0.45, 0.45);
-  let requestedWeight = toNumber(detail.emotionIntensity, defaults.emotionIntensity)
-    + emotionDelta
-    + (accumulate ? Math.max(0, previousWeight - 0.72) * 0.12 : 0);
-  if (detail.smoothEmotionTransition) {
-    requestedWeight = clamp(requestedWeight, previousWeight - 0.16, previousWeight + 0.16);
-  }
-  currentEmotionWeight = clamp(
-    requestedWeight,
-    0.15,
-    2.5
-  );
-  const requestedBlush = toNumber(detail.blushIntensity, defaults.blushIntensity);
-  const requestedEyeContact = toNumber(detail.eyeContact, defaults.eyeContact);
-  const requestedGazeX = toNumber(detail.gazeX, defaults.gazeX);
-  const requestedGazeY = toNumber(detail.gazeY, defaults.gazeY);
-  const requestedTension = toNumber(detail.tension, defaults.tension);
-  currentExpressionDetail = {
-    blushIntensity: clamp(
-      composeCognitiveOverlay
-        ? Math.max(
-          requestedBlush,
-          cognitiveBaseDetail.blushIntensity * COGNITIVE_BASE_DETAIL_WEIGHT,
-        )
-        : requestedBlush + (accumulate ? previousDetail.blushIntensity * 0.16 : 0),
-      0,
-      1
-    ),
-    eyeContact: clamp(
-      composeCognitiveOverlay
-        ? requestedEyeContact * (1 - COGNITIVE_BASE_DETAIL_WEIGHT)
-          + cognitiveBaseDetail.eyeContact * COGNITIVE_BASE_DETAIL_WEIGHT
-        : accumulate
-          ? Math.min(requestedEyeContact, previousDetail.eyeContact + 0.08)
-          : requestedEyeContact,
-      0,
-      1
-    ),
-    gazeX: clamp(
-      composeCognitiveOverlay
-        ? requestedGazeX + cognitiveBaseDetail.gazeX * COGNITIVE_BASE_DETAIL_WEIGHT
-        : requestedGazeX,
-      -0.6,
-      0.6
-    ),
-    gazeY: clamp(
-      composeCognitiveOverlay
-        ? requestedGazeY + cognitiveBaseDetail.gazeY * COGNITIVE_BASE_DETAIL_WEIGHT
-        : requestedGazeY,
-      -0.6,
-      0.6
-    ),
-    tension: clamp(
-      composeCognitiveOverlay
-        ? Math.max(
-          requestedTension,
-          cognitiveBaseDetail.tension * COGNITIVE_BASE_DETAIL_WEIGHT,
-        )
-        : requestedTension,
-      0,
-      1
-    ),
-    outburst: Boolean(detail.outburst || detail.deliveryMode === "outburst"),
-  };
-  const nextGesture = gesture || "";
-  if (nextEmotion === "furious") {
-    const turnProfile = activeHeadTurnProfile();
-    if (pointer.x > turnProfile.pointerSwitchThreshold) furiousTurnTarget = -1;
-    else if (pointer.x < -turnProfile.pointerSwitchThreshold) furiousTurnTarget = 1;
-    else furiousTurnTarget = lookAwayDirection || 1;
-    if (previousEmotion !== "furious") {
-      furiousTurnDirection = 0;
-      furiousTurnVelocity = 0;
-    }
-  } else if (nextGesture === "look_away" && (activeGesture !== nextGesture || detail.restart !== false)) {
-    lookAwayDirection *= -1;
-  }
-  activeGesture = nextGesture;
-  gestureEnteredAt = now;
-  gestureUntil = now + gestureDuration(activeGesture);
-  nextContextEmotionAt = now + Math.max(9000, currentEmotionHoldMs + currentEmotionFadeMs + 2400);
-  updateModelStateLabel();
-  pulseInteractionForEmotion(currentEmotion, activeGesture);
-  applyLive2DMotion(currentEmotion, activeGesture);
-  updateDeveloperEmotionPanel();
-  if (activeGesture === "glitch") {
-    document.body.classList.add("glitch");
-    setTimeout(() => document.body.classList.remove("glitch"), 560);
-  }
+  expressionController?.setEmotion(emotion, gesture, detail);
 }
 
 function expressionDefaultsFor(emotion) {
@@ -9511,271 +5130,42 @@ function emotionTimingFor(emotion, detail = {}) {
 }
 
 function emotionLifecycleWeight(now = performance.now()) {
-  if (DEV_MODE && developerEmotionOverride) return 1;
-  if (currentEmotion === "neutral") return 1;
-  const age = Math.max(0, now - emotionEnteredAt);
-  const enter = easeOutCubic(clamp(age / 520, 0, 1));
-  // Once the final response mood is known, TTS preparation must not let that
-  // expression decay back to neutral before the first audio frame is ready.
-  if (speechState.pending && speechState.moodApplied) return enter;
-  const holdUntil = expressionHoldUntil();
-  if (now <= holdUntil) return enter;
-  const fade = 1 - smoothstep((now - holdUntil) / Math.max(1, currentEmotionFadeMs));
-  return clamp(enter * fade, 0, 1);
+  return expressionController?.emotionLifecycleWeight(now) ?? 1;
 }
 
 function blushLifecycleWeight(now = performance.now()) {
-  const lifecycle = emotionLifecycleWeight(now);
-  if (!["shy", "flustered", "affectionate"].includes(currentEmotion)) return lifecycle;
-  const age = Math.max(0, now - emotionEnteredAt);
-  const enter = smoothstep(age / 900);
-  const holdUntil = expressionHoldUntil();
-  if (now <= holdUntil) return clamp(enter, 0, 1);
-  const fadeDuration = Math.max(900, currentEmotionFadeMs);
-  const fade = 1 - smoothstep((now - holdUntil) / fadeDuration);
-  return clamp(enter * fade, 0, 1);
+  return expressionController?.blushLifecycleWeight(now) ?? 1;
 }
 
 function expressionHoldUntil() {
+  const expression = expressionSnapshot();
   return Math.max(
-    emotionEnteredAt + currentEmotionHoldMs,
-    emotionSpeechProtectedUntil
+    expression.emotionEnteredAt + expression.currentEmotionHoldMs,
+    expression.emotionSpeechProtectedUntil,
   );
 }
 
 function protectCurrentExpressionThroughSpeech(
-  speechEndsAt = speechState.endsAt,
+  speechEndsAt = speechPlayback.state.endsAt,
   postSpeechHoldMs = EXPRESSION_POST_SPEECH_HOLD_MS
 ) {
-  if (currentEmotion === "neutral") return;
-  const now = performance.now();
-  const protectedSpeechEnd = Number.isFinite(speechEndsAt) && speechEndsAt > 0
-    ? Math.max(now, speechEndsAt)
-    : now;
-  emotionSpeechProtectedUntil = Math.max(
-    emotionSpeechProtectedUntil,
-    protectedSpeechEnd + Math.max(0, postSpeechHoldMs)
-  );
+  return expressionController?.protectExpressionThroughSpeech(speechEndsAt, postSpeechHoldMs);
 }
 
 function updateEmotionLifecycle(now = performance.now()) {
-  if (DEV_MODE && developerEmotionOverride) return;
-  if (persistentColdShoulder && currentEmotion === "furious") return;
-  maybeRefreshContextEmotion(now);
-  if (
-    currentEmotion === "neutral"
-    || speechPipelineActive
-    || speechState.pending
-    || isSpeaking(now)
-  ) return;
-  if (now <= expressionHoldUntil() + currentEmotionFadeMs + 420) return;
-  setEmotion(recoveryEmotionFor(currentEmotion), "idle", {
-    emotionIntensity: 0.78,
-    blushIntensity: 0,
-    holdMs: 0,
-    fadeMs: 900,
-  });
+  return expressionController?.updateLifecycle(now);
 }
 
 function maybeRefreshContextEmotion(now = performance.now()) {
-  if (persistentColdShoulder) {
-    nextContextEmotionAt = now + 30000;
-    return;
-  }
-  if (contextEmotionRequestInFlight || now < nextContextEmotionAt) return;
-  if (speechState.pending || isSpeaking(now)) {
-    nextContextEmotionAt = now + 3000;
-    return;
-  }
-  if (!state.messages.length) {
-    nextContextEmotionAt = now + 30000;
-    return;
-  }
-  contextEmotionRequestInFlight = true;
-  nextContextEmotionAt = now + 45000;
-  storageScopedFetch("/api/emotion-token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      currentEmotion,
-      messages: state.messages.slice(-8),
-    }),
-  })
-    .then(response => response.json().then(data => ({ response, data })))
-    .then(({ response, data }) => {
-      if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-      const emotion = normalizeEmotion(data.emotion);
-      const gesture = normalizeGesture(data.gesture);
-      if (emotion === currentEmotion) {
-        nextContextEmotionAt = performance.now() + (emotion === "neutral" ? 45000 : 12000);
-        return;
-      }
-      setEmotion(emotion, gesture, {
-        emotionIntensity: clamp(toNumber(data.emotionIntensity, emotion === "neutral" ? 0.72 : 0.9), 0.15, 1.25),
-        blushIntensity: clamp(toNumber(data.blushIntensity, expressionDefaultsFor(emotion).blushIntensity), 0, 1),
-        eyeContact: clamp(toNumber(data.eyeContact, expressionDefaultsFor(emotion).eyeContact), 0, 1),
-        gazeX: clamp(toNumber(data.gazeX, expressionDefaultsFor(emotion).gazeX), -0.6, 0.6),
-        gazeY: clamp(toNumber(data.gazeY, expressionDefaultsFor(emotion).gazeY), -0.6, 0.6),
-        tension: clamp(toNumber(data.tension, expressionDefaultsFor(emotion).tension), 0, 1),
-        holdMs: toNumber(data.holdMs, emotion === "neutral" ? 0 : 45000),
-        fadeMs: toNumber(data.fadeMs, emotion === "neutral" ? 1200 : 10000),
-      });
-    })
-    .catch(error => {
-      console.warn("context emotion refresh failed:", error);
-      nextContextEmotionAt = performance.now() + 60000;
-    })
-    .finally(() => {
-      contextEmotionRequestInFlight = false;
-    });
+  return expressionController?.refreshContextEmotion(now);
 }
 
-function recoveryEmotionFor(emotion = currentEmotion) {
-  const semantics = emotionSemanticsFor(emotion);
-  if (semantics.role === "boundary") return persistentColdShoulder ? "furious" : "annoyed";
-  if (semantics.role === "cognitive" || semantics.role === "stance" || semantics.role === "transient") {
-    return emotionRecoveryTarget || stableEmotion || "neutral";
-  }
-  return semantics.recovery || "neutral";
+function recoveryEmotionFor(emotion = expressionSnapshot().currentEmotion) {
+  return expressionController?.recoveryEmotionFor(emotion) || "neutral";
 }
 
 function emotionIntensity(emotion, now = performance.now()) {
-  const directMatch = currentEmotion === emotion;
-  const cognitiveBaseMatch = emotionSemanticsFor(currentEmotion).role === "cognitive"
-    && cognitiveOverlayBaseEmotion === emotion;
-  if (!directMatch && !cognitiveBaseMatch) return 0;
-  const cognitiveBaseWeight = cognitiveBaseMatch && !directMatch ? 0.88 : 1;
-  return (
-    emotionLifecycleWeight(now)
-    * cognitiveBaseWeight
-    * visualEmotionIntensityWeight(currentEmotionWeight)
-  );
-}
-
-function easeOutCubic(value) {
-  return 1 - Math.pow(1 - value, 3);
-}
-
-function applyLive2DExpression(emotion) {
-  if (!activeModelProfile?.supportsNativeExpressions) {
-    lastLive2DExpression = "";
-    return;
-  }
-  const profileExpressionMap = activeModelProfile?.expressionMap;
-  const hasProfileExpression = profileExpressionMap
-    && Object.prototype.hasOwnProperty.call(profileExpressionMap, emotion);
-  const expressionName = hasProfileExpression ? profileExpressionMap[emotion] : {
-    neutral: "neutral",
-    thinking: "neutral",
-    focused: "unhappy",
-    skeptical: "unhappy",
-    awkward: "neutral",
-    annoyed: "anger",
-    furious: "anger",
-    teasing: "smile1",
-    amused: "smile2",
-    laughing: "joy",
-    shy: "neutral",
-    flustered: "neutral",
-    affectionate: "smile1",
-    concerned: "sadness",
-    protective: "anger",
-    excited: "joy",
-    startled: "surprise",
-    proud: "smile1",
-    melancholic: "sadness",
-  }[emotion] || "";
-  if (!expressionName) {
-    lastLive2DExpression = "";
-    try {
-      const manager = model?.internalModel?.motionManager?.expressionManager;
-      if (manager && typeof manager.resetExpression === "function") manager.resetExpression();
-    } catch {
-      // Some Cubism runtimes do not expose expression reset.
-    }
-    return;
-  }
-  if (!model || lastLive2DExpression === expressionName) return;
-  lastLive2DExpression = expressionName;
-  try {
-    if (typeof model.expression === "function") {
-      model.expression(expressionName);
-      return;
-    }
-    const manager = model.internalModel?.motionManager?.expressionManager;
-    if (manager && typeof manager.setExpression === "function") {
-      manager.setExpression(expressionName);
-    }
-  } catch (error) {
-    console.debug("Live2D expression unavailable:", expressionName, error);
-  }
-}
-
-function applyLive2DMotion(emotion, gesture) {
-  if (!model) return;
-  const motionGroup = motionGroupForEmotion(emotion, gesture);
-  if (!motionGroup) return;
-  const now = performance.now();
-  if (lastLive2DMotion === motionGroup && now - lastLive2DMotionAt < 1800) return;
-  lastLive2DMotion = motionGroup;
-  lastLive2DMotionAt = now;
-  try {
-    if (typeof model.motion === "function") {
-      model.motion(motionGroup, 0, 3);
-      return;
-    }
-    const manager = model.internalModel?.motionManager;
-    if (manager && typeof manager.startMotion === "function") {
-      manager.startMotion(motionGroup, 0, 3);
-    }
-  } catch (error) {
-    console.debug("Live2D motion unavailable:", motionGroup, error);
-  }
-}
-
-function motionGroupForEmotion(emotion, gesture) {
-  // Side-looking is fully parameter-driven. A model motion here would replace
-  // the horizontal head turn with an unrelated emotion animation on some skins.
-  if (gesture === "look_away") return "";
-  let key = "";
-  if (gesture === "boot") key = "boot";
-  else if (gesture === "tap") key = "tap";
-  else if (gesture === "recoil") key = "recoil";
-  else if (gesture === "explain") key = "explain";
-  else if (gesture === "smile") key = "happy";
-  else if (gesture === "laugh") key = "happy";
-  else if (gesture === "perk") key = "perk";
-  else if (gesture === "lean") key = "lean";
-  else if (emotion === "shy" || emotion === "flustered" || emotion === "affectionate") key = "shy";
-  else if (emotion === "annoyed" || emotion === "protective") key = "angry";
-  else if (emotion === "startled") key = "startled";
-  else if (emotion === "concerned" || emotion === "melancholic") key = "sad";
-  else if (emotion === "amused" || emotion === "teasing" || emotion === "laughing") key = "happy";
-  else if (emotion === "proud" || emotion === "excited") key = "proud";
-  else if (emotion === "focused" || emotion === "skeptical" || emotion === "awkward") key = "focused";
-  const motionMap = activeModelProfile?.motionMap;
-  const hasProfileMotion = Boolean(
-    key && motionMap && Object.prototype.hasOwnProperty.call(motionMap, key)
-  );
-  if (hasProfileMotion) return motionMap[key] || "";
-  if (activeRigModelId() === "aipoet-kurisu" && Math.random() < 0.35) {
-    return `random${1 + Math.floor(Math.random() * 5)}`;
-  }
-  return "";
-}
-
-function gestureDuration(gesture) {
-  if (gesture === "glitch") return 900;
-  if (gesture === "nod" || gesture === "recoil") return 1100;
-  if (gesture === "tilt") return 1600;
-  if (gesture === "look_away") return 1900;
-  if (gesture === "lean") return 1400;
-  if (gesture === "soften") return 1800;
-  if (gesture === "smile") return 1800;
-  if (gesture === "laugh") return 2600;
-  if (gesture === "explain") return 2200;
-  if (gesture === "perk") return 1300;
-  return 760;
+  return expressionController?.emotionIntensity(emotion, now) || 0;
 }
 
 function pulseInteractionForEmotion(emotion, gesture) {
@@ -9836,515 +5226,23 @@ function selectVoice() {
   );
 }
 
-const SPEECH_EMOJI_SEQUENCE_PATTERN = /(?:[#*0-9]\uFE0F?\u20E3|[\u{1F1E6}-\u{1F1FF}]{1,2}|(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F)(?:\p{Emoji_Modifier})?(?:\u200D(?:\p{Emoji_Presentation}|\p{Extended_Pictographic})(?:\uFE0F)?(?:\p{Emoji_Modifier})?)*)|[\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}\u200D\uFE0E\uFE0F\u20E3]/gu;
+function stripEmojiForSpeech(text) { return speechPlayback.stripEmojiForSpeech(text); }
+function startSpeech(text, voiceStyle = "calm", meta = {}) { return speechPlayback.startSpeech(text, voiceStyle, meta); }
+function semanticSpeechUnits(text) { return speechPlayback.semanticSpeechUnits(text); }
+function validatedSemanticSpeechUnits(text, supplied = null) { return speechPlayback.validatedSemanticSpeechUnits(text, supplied); }
+function normalizeSpeechBoundary(value, fallback = "continue") { return speechPlayback.normalizeSpeechBoundary(value, fallback); }
+function speechBoundaryPauseMs(boundaryAfter, speechPace = "normal") { return speechPlayback.speechBoundaryPauseMs(boundaryAfter, speechPace); }
+function startSegmentedSpeech(text, voiceStyle = "calm", meta = {}) { return speechPlayback.startSegmentedSpeech(text, voiceStyle, meta); }
+function isSpeechCancellation(error) { return speechPlayback.isSpeechCancellation(error); }
 
-function stripEmojiForSpeech(text) {
-  return String(text || "")
-    .replace(SPEECH_EMOJI_SEQUENCE_PATTERN, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function startSpeech(text, voiceStyle = "calm", meta = {}) {
-  const cleanText = stripEmojiForSpeech(text);
-  if (!cleanText) {
-    recordVoiceDiagnostic("skipped-empty", "发声文本为空，未调用语音服务");
-    return Promise.resolve(false);
-  }
-  if (!/[\p{L}\p{N}]/u.test(cleanText)) {
-    recordVoiceDiagnostic("skipped-punctuation", "发声文本只有标点，未调用语音服务");
-    return Promise.resolve(false);
-  }
-  const generation = ++speechGeneration;
-  speechRequestAbortController?.abort();
-  const speechRequestController = new AbortController();
-  speechRequestAbortController = speechRequestController;
-  stopCurrentPlayback();
-  const speechPace = normalizeSpeechPace(meta.speechPace || "normal");
-  const speechSpeed = clamp(toNumber(meta.speechSpeed, speedForSpeechPace(speechPace)), 0.62, 1.45);
-  const duration = estimateSpeechDuration(cleanText, voiceStyle, speechSpeed);
-  speechState = {
-    active: false,
-    pending: true,
-    queuedAt: performance.now(),
-    requestStartedAt: Number(meta.requestStartedAt || 0),
-    startedAt: 0,
-    endsAt: 0,
-    text: cleanText,
-    displayText: String(meta.displayText || cleanText),
-    spokenTextJa: stripEmojiForSpeech(meta.spokenTextJa || cleanText),
-    semanticUnits: validatedSemanticSpeechUnits(
-      cleanText,
-      Array.isArray(meta.semanticUnits) ? meta.semanticUnits : null,
-    ),
-    timeline: [],
-    mouthCues: [],
-    alignmentSource: "",
-    ttsMetrics: null,
-    charIndex: 0,
-    voiceStyle,
-    voiceTone: String(meta.voiceTone || "neutral"),
-    voiceIntensity: normalizeVoiceIntensity(meta.voiceIntensity),
-    speechPace,
-    speechSpeed,
-    utterance: null,
-    mood: meta.mood || null,
-    moodApplied: false,
-    preparedTts: meta.preparedTts || null,
-    originalAudio: meta.originalAudio || null,
-    kind: String(meta.kind || "chat"),
-    deliveryPriority: String(meta.deliveryPriority || ""),
-    provider: String(settings.ttsProvider || DEFAULT_SETTINGS.ttsProvider).trim().toLowerCase(),
-    generation,
-    pipelineSegmentIndex: Math.max(0, Number(meta.pipelineSegmentIndex) || 0),
-    pipelineSegmentTotal: Math.max(1, Number(meta.pipelineSegmentTotal) || 1),
-    systemSpeechActive: false,
-    systemSpeechDeadline: 0,
-    textRevealPending: Boolean(settings.voiceEnabled),
-  };
-  syncChatSubmitButton();
-  speakUntil = 0;
-  resetAnimeMouthState();
-  recordVoiceDiagnostic("queued", "回复已进入语音队列", {
-    generation,
-    provider: settings.ttsProvider,
-    kind: speechState.kind,
-    textLength: cleanText.length,
-  });
-
-  if (!settings.voiceEnabled) {
-    speechState.pending = false;
-    speechState.textRevealPending = false;
-    recordVoiceDiagnostic("skipped-disabled", "设置中的语音朗读已关闭", { generation });
-    return Promise.resolve(false);
-  }
-  if (speechState.mood) {
-    const continuesSameSegmentedMood = (
-      speechState.pipelineSegmentIndex > 1
-      && currentEmotion === speechState.mood.emotion
-    );
-    if (!continuesSameSegmentedMood) {
-      setEmotion(speechState.mood.emotion, speechState.mood.gesture, speechState.mood);
-    }
-    speechState.moodApplied = true;
-  }
-  const provider = String(settings.ttsProvider || "").trim().toLowerCase();
-  const localProviders = new Set(["gpt-sovits", "voicevox", "generic"]);
-  if (localProviders.has(provider)) {
-    if (provider !== "gpt-sovits" && !String(settings.ttsEndpoint || "").trim()) {
-      return Promise.resolve(failLocalSpeech(new Error("本地 TTS Endpoint 为空"), generation, "本地语音配置错误"));
-    }
-    recordVoiceDiagnostic("local-request", "正在调用本地语音模型", { generation, provider });
-    return startLocalTts(cleanText, voiceStyle, speechState.voiceTone, speechState.voiceIntensity, speechState.speechSpeed, speechState.speechPace, generation, speechState.semanticUnits, speechRequestController.signal).then(() => true).catch(error => {
-      if (isSpeechCancellation(error) || generation !== speechGeneration) {
-        recordVoiceDiagnostic("cancelled", "语音请求被更新的回复或互动取消", { generation });
-        return null;
-      }
-      return failLocalSpeech(error, generation, "本地语音合成失败");
-    });
-  }
-
-  if (provider === "system") {
-    recordVoiceDiagnostic("system-request", "设置中已明确选择系统语音", { generation });
-    return startSystemSpeech(cleanText, voiceStyle, duration, generation);
-  }
-
-  return Promise.resolve(failLocalSpeech(new Error(`未知 TTS 提供商：${provider || "(空)"}`), generation, "语音配置错误"));
-}
-
-function semanticSpeechUnits(text) {
-  const value = stripEmojiForSpeech(text);
-  if (!value || !/[\p{L}\p{N}]/u.test(value)) return [];
-  // The model's speech_unit records are the only authority for visible
-  // segmentation. Punctuation, including ellipses, remains inside this
-  // atomic fallback unit.
-  return [value];
-}
-
-function validatedSemanticSpeechUnits(text, supplied = null) {
-  const value = stripEmojiForSpeech(text);
-  if (!Array.isArray(supplied)) return semanticSpeechUnits(value);
-  const units = supplied.map(stripEmojiForSpeech).filter(item => /[\p{L}\p{N}]/u.test(item));
-  if (!units.length) {
-    throw new Error("语义发声单元包含空内容");
-  }
-  const compact = input => String(input || "").replace(/\s+/g, "");
-  if (compact(units.join("")) !== compact(value)) {
-    throw new Error("语义发声单元没有完整覆盖待合成文本");
-  }
-  return units;
-}
-
-function speechSegmentMeta(meta, segment, index, total, preparedTts = null) {
-  return {
-    ...meta,
-    spokenTextJa: segment,
-    preparedTts,
-    pipelineSegmentIndex: index + 1,
-    pipelineSegmentTotal: total,
-    semanticUnits: [segment],
-  };
-}
-
-function buildSpeechSegmentTtsRequest(segment, voiceStyle, meta) {
-  const request = buildTtsRequest(
-    segment,
-    voiceStyle,
-    meta.voiceTone || "neutral",
-    meta.voiceIntensity || "normal",
-    clamp(toNumber(meta.mood?.emotionIntensity, 1), 0.2, 2.5),
-    meta.speechSpeed || 1,
-    meta.speechPace || "normal",
-    [segment],
-  );
-  return {
-    ...request,
-    speechLanguage: normalizeSpeechLanguage(meta.speechLanguage || request.speechLanguage),
-    locale: normalizeSpeechLanguage(meta.speechLanguage || request.speechLanguage),
-    speechProsody: normalizeSpeechProsody(meta.speechProsody || request.speechProsody),
-    requestId: String(meta.requestId || ""),
-    utteranceId: String(meta.utteranceId || ""),
-    segmentIndex: Math.max(1, Math.trunc(toNumber(meta.segmentIndex, 1))),
-    segmentTotal: Math.max(1, Math.trunc(toNumber(meta.segmentTotal, 1))),
-  };
-}
-
-async function waitForSpeechSegmentEnd(generation, pipelineToken) {
-  const waitStartedAt = performance.now();
-  let audioBarrierReported = false;
-  while (pipelineToken === speechPipelineGeneration && generation === speechGeneration) {
-    const activeAudio = ttsAudioGeneration === generation ? ttsAudio : null;
-    if (activeAudio && !activeAudio.ended && !activeAudio.error) {
-      if (!audioBarrierReported) {
-        audioBarrierReported = true;
-        recordVoiceDiagnostic(
-          "playback-barrier-waiting",
-          "正在等待上一句真实音频播放结束，下一句不会抢播",
-          { generation, currentTime: Number(activeAudio.currentTime || 0) },
-        );
-      }
-      const durationMs = Number.isFinite(activeAudio.duration) && activeAudio.duration > 0
-        ? activeAudio.duration * 1000
-        : Math.max(30000, estimateSpeechDuration(
-          speechState.text,
-          speechState.voiceStyle,
-          speechState.speechSpeed,
-        ) + 20000);
-      if (performance.now() - waitStartedAt > durationMs + 12000) {
-        recordVoiceDiagnostic(
-          "playback-barrier-watchdog",
-          "上一句播放器没有发出结束事件，已先明确停止旧音频再继续",
-          {
-            generation,
-            duration: Number.isFinite(activeAudio.duration) ? activeAudio.duration : null,
-            currentTime: Number(activeAudio.currentTime || 0),
-          },
-        );
-        stopLocalTts(true);
-        speechState.pending = false;
-        speechState.active = false;
-        return true;
-      }
-      await delay(60);
-      continue;
-    }
-    if (!speechState.pending && !isSpeaking(performance.now())) return true;
-    await delay(60);
-  }
-  return false;
-}
-
-const SPEECH_BOUNDARY_PAUSE_MS = Object.freeze({
-  continue: 0,
-  micro_pause: 110,
-  phrase_pause: 260,
-  turn_pause: 420,
-});
-
-function normalizeSpeechBoundary(value, fallback = "continue") {
-  const candidate = String(value || "").trim();
-  return Object.prototype.hasOwnProperty.call(SPEECH_BOUNDARY_PAUSE_MS, candidate)
-    ? candidate
-    : fallback;
-}
-
-function speechBoundaryPauseMs(boundaryAfter, speechPace = "normal") {
-  const boundary = normalizeSpeechBoundary(boundaryAfter);
-  const base = SPEECH_BOUNDARY_PAUSE_MS[boundary] || 0;
-  const pace = normalizeSpeechPace(speechPace);
-  const paceFactor = {
-    very_slow: 1.28,
-    slow: 1.14,
-    normal: 1,
-    fast: 0.86,
-    very_fast: 0.72,
-  }[pace] || 1;
-  return Math.round(base * paceFactor);
-}
-
-async function waitForSpeechBoundary(boundaryAfter, speechPace, generation, pipelineToken) {
-  const pauseMs = speechBoundaryPauseMs(boundaryAfter, speechPace);
-  if (pauseMs <= 0) return true;
-  recordVoiceDiagnostic("pipeline-boundary-pause", `句间停顿 ${pauseMs} ms`, {
-    boundaryAfter: normalizeSpeechBoundary(boundaryAfter),
-    pauseMs,
-    pipelineToken,
-  });
-  const deadline = performance.now() + pauseMs;
-  while (performance.now() < deadline) {
-    if (pipelineToken !== speechPipelineGeneration || generation !== speechGeneration) {
-      return false;
-    }
-    await delay(Math.min(40, Math.max(1, deadline - performance.now())));
-  }
-  return pipelineToken === speechPipelineGeneration && generation === speechGeneration;
-}
-
-async function continueSegmentedSpeech(segments, voiceStyle, meta, pipelineToken) {
-  try {
-    for (let index = 1; index < segments.length; index += 1) {
-      if (pipelineToken !== speechPipelineGeneration) return;
-      const segment = segments[index];
-      const controller = speechPipelineAbortController;
-      const request = buildSpeechSegmentTtsRequest(segment, voiceStyle, meta);
-      const preparedState = { ready: false, payload: null, error: null };
-      preparedState.promise = requestPreparedTts(request, null, controller?.signal)
-        .then(payload => {
-          preparedState.ready = true;
-          preparedState.payload = payload;
-          recordVoiceDiagnostic("pipeline-prefetch-ready", `第 ${index + 1}/${segments.length} 段已在后台合成完成`, {
-            pipelineToken,
-            segmentIndex: index + 1,
-            segmentTotal: segments.length,
-          });
-          return payload;
-        })
-        .catch(error => {
-          preparedState.ready = true;
-          preparedState.error = error;
-          return null;
-        });
-      recordVoiceDiagnostic("pipeline-prefetch", `播放第 ${index}/${segments.length} 段时预合成第 ${index + 1} 段`, {
-        pipelineToken,
-        segmentIndex: index + 1,
-        segmentTotal: segments.length,
-      });
-
-      const currentGeneration = speechState.generation;
-      if (!await waitForSpeechSegmentEnd(currentGeneration, pipelineToken)) return;
-      const previousBoundary = Array.isArray(meta.pipelineBoundaries)
-        ? meta.pipelineBoundaries[index - 1]
-        : "phrase_pause";
-      if (!await waitForSpeechBoundary(
-        previousBoundary,
-        meta.speechPace,
-        currentGeneration,
-        pipelineToken,
-      )) return;
-      if (pipelineToken !== speechPipelineGeneration) return;
-      if (!preparedState.ready) {
-        speechGapIndicatorGeneration = -pipelineToken;
-        showThinkingIndicator(
-          speechGapIndicatorGeneration,
-          "voice-wait",
-          `第 ${index}/${segments.length} 段已经播完，正在完成第 ${index + 1} 段语音`,
-        );
-      }
-      await preparedState.promise;
-      if (pipelineToken !== speechPipelineGeneration) return;
-      if (preparedState.error && ttsRetryWouldDuplicateWork(preparedState.error)) {
-        if (speechGapIndicatorGeneration) {
-          hideThinkingIndicator(speechGapIndicatorGeneration);
-          speechGapIndicatorGeneration = 0;
-        }
-        failLocalSpeech(preparedState.error, speechGeneration, "后续分段语音合成超时");
-        meta.onPipelineSegmentFailed?.(
-          index,
-          meta.pipelineDisplaySegments?.[index] || "",
-          segment,
-          segments.length,
-        );
-        return;
-      }
-      if (preparedState.error && !speechGapIndicatorGeneration) {
-        speechGapIndicatorGeneration = -pipelineToken;
-        showThinkingIndicator(
-          speechGapIndicatorGeneration,
-          "voice-wait",
-          `第 ${index}/${segments.length} 段已经播完，正在重试第 ${index + 1} 段语音`,
-        );
-      }
-      const preparedTts = preparedState.payload ? { key: preparedTtsKey(request), payload: preparedState.payload } : null;
-      const started = await startSpeech(
-        segment,
-        voiceStyle,
-        speechSegmentMeta(meta, segment, index, segments.length, preparedTts),
-      );
-      if (speechGapIndicatorGeneration) {
-        hideThinkingIndicator(speechGapIndicatorGeneration);
-        speechGapIndicatorGeneration = 0;
-      }
-      if (pipelineToken !== speechPipelineGeneration) return;
-      if (!started) {
-        meta.onPipelineSegmentFailed?.(
-          index,
-          meta.pipelineDisplaySegments?.[index] || "",
-          segment,
-          segments.length,
-        );
-        return;
-      }
-      meta.onPipelineSegmentStarted?.(
-        index,
-        meta.pipelineDisplaySegments?.[index] || "",
-        segment,
-        segments.length,
-      );
-      updateThinkingIndicatorStage("voice-prefetch", `正在播放第 ${index + 1}/${segments.length} 段`);
-    }
-  } finally {
-    if (pipelineToken === speechPipelineGeneration) {
-      speechPipelineActive = false;
-      speechPipelineAbortController = null;
-    }
-  }
-}
-
-function startSegmentedSpeech(text, voiceStyle = "calm", meta = {}) {
-  const provider = String(settings.ttsProvider || "").trim().toLowerCase();
-  const suppliedSegments = Array.isArray(meta.pipelineSpeechSegments)
-    ? meta.pipelineSpeechSegments.map(item => String(item || "").trim()).filter(Boolean)
-    : [];
-  const segments = settings.voiceEnabled && provider === "gpt-sovits"
-    ? (suppliedSegments.length ? suppliedSegments : [String(text || "").trim()])
-    : [String(text || "").trim()];
-  if (segments.length <= 1) return startSpeech(text, voiceStyle, meta);
-  const pipelineMeta = {
-    ...meta,
-    pipelineBoundaries: segments.map((_segment, index) => normalizeSpeechBoundary(
-      Array.isArray(meta.pipelineBoundaries) ? meta.pipelineBoundaries[index] : "",
-      index === segments.length - 1 ? "turn_pause" : "phrase_pause",
-    )),
-  };
-
-  speechPipelineAbortController?.abort();
-  speechPipelineAbortController = new AbortController();
-  const pipelineToken = ++speechPipelineGeneration;
-  speechPipelineActive = true;
-  updateThinkingIndicatorStage("speech-segmenting", `已按语义切为 ${segments.length} 段`);
-  recordVoiceDiagnostic("pipeline-segmented", `长回复已切为 ${segments.length} 段，首段优先`, {
-    pipelineToken,
-    segmentTotal: segments.length,
-    segmentLengths: segments.map(segment => segment.length),
-  });
-  updateThinkingIndicatorStage("voice-first", `正在合成第 1/${segments.length} 段`);
-  const firstStarted = startSpeech(
-    segments[0],
-    voiceStyle,
-    speechSegmentMeta(pipelineMeta, segments[0], 0, segments.length, meta.preparedTts || null),
-  );
-  firstStarted.then(started => {
-    if (!started || pipelineToken !== speechPipelineGeneration) {
-      if (started === false && pipelineToken === speechPipelineGeneration) {
-        meta.onPipelineSegmentFailed?.(
-          0,
-          meta.pipelineDisplaySegments?.[0] || "",
-          segments[0],
-          segments.length,
-        );
-      }
-      if (pipelineToken === speechPipelineGeneration) speechPipelineActive = false;
-      return;
-    }
-    meta.onPipelineSegmentStarted?.(
-      0,
-      meta.pipelineDisplaySegments?.[0] || "",
-      segments[0],
-      segments.length,
-    );
-    updateThinkingIndicatorStage("voice-playing", `第 1/${segments.length} 段已开始播放`);
-    continueSegmentedSpeech(segments, voiceStyle, pipelineMeta, pipelineToken).catch(error => {
-      if (isSpeechCancellation(error) || pipelineToken !== speechPipelineGeneration) return;
-      recordVoiceDiagnostic("pipeline-error", `分段语音流水线中止：${error.message}`, { pipelineToken });
-    });
-  });
-  return firstStarted;
-}
-
-function speechCancellationError() {
-  const error = new Error("speech superseded");
-  error.name = "SpeechCanceledError";
-  return error;
-}
-
-function isSpeechCancellation(error) {
-  return error?.name === "SpeechCanceledError" || error?.name === "AbortError";
-}
-
-const STREAM_CANCELLATION_TYPES = new Set([
-  "cancel",
-  "canceled",
-  "cancelled",
-  "client_canceled",
-  "client_cancelled",
-  "request_canceled",
-  "request_cancelled",
-  "request_superseded",
-  "user_canceled",
-  "user_cancelled",
-]);
-
-function isStreamCancellation(error) {
-  if (isSpeechCancellation(error) || error?.streamCancelled === true || error?.cancelled === true) {
-    return true;
-  }
-  const type = String(error?.streamErrorType || error?.reason || "").trim().toLowerCase();
-  return STREAM_CANCELLATION_TYPES.has(type);
-}
-
-function assertCurrentSpeech(generation) {
-  if (generation !== speechGeneration || speechState.generation !== generation) {
-    throw speechCancellationError();
-  }
-}
-
-function stopCurrentPlayback() {
-  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-  stopLocalTts(true);
-}
-
-function interruptCurrentSpeech() {
-  recordVoiceDiagnostic("cancelled", "当前语音被新的互动中断", { kind: speechState.kind, generation: speechState.generation });
-  speechGeneration += 1;
-  speechPipelineGeneration += 1;
-  speechPipelineAbortController?.abort();
-  speechPipelineAbortController = null;
-  speechRequestAbortController?.abort();
-  speechRequestAbortController = null;
-  speechPipelineActive = false;
-  if (speechGapIndicatorGeneration) {
-    hideThinkingIndicator(speechGapIndicatorGeneration);
-    speechGapIndicatorGeneration = 0;
-  }
-  stopCurrentPlayback();
-  speechState.active = false;
-  speechState.pending = false;
-  speechState.textRevealPending = false;
-  speechState.endsAt = 0;
-  speechState.kind = "idle";
-  speechState.systemSpeechActive = false;
-  speechState.systemSpeechDeadline = 0;
-  speakUntil = 0;
-  resetAnimeMouthState();
-  syncChatSubmitButton();
-}
+function interruptCurrentSpeech() { return speechPlayback.interruptCurrentSpeech(); }
 
 function interruptReplyForNewConversation(now = performance.now()) {
-  const currentKind = speechState.kind;
+  const currentKind = speechPlayback.state.kind;
   const currentlySpeaking = isSpeaking(now);
   const priorReplyStillActive = (
-    speechPipelineActive
-    || speechState.pending
+    speechPlayback.pipelineActive
+    || speechPlayback.state.pending
     || currentlySpeaking
   );
   if (!priorReplyStillActive) return false;
@@ -10382,66 +5280,18 @@ function switchDeveloperPage(page) {
   dom.devTabs.forEach(button => button.classList.toggle("active", button.dataset.devTab === target));
   dom.devTouchOverlay?.classList.toggle("hidden", target !== "touch");
   if (target === "touch") {
-    renderDeveloperTouchRegions();
-    updateDeveloperTouchOverlay();
+    touchInteractionController?.renderRegions();
+    touchInteractionController?.updateDeveloperOverlay();
   }
   if (target === "overview") refreshDeveloperRuntime();
-  if (target === "emotion") updateDeveloperEmotionPanel({ syncInputs: true });
-  if (target === "relationship") loadDeveloperRelationship();
+  if (target === "emotion") developerEmotionController?.renderPanel?.({ syncInputs: true });
+  if (target === "relationship") relationshipController?.load();
   if (target === "persona") {
-    loadPersona();
+    personaController?.load();
     developerPersonaSkillMonitor?.refresh();
   }
-  if (target === "model") renderDeveloperModelEditor();
+  if (target === "model") developerModelEditorController?.render?.();
   if (target === "training") loadDeveloperTrainingData();
-}
-
-function updateDeveloperEmotionReadouts() {
-  if (dom.devEmotionIntensityValue) {
-    const rawIntensity = toNumber(dom.devEmotionIntensityInput?.value, 1);
-    const visualIntensity = visualEmotionIntensityWeight(rawIntensity);
-    dom.devEmotionIntensityValue.textContent = `${rawIntensity.toFixed(2)} → 表情 ${visualIntensity.toFixed(2)}`;
-  }
-  if (dom.devEmotionBlushValue) {
-    dom.devEmotionBlushValue.textContent = `${Math.round(clamp(toNumber(dom.devEmotionBlushInput?.value, 0), 0, 100))}%`;
-  }
-}
-
-function loadDeveloperEmotionDefaults() {
-  if (!DEV_MODE || !dom.devEmotionInput) return;
-  const emotion = normalizeEmotion(dom.devEmotionInput.value);
-  const defaults = expressionDefaultsFor(emotion);
-  if (dom.devEmotionIntensityInput) dom.devEmotionIntensityInput.value = String(defaults.emotionIntensity);
-  if (dom.devEmotionBlushInput) dom.devEmotionBlushInput.value = String(Math.round(clamp(defaults.blushIntensity, 0, 1) * 100));
-  updateDeveloperEmotionReadouts();
-}
-
-function updateDeveloperEmotionPanel({ syncInputs = false } = {}) {
-  if (!DEV_MODE || !dom.devEmotionStatus) return;
-  if (syncInputs) {
-    if (dom.devEmotionInput) dom.devEmotionInput.value = currentEmotion;
-    if (dom.devGestureInput) dom.devGestureInput.value = normalizeGesture(activeGesture || "idle");
-    if (dom.devEmotionIntensityInput) dom.devEmotionIntensityInput.value = String(currentEmotionWeight);
-    if (dom.devEmotionBlushInput) dom.devEmotionBlushInput.value = String(Math.round(clamp(currentExpressionDetail.blushIntensity, 0, 1) * 100));
-    if (dom.devEmotionLockInput) dom.devEmotionLockInput.checked = Boolean(developerEmotionOverride);
-  }
-  updateDeveloperEmotionReadouts();
-  const eyeCurve = toNumber(
-    runtimeEmotionTarget(currentEmotion)?.ParamEyeSmile,
-    runtimeEmotionTarget("neutral").ParamEyeSmile || 0,
-  );
-  const mode = developerEmotionOverride ? "MANUAL LOCK" : "AUTO";
-  const blushPercent = Math.round(clamp(currentExpressionDetail.blushIntensity, 0, 1) * 100);
-  const semantics = emotionSemanticsFor(currentEmotion);
-  const visualBaseEmotion = semantics.role === "cognitive"
-    ? cognitiveOverlayBaseEmotion
-    : stableEmotion;
-  const visualIntensity = visualEmotionIntensityWeight(currentEmotionWeight);
-  const annotatedPlan = activeAnnotatedExpressionPlan(visualBaseEmotion);
-  const mappingStatus = annotatedPlan
-    ? `MAP ${annotatedPlan.styleId.toUpperCase()} / SIDE ${annotatedPlan.mirrorSide < 0 ? "MIRROR" : "BASE"}`
-    : "MAP LEGACY";
-  dom.devEmotionStatus.textContent = `${mode} / ${currentEmotion.toUpperCase()} / RAW ${currentEmotionWeight.toFixed(2)}→VISUAL ${visualIntensity.toFixed(2)} / ${semantics.role.toUpperCase()}:${semantics.family.toUpperCase()} / BASE ${visualBaseEmotion.toUpperCase()} / ${mappingStatus} / NEXT ${emotionRecoveryTarget.toUpperCase()} / ${normalizeGesture(activeGesture || "idle").toUpperCase()} / EYE ${eyeCurve.toFixed(2)} / BLUSH ${blushPercent}%`;
 }
 
 function applyAnnotatedFaceLayers(expressionPlan = null) {
@@ -10454,120 +5304,8 @@ function applyAnnotatedFaceLayers(expressionPlan = null) {
   });
 }
 
-function applyDeveloperEmotionControl() {
-  if (!DEV_MODE || !dom.devEmotionInput) return;
-  const emotion = normalizeEmotion(dom.devEmotionInput.value);
-  const gesture = normalizeGesture(dom.devGestureInput?.value || "idle");
-  const emotionIntensity = clamp(toNumber(dom.devEmotionIntensityInput?.value, 1), 0.15, 2.5);
-  const blushIntensity = clamp(toNumber(dom.devEmotionBlushInput?.value, 0) / 100, 0, 1);
-  const locked = Boolean(dom.devEmotionLockInput?.checked);
-  developerEmotionManualBlush = blushIntensity;
-  const outburst = emotionIntensity > 1.25;
-  developerEmotionOverride = locked ? { emotion, emotionIntensity, blushIntensity, outburst } : null;
-  setEmotion(emotion, gesture, {
-    developerOverride: true,
-    restart: true,
-    emotionIntensity,
-    blushIntensity,
-    deliveryMode: outburst ? "outburst" : "normal",
-    outburst,
-  });
-  updateDeveloperEmotionPanel({ syncInputs: true });
-  toast(`开发者情绪：${emotion}${locked ? "（已锁定）" : "（临时）"}`);
-}
-
-function releaseDeveloperEmotionControl() {
-  if (!DEV_MODE) return;
-  developerEmotionOverride = null;
-  developerEmotionManualBlush = null;
-  if (dom.devEmotionLockInput) dom.devEmotionLockInput.checked = false;
-  setEmotion("neutral", "idle", {
-    developerOverride: true,
-    restart: true,
-    emotionIntensity: expressionDefaultsFor("neutral").emotionIntensity,
-    blushIntensity: 0,
-    holdMs: 0,
-    fadeMs: 900,
-  });
-  nextContextEmotionAt = performance.now() + 1200;
-  updateDeveloperEmotionPanel({ syncInputs: true });
-  toast("已恢复自动情绪控制");
-}
-
 function recordVoiceDiagnostic(stage, message, details = {}) {
-  const event = {
-    time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
-    stage: String(stage || "unknown"),
-    message: String(message || ""),
-    ...details,
-  };
-  voiceDiagnostics = { ...event, updatedAt: Date.now() };
-  voiceDiagnosticEvents = [...voiceDiagnosticEvents, event].slice(-36);
-  updateDeveloperSpeechPanel();
-}
-
-function formatDeveloperVoiceStopDiagnostics(metrics) {
-  const attempts = Array.isArray(metrics?.attempts) ? metrics.attempts : [];
-  if (!attempts.length) return "尚无停止过程数据";
-  const reasonLabels = {
-    eos: "EOS：模型选择结束",
-    max_duration: "达到本次解码 token 上限",
-    decoder_limit: "达到解码器硬上限",
-    decode_error: "语义解码异常",
-    mixed: "一次推理包含多种停止原因",
-    unobserved: "旧运行时或未捕获",
-  };
-  return formatDeveloperJson({
-    route: metrics.gptModelRoute || metrics.primaryGptModelRoute || "default",
-    model: metrics.gptModel || metrics.primaryGptModel || "",
-    attempts: attempts.map((attempt, index) => {
-      const decodeDetails = Array.isArray(attempt.semanticDecodes) ? attempt.semanticDecodes : [];
-      const estimatedAudioMs = decodeDetails.reduce(
-        (total, item) => total + Number(item?.semanticDurationEstimateMs || 0),
-        0,
-      );
-      const configuredLimitMs = decodeDetails.reduce(
-        (total, item) => total + Number(item?.decoderConfiguredLimitMs || 0),
-        0,
-      );
-      const effectiveAudioLimitEstimateMs = decodeDetails.reduce(
-        (total, item) => total + Number(item?.decoderEffectiveAudioLimitEstimateMs || 0),
-        0,
-      );
-      return {
-        attempt: Number(attempt.attemptIndex || index + 1),
-        reference: attempt.referenceAudio || "",
-        seed: attempt.segmentSeed ?? null,
-        route: attempt.gptModelRoute || "",
-        model: attempt.gptModel || "",
-        semantic: {
-          decodeCount: Number(attempt.semanticDecodeCount || 0),
-          tokenCount: Number(attempt.semanticTokenCount || 0),
-          tokenBudget: Number(attempt.semanticTokenBudget || 0),
-          conditionedPhonemes: Number(attempt.conditionedPhonemeCount || 0),
-          semanticFrameRateHz: Number(decodeDetails[0]?.semanticFrameRateHz || 0),
-          estimatedAudioMs,
-          configuredLimitMs,
-          effectiveAudioLimitEstimateMs,
-          stopReason: reasonLabels[attempt.semanticStopReason] || attempt.semanticStopReason || "未捕获",
-          eosObserved: Boolean(attempt.semanticEosObserved),
-          details: decodeDetails,
-        },
-        waveform: {
-          rawMs: Number(attempt.rawAudioMs || 0),
-          compactedMs: Number(attempt.compactedAudioMs || 0),
-          activeSpeechMs: Number(attempt.activeSpeechMs || 0),
-          trimmedEdgeMs: Number(attempt.trimmedEdgeMs || 0),
-          removedInternalSilenceMs: Number(attempt.compactedSilenceMs || 0),
-        },
-        result: {
-          qualityTier: attempt.qualityTier || "",
-          qualityConfidence: attempt.qualityConfidence ?? null,
-          failureType: attempt.failureType || "",
-        },
-      };
-    }),
-  });
+  return voiceDiagnosticsController?.record(stage, message, details);
 }
 
 async function refreshDeveloperRuntime() {
@@ -10594,15 +5332,15 @@ async function refreshDeveloperRuntime() {
       voicePreset: settings.gptSovitsModelPreset,
       ttsService: current.gptSovitsStatus || null,
       speech: {
-        stage: voiceDiagnostics.stage,
-        pending: speechState.pending,
-        active: speechState.active,
-        kind: speechState.kind,
-        generation: speechState.generation,
-        pipelineSegmentIndex: speechState.pipelineSegmentIndex,
-        pipelineSegmentTotal: speechState.pipelineSegmentTotal,
-        textLength: speechState.text.length,
-        metrics: speechState.ttsMetrics,
+        stage: voiceDiagnosticsController?.getSnapshot().diagnostics.stage || "idle",
+        pending: speechPlayback.state.pending,
+        active: speechPlayback.state.active,
+        kind: speechPlayback.state.kind,
+        generation: speechPlayback.state.generation,
+        pipelineSegmentIndex: speechPlayback.state.pipelineSegmentIndex,
+        pipelineSegmentTotal: speechPlayback.state.pipelineSegmentTotal,
+        textLength: speechPlayback.state.text.length,
+        metrics: speechPlayback.state.ttsMetrics,
       },
     });
   } catch (error) {
@@ -10611,6 +5349,10 @@ async function refreshDeveloperRuntime() {
 }
 
 async function copyDeveloperDiagnostics() {
+  const voiceSnapshot = voiceDiagnosticsController?.getSnapshot() || {
+    diagnostics: { stage: "idle", message: "尚无语音请求" },
+    events: [],
+  };
   const payload = {
     capturedAt: new Date().toISOString(),
     build: document.documentElement.dataset.build || "web",
@@ -10622,18 +5364,18 @@ async function copyDeveloperDiagnostics() {
       voicePreset: settings.gptSovitsModelPreset,
       ttsEndpoint: settings.ttsEndpoint,
     },
-    voiceDiagnostics,
-    voiceEvents: voiceDiagnosticEvents,
+    voiceDiagnostics: voiceSnapshot.diagnostics,
+    voiceEvents: voiceSnapshot.events,
     runtime: latestRuntimeStatus,
     speechState: {
-      pending: speechState.pending,
-      active: speechState.active,
-      kind: speechState.kind,
-      generation: speechState.generation,
-      pipelineSegmentIndex: speechState.pipelineSegmentIndex,
-      pipelineSegmentTotal: speechState.pipelineSegmentTotal,
-      metrics: speechState.ttsMetrics,
-      alignmentSource: speechState.alignmentSource,
+      pending: speechPlayback.state.pending,
+      active: speechPlayback.state.active,
+      kind: speechPlayback.state.kind,
+      generation: speechPlayback.state.generation,
+      pipelineSegmentIndex: speechPlayback.state.pipelineSegmentIndex,
+      pipelineSegmentTotal: speechPlayback.state.pipelineSegmentTotal,
+      metrics: speechPlayback.state.ttsMetrics,
+      alignmentSource: speechPlayback.state.alignmentSource,
     },
   };
   try {
@@ -10681,925 +5423,25 @@ function updateDeveloperExchange(replyZh, spokenJa, data = {}) {
 }
 
 function updateDeveloperSpeechPanel() {
-  if (!DEV_MODE || !dom.developerPanel) return;
-  const speaking = isSpeaking(performance.now());
-  if (dom.devVoiceStatus) {
-    const timing = speechState.ttsMetrics?.totalMs ? ` / TTS ${speechState.ttsMetrics.totalMs}MS` : "";
-    const segment = speechState.pipelineSegmentTotal > 1
-      ? ` / SEG ${speechState.pipelineSegmentIndex}/${speechState.pipelineSegmentTotal}`
-      : "";
-    dom.devVoiceStatus.textContent = speaking
-      ? `${settings.ttsProvider || DEFAULT_SETTINGS.ttsProvider} / ${speechState.alignmentSource || "NO_TIMELINE"} / ${speechState.voiceStyle || "calm"} / ${speechState.voiceTone || "neutral"}:${speechState.voiceIntensity || "normal"} / ${speechState.speechPace || "normal"}${segment} / ${speechState.charIndex}${timing}`
-      : speechState.pending ? "PENDING" : "IDLE";
-  }
-  if (dom.devReplyZh && speechState.displayText && !speechState.textRevealPending) {
-    dom.devReplyZh.textContent = speechState.displayText;
-  }
-  if (dom.devSpokenJa && speechState.spokenTextJa) {
-    dom.devSpokenJa.textContent = speechState.spokenTextJa;
-  }
-  if (dom.devSpeakingJa) {
-    renderHighlightedSpeech(dom.devSpeakingJa, speechState.spokenTextJa || speechState.text || "");
-  }
-  if (dom.devVoiceDiagnostic) dom.devVoiceDiagnostic.textContent = formatDeveloperJson(voiceDiagnostics);
-  if (dom.devVoiceStopDiagnostic) {
-    dom.devVoiceStopDiagnostic.textContent = formatDeveloperVoiceStopDiagnostics(speechState.ttsMetrics);
-  }
-  if (dom.devVoiceEvents) {
-    dom.devVoiceEvents.textContent = voiceDiagnosticEvents.length
-      ? voiceDiagnosticEvents.slice(-16).reverse().map(item => `[${item.time}] ${item.stage} - ${item.message}`).join("\n")
-      : "-";
-  }
+  return voiceDiagnosticsController?.render();
 }
 
-function renderHighlightedSpeech(target, text) {
-  const timeline = Array.isArray(speechState.timeline) ? speechState.timeline : [];
-  const content = timeline.length ? timeline.map(item => String(item.text || "")).join("") : String(text || "");
-  if (!content) {
-    target.textContent = "-";
-    return;
-  }
-  const liveIndex = ttsAudio && speechState.timeline?.length ? timelineIndexAt(ttsAudio.currentTime) : speechState.charIndex;
-  const index = clamp(Math.floor(liveIndex || 0), 0, Math.max(0, content.length - 1));
-  const windowSize = Math.max(1, Math.min(8, Math.ceil(content.length / 24)));
-  const start = Math.max(0, index - Math.floor(windowSize / 2));
-  const end = Math.min(content.length, start + windowSize);
-  target.replaceChildren(
-    devSpan(content.slice(0, start), "dev-done"),
-    devSpan(content.slice(start, end), "dev-current"),
-    devSpan(content.slice(end), "dev-next")
-  );
-}
-
-function devSpan(text, className) {
-  const span = document.createElement("span");
-  span.className = className;
-  span.textContent = text;
-  return span;
-}
-
-function beginEstimatedSpeech(duration) {
-  const now = performance.now();
-  resetAnimeMouthState();
-  applySpeechMood();
-  speechState.active = true;
-  speechState.pending = false;
-  speechState.textRevealPending = false;
-  speechState.startedAt = now;
-  speechState.endsAt = now + duration;
-  speakUntil = speechState.endsAt;
-  protectCurrentExpressionThroughSpeech(speechState.endsAt);
-}
-
-function beginAudioSpeech(audio, fallbackText) {
-  const now = performance.now();
-  resetAnimeMouthState();
-  applySpeechMood();
-  const duration = Number.isFinite(audio.duration) && audio.duration > 0
-    ? audio.duration * 1000
-    : estimateSpeechDuration(fallbackText || speechState.text, speechState.voiceStyle, speechState.speechSpeed);
-  speechState.active = true;
-  speechState.pending = false;
-  speechState.textRevealPending = false;
-  speechState.startedAt = now - audio.currentTime * 1000;
-  speechState.endsAt = speechState.startedAt + duration;
-  speechState.charIndex = timelineIndexAt(audio.currentTime || 0);
-  speechState.ttsMetrics = {
-    ...(speechState.ttsMetrics || {}),
-    audioPlayMs: Math.round(now - speechState.queuedAt),
-    clientTtfvMs: speechState.requestStartedAt > 0 ? Math.round(now - speechState.requestStartedAt) : null,
-  };
-  speakUntil = speechState.endsAt;
-  protectCurrentExpressionThroughSpeech(speechState.endsAt);
-}
-
-function applySpeechMood() {
-  const mood = speechState.mood;
-  if (!mood) return;
-  if (!speechState.moodApplied) {
-    setEmotion(mood.emotion, mood.gesture, mood);
-    speechState.moodApplied = true;
-  }
-}
-
-async function startSystemSpeech(cleanText, voiceStyle, duration, generation = speechGeneration) {
-  if (generation !== speechGeneration) return null;
-  const configuredProvider = String(settings.ttsProvider || "").trim().toLowerCase();
-  const queuedProvider = String(speechState.provider || "").trim().toLowerCase();
-  if (configuredProvider !== "system" || queuedProvider !== "system") {
-    return failLocalSpeech(new Error("已阻止非显式的系统语音调用"), generation, "系统音回退已拦截");
-  }
-  if (!("speechSynthesis" in window)) {
-    speechState.pending = false;
-    speechState.textRevealPending = false;
-    recordVoiceDiagnostic("system-unavailable", "当前 WebView 没有可用的系统语音");
-    return false;
-  }
-
-  let startTimeout = 0;
-  let settleStarted;
-  const started = new Promise(resolve => {
-    let settled = false;
-    settleStarted = value => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(startTimeout);
-      resolve(value);
-    };
-  });
-
-  const utterance = new SpeechSynthesisUtterance(cleanText);
-  utterance.lang = settings.voiceLocale || "ja-JP";
-  utterance.rate = clamp(settings.speechRate * speechState.speechSpeed * voiceRateForStyle(voiceStyle), 0.55, 1.65);
-  utterance.pitch = clamp(settings.voicePitch * voicePitchForStyle(voiceStyle), 0.75, 1.75);
-  utterance.volume = 1;
-  const voice = selectVoice();
-  if (voice) {
-    utterance.voice = voice;
-    utterance.lang = voice.lang || utterance.lang;
-  }
-  utterance.onboundary = event => {
-    if (generation !== speechGeneration) return;
-    if (typeof event.charIndex === "number") {
-      speechState.charIndex = clamp(event.charIndex, 0, cleanText.length - 1);
-    }
-  };
-  utterance.onstart = () => {
-    if (generation !== speechGeneration) return settleStarted(null);
-    speechState.systemSpeechActive = true;
-    speechState.systemSpeechDeadline = performance.now() + duration * 2 + 3000;
-    beginEstimatedSpeech(duration);
-    recordVoiceDiagnostic("system-playing", "系统语音已经开始播放", { generation });
-    settleStarted(true);
-  };
-  utterance.onend = () => {
-    if (generation !== speechGeneration) return;
-    speechState.systemSpeechActive = false;
-    speechState.active = false;
-    speechState.endsAt = Math.min(speechState.endsAt, performance.now() + 180);
-    speakUntil = speechState.endsAt;
-    protectCurrentExpressionThroughSpeech(performance.now());
-    recordVoiceDiagnostic("ended", "系统语音播放完成", { generation });
-    syncChatSubmitButton();
-  };
-  utterance.onerror = () => {
-    if (generation !== speechGeneration) return settleStarted(null);
-    speechState.systemSpeechActive = false;
-    speechState.pending = false;
-    speechState.textRevealPending = false;
-    speechState.endsAt = performance.now() + Math.min(1400, duration * 0.35);
-    speakUntil = speechState.endsAt;
-    recordVoiceDiagnostic("system-error", "系统语音播放失败", { generation });
-    syncChatSubmitButton();
-    settleStarted(false);
-  };
-  speechState.utterance = utterance;
-  startTimeout = window.setTimeout(() => {
-    if (generation !== speechGeneration) return settleStarted(null);
-    speechState.pending = false;
-    speechState.textRevealPending = false;
-    recordVoiceDiagnostic("system-timeout", "系统语音未能开始播放，文字已在失败确认后显示", { generation });
-    syncChatSubmitButton();
-    settleStarted(false);
-  }, 12000);
-  window.speechSynthesis.speak(utterance);
-  return started;
-}
-
-function buildTtsRequest(cleanText, voiceStyle, voiceTone = "neutral", voiceIntensity = "normal", emotionIntensity = 1, speechSpeed = 1, speechPace = "normal", semanticUnits = null) {
-  const requestedText = stripEmojiForSpeech(cleanText);
-  return {
-    text: requestedText,
-    voiceStyle: String(voiceStyle || "calm"),
-    voiceTone: String(voiceTone || "neutral"),
-    voiceIntensity: normalizeVoiceIntensity(voiceIntensity),
-    emotionIntensity: clamp(toNumber(emotionIntensity, 1), 0.2, 2.5),
-    // The settings slider is a real global speed control for local GPT-SoVITS too.
-    // Keep this multiplication at the transport boundary so browser system TTS,
-    // which already applies settings.speechRate, is not accelerated twice.
-    speechSpeed: clamp(toNumber(speechSpeed, 1) * settings.speechRate, 0.62, 1.45),
-    speechPace: normalizeSpeechPace(speechPace),
-    speechLanguage: speechLanguageProfile().speechLanguage,
-    speechProsody: normalizeSpeechProsody(settings.speechProsody),
-    locale: speechLanguageProfile().locale,
-    // The model decides the user-visible delivery count. GPT-SoVITS may still
-    // use stable internal inference chunks, but it must join them into this
-    // one requested WAV instead of exposing extra playback segments.
-    segmentMode: "joined",
-    // These are required speech acts, not optional acoustic hints. The TTS
-    // service may split a long unit internally, but it may not merge across a
-    // unit boundary or omit a failed tail.
-    semanticUnits: validatedSemanticSpeechUnits(requestedText, semanticUnits),
-  };
-}
-
-function preparedTtsKey(ttsRequest) {
-  const {
-    requestId: _requestId,
-    utteranceId: _utteranceId,
-    segmentIndex: _segmentIndex,
-    segmentTotal: _segmentTotal,
-    ...synthesisRequest
-  } = ttsRequest || {};
-  return JSON.stringify({
-    ...synthesisRequest,
-    provider: String(settings.ttsProvider || "").trim().toLowerCase(),
-    preset: String(settings.gptSovitsModelPreset || ""),
-    endpoint: String(settings.ttsEndpoint || ""),
-  });
-}
-
-async function requestPreparedTts(ttsRequest, generation = null, signal = null) {
-  const prepared = await fetch("/api/tts-prepare", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(ttsRequest),
-    ...(signal ? { signal } : {}),
-  });
-  if (generation !== null) assertCurrentSpeech(generation);
-  if (!prepared.ok) {
-    const rawError = await prepared.text();
-    let errorPayload = null;
-    try {
-      errorPayload = JSON.parse(rawError);
-    } catch {
-      errorPayload = null;
-    }
-    const error = new Error(errorPayload?.error || rawError || `HTTP ${prepared.status}`);
-    error.ttsDiagnostics = errorPayload?.diagnostics && typeof errorPayload.diagnostics === "object"
-      ? errorPayload.diagnostics
-      : null;
-    throw error;
-  }
-  const payload = await prepared.json();
-  if (generation !== null) assertCurrentSpeech(generation);
-  if (!payload.audioBase64) throw new Error("prepared TTS returned no audio");
-  return payload;
-}
-
-function ttsRetryWouldDuplicateWork(error) {
-  return /timeout|timed out|超时|http\s*50[234]|service unavailable|busy|tts_incomplete_audio|"deterministic"\s*:\s*true|produced no audio after retries|(?:segment|inference chunk) \d+\/\d+ produced no audio/i.test(String(error?.message || error || ""));
-}
-
-async function startLocalTts(cleanText, voiceStyle, voiceTone = "neutral", voiceIntensity = "normal", speechSpeed = 1, speechPace = "normal", generation = speechGeneration, semanticUnits = null, signal = null) {
-  let blob;
-  let alignment = null;
-  let alignmentId = "";
-  let retryBlockedError = null;
-  const emotionIntensity = clamp(toNumber(speechState.mood?.emotionIntensity, 1), 0.2, 2.5);
-  const ttsRequest = buildTtsRequest(cleanText, voiceStyle, voiceTone, voiceIntensity, emotionIntensity, speechSpeed, speechPace, semanticUnits);
-  const originalAudio = speechState.originalAudio;
-  if (originalAudio?.audioBase64) {
-    blob = base64ToBlob(originalAudio.audioBase64, originalAudio.contentType || "audio/wav");
-    speechState.ttsMetrics = {
-      source: "original_clip",
-      originalClipId: String(originalAudio.id || ""),
-      voiceId: String(originalAudio.voiceId || ""),
-      audioBytes: Math.floor(String(originalAudio.audioBase64).length * 0.75),
-    };
-    recordVoiceDiagnostic("original-clip-ready", "本轮小概率使用与显示文字绑定的原作语音", {
-      generation,
-      originalClipId: speechState.ttsMetrics.originalClipId,
-      voiceId: speechState.ttsMetrics.voiceId,
-      audioBytes: speechState.ttsMetrics.audioBytes,
-    });
-  }
-  if (!blob && String(settings.ttsProvider || "").toLowerCase() === "gpt-sovits") {
-    try {
-      const cached = speechState.preparedTts;
-      const cacheHit = Boolean(cached?.payload?.audioBase64)
-        && cached.key === preparedTtsKey(ttsRequest);
-      const payload = cacheHit
-        ? cached.payload
-        : await requestPreparedTts(ttsRequest, generation, signal);
-      speechState.preparedTts = null;
-      assertCurrentSpeech(generation);
-      blob = base64ToBlob(payload.audioBase64, payload.contentType || "audio/wav");
-      alignmentId = String(payload.alignmentId || "");
-      alignment = payload.alignment || null;
-      speechState.ttsMetrics = payload.metrics || null;
-      recordVoiceDiagnostic(cacheHit ? "startup-cache-hit" : "local-audio-ready", cacheHit
-        ? "直接使用启动动画期间预合成的开机问候音频"
-        : "本地语音与动漫预估口型已生成，Rhubarb 正在后台校正", {
-        generation,
-        metrics: speechState.ttsMetrics,
-        alignmentId,
-        alignmentSource: alignment?.source || "none",
-      });
-    } catch (error) {
-      if (isSpeechCancellation(error)) throw error;
-      if (error?.ttsDiagnostics) speechState.ttsMetrics = error.ttsDiagnostics;
-      if (ttsRetryWouldDuplicateWork(error)) retryBlockedError = error;
-      console.warn("Deferred TTS failed, falling back to timed TTS:", error);
-      recordVoiceDiagnostic("deferred-failed", `两阶段语音接口不可用，正在回退到完整时间轴接口：${error.message}`, {
-        generation,
-        metrics: speechState.ttsMetrics,
-      });
-    }
-    if (!blob && !retryBlockedError) {
-      try {
-        const timed = await fetch("/api/tts-timed", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(ttsRequest),
-          ...(signal ? { signal } : {}),
-        });
-        assertCurrentSpeech(generation);
-        if (!timed.ok) throw new Error(await timed.text() || `HTTP ${timed.status}`);
-        const payload = await timed.json();
-        assertCurrentSpeech(generation);
-        if (!payload.audioBase64) throw new Error("timed TTS returned no audio");
-        blob = base64ToBlob(payload.audioBase64, payload.contentType || "audio/wav");
-        alignment = payload.alignment || null;
-        speechState.ttsMetrics = payload.metrics || null;
-        recordVoiceDiagnostic("local-ready", "本地语音与口型时间轴已生成（兼容路径）", {
-          generation,
-          metrics: speechState.ttsMetrics,
-          alignmentSource: alignment?.source || "none",
-        });
-      } catch (error) {
-        if (isSpeechCancellation(error)) throw error;
-        if (ttsRetryWouldDuplicateWork(error)) retryBlockedError = error;
-        console.warn("Timed TTS failed, falling back to raw audio:", error);
-        recordVoiceDiagnostic("timed-failed", `带时间轴的语音生成失败，正在重试原始音频：${error.message}`, { generation });
-      }
-    }
-  }
-  if (!blob && retryBlockedError) {
-    recordVoiceDiagnostic("retry-blocked", "上一次合成仍在运行或已明确拒绝残缺音频，已阻止重复提交相同文本", {
-      generation,
-      textLength: cleanText.length,
-    });
-    throw retryBlockedError;
-  }
-  if (!blob) {
-    recordVoiceDiagnostic("raw-retry", "正在重新调用本地模型生成原始音频", { generation });
-    const response = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(ttsRequest),
-      ...(signal ? { signal } : {}),
-    });
-    assertCurrentSpeech(generation);
-    if (!response.ok) {
-      const message = await response.text();
-      throw new Error(message || `HTTP ${response.status}`);
-    }
-    blob = await response.blob();
-    assertCurrentSpeech(generation);
-    recordVoiceDiagnostic("raw-ready", "本地模型原始音频生成成功（无精细时间轴）", { generation });
-  }
-  assertCurrentSpeech(generation);
-  speechState.timeline = Array.isArray(alignment?.items) ? alignment.items : [];
-  speechState.mouthCues = Array.isArray(alignment?.mouthCues) ? alignment.mouthCues : [];
-  speechState.alignmentSource = alignment?.source || "";
-  const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
-  ttsAudio = audio;
-  ttsAudioUrl = url;
-  ttsAudioGeneration = generation;
-
-  audio.onloadedmetadata = () => {
-    if (generation !== speechGeneration) return;
-    if (speechState.active && Number.isFinite(audio.duration) && audio.duration > 0) {
-      speechState.endsAt = speechState.startedAt + audio.duration * 1000;
-      speakUntil = speechState.endsAt;
-      protectCurrentExpressionThroughSpeech(speechState.endsAt);
-    }
-  };
-  audio.ontimeupdate = () => {
-    if (generation !== speechGeneration) return;
-    if (Number.isFinite(audio.duration) && audio.duration > 0) {
-      speechState.charIndex = timelineIndexAt(audio.currentTime);
-    }
-  };
-  audio.onended = () => {
-    if (generation !== speechGeneration) return;
-    if (ttsAudio === audio) {
-      ttsAudio = null;
-      ttsAudioGeneration = 0;
-    }
-    releaseTtsAudioUrl(url);
-    audioMouthLevel = 0;
-    speechState.active = false;
-    speechState.endsAt = performance.now() + 180;
-    speakUntil = speechState.endsAt;
-    protectCurrentExpressionThroughSpeech(performance.now());
-    recordVoiceDiagnostic("ended", "本地语音播放完成", { generation });
-    syncChatSubmitButton();
-  };
-  audio.onerror = () => {
-    if (generation !== speechGeneration) return;
-    if (ttsAudio === audio) {
-      ttsAudio = null;
-      ttsAudioGeneration = 0;
-    }
-    releaseTtsAudioUrl(url);
-    audioMouthLevel = 0;
-    failLocalSpeech(new Error("本地 WAV 已生成，但 WebView 播放失败"), generation, "本地语音播放失败");
-    syncChatSubmitButton();
-  };
-  connectAudioAnalyser(audio);
-  if (audioContext?.state === "suspended") {
-    await audioContext.resume();
-  }
-  assertCurrentSpeech(generation);
-  await audio.play();
-  assertCurrentSpeech(generation);
-  beginAudioSpeech(audio, cleanText);
-  clearVoiceFailure();
-  recordVoiceDiagnostic("local-playing", "GPT-SoVITS 已开始播放", {
-    generation,
-    duration: Number.isFinite(audio.duration) ? Number(audio.duration.toFixed(3)) : null,
-    metrics: speechState.ttsMetrics,
-  });
-  if (alignmentId) {
-    pollDeferredAlignment(alignmentId, generation, signal).catch(error => {
-      if (isSpeechCancellation(error) || generation !== speechGeneration) return;
-      recordVoiceDiagnostic("alignment-failed", `精细口型对齐失败，本轮继续使用实时音量嘴型：${error.message}`, { generation });
-    });
-  }
-}
-
-async function pollDeferredAlignment(alignmentId, generation, signal = null) {
-  const startedAt = performance.now();
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    assertCurrentSpeech(generation);
-    const response = await fetch("/api/tts-alignment", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ alignmentId }),
-      ...(signal ? { signal } : {}),
-    });
-    assertCurrentSpeech(generation);
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-    const payload = await response.json();
-    assertCurrentSpeech(generation);
-    if (payload.status === "ready" && payload.alignment) {
-      const nextAlignment = payload.alignment;
-      speechState.timeline = Array.isArray(nextAlignment.items) ? nextAlignment.items : [];
-      speechState.mouthCues = Array.isArray(nextAlignment.mouthCues) ? nextAlignment.mouthCues : [];
-      speechState.alignmentSource = nextAlignment.source || "deferred";
-      speechState.ttsMetrics = {
-        ...(speechState.ttsMetrics || {}),
-        alignmentMs: Number(payload.alignmentMs || 0),
-        alignmentReadyMs: Math.round(performance.now() - startedAt),
-        alignmentDeferred: true,
-      };
-      recordVoiceDiagnostic("alignment-ready", "精细口型时间轴已接管实时音量嘴型", {
-        generation,
-        alignmentSource: speechState.alignmentSource,
-        metrics: speechState.ttsMetrics,
-      });
-      return;
-    }
-    if (payload.status === "failed") throw new Error(payload.error || "alignment failed");
-    await new Promise(resolve => setTimeout(resolve, 120));
-  }
-  throw new Error("alignment timeout");
-}
-
-function stopLocalTts(preserveSpeechState = false) {
-  if (ttsAudio) {
-    try {
-      ttsAudio.pause();
-      ttsAudio.removeAttribute("src");
-      ttsAudio.load();
-    } catch {
-      // Audio cleanup is best effort inside WebView.
-    }
-  }
-  ttsAudio = null;
-  ttsAudioGeneration = 0;
-  releaseTtsAudioUrl();
-  audioMouthLevel = 0;
-  if (!preserveSpeechState) speechState.pending = false;
-  resetAnimeMouthState();
-}
-
-function releaseTtsAudioUrl(expectedUrl = "") {
-  if (!ttsAudioUrl || (expectedUrl && expectedUrl !== ttsAudioUrl)) return;
-  URL.revokeObjectURL(ttsAudioUrl);
-  ttsAudioUrl = "";
-}
-
-function base64ToBlob(base64, contentType) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return new Blob([bytes], { type: contentType || "audio/wav" });
-}
-
-function timelineIndexAt(seconds) {
-  const timeline = Array.isArray(speechState.timeline) ? speechState.timeline : [];
-  if (timeline.length) {
-    const index = timeline.findIndex(item => seconds >= Number(item.start || 0) && seconds < Number(item.end || 0));
-    if (index >= 0) return index;
-    if (seconds >= Number(timeline[timeline.length - 1].end || 0)) return timeline.length - 1;
-    return 0;
-  }
-  const duration = ttsAudio && Number.isFinite(ttsAudio.duration) && ttsAudio.duration > 0
-    ? ttsAudio.duration
-    : Math.max(0.001, (speechState.endsAt - speechState.startedAt) / 1000);
-  return clamp(Math.floor((seconds / duration) * speechState.text.length), 0, Math.max(0, speechState.text.length - 1));
-}
-
-function connectAudioAnalyser(audio) {
-  try {
-    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioContext.createMediaElementSource(audio);
-    audioAnalyser = audioContext.createAnalyser();
-    audioAnalyser.fftSize = 512;
-    audioSamples = new Uint8Array(audioAnalyser.fftSize);
-    source.connect(audioAnalyser);
-    audioAnalyser.connect(audioContext.destination);
-  } catch (error) {
-    console.warn("Audio analyser unavailable:", error);
-    audioAnalyser = null;
-    audioSamples = null;
-  }
-}
-
-function estimateSpeechDuration(text, voiceStyle = "calm", speechSpeed = 1) {
-  const chars = [...String(text).replace(/\s+/g, "")];
-  const punctuation = chars.filter(ch => /[，。！？、；：,.!?;:]/.test(ch)).length;
-  const weighted = chars.length + punctuation * 4;
-  const styleFactor = voiceStyle === "energetic" ? 0.88 : voiceStyle === "sharp" ? 0.94 : voiceStyle === "soft" ? 1.12 : 1;
-  return clamp((weighted * 105 * styleFactor) / Math.max(0.55, settings.speechRate * speechSpeed), 1000, 16000);
-}
-
-function voiceRateForStyle(style) {
-  if (style === "energetic") return 1.08;
-  if (style === "sharp") return 1.04;
-  if (style === "soft") return 0.9;
-  if (style === "teasing") return 1.02;
-  return 0.98;
-}
-
-function voicePitchForStyle(style) {
-  if (style === "energetic") return 1.06;
-  if (style === "sharp") return 1.02;
-  if (style === "soft") return 0.96;
-  if (style === "teasing") return 1.08;
-  return 1;
-}
-
-function isSpeaking(now = performance.now()) {
-  if (!speechState.active) return false;
-  if (speechState.systemSpeechActive && now < speechState.systemSpeechDeadline) return true;
-  if (speechState.systemSpeechActive) speechState.systemSpeechActive = false;
-  if (now <= speechState.endsAt) return true;
-  speechState.active = false;
-  return now < speakUntil;
-}
-
-function updateAudioMouthLevel() {
-  if (!audioAnalyser || !audioSamples || !ttsAudio || ttsAudio.paused) {
-    audioMouthLevel *= 0.82;
-    return;
-  }
-  audioAnalyser.getByteTimeDomainData(audioSamples);
-  let sum = 0;
-  for (const sample of audioSamples) {
-    const centered = (sample - 128) / 128;
-    sum += centered * centered;
-  }
-  const rms = Math.sqrt(sum / audioSamples.length);
-  const target = clamp((rms - 0.016) * 5.6, 0, 0.74);
-  audioMouthLevel = audioMouthLevel * 0.68 + target * 0.32;
-}
-
-function speechMouthOpen(now = performance.now()) {
-  if (!isSpeaking(now) || !speechState.text) return 0;
-  const elapsed = now - speechState.startedAt;
-  const timedShape = mouthShapeAt(now);
-  const char = currentSpeechChar(now);
-  const shape = timedShape || mouthShapeForChar(char);
-  const pause = /[。！？.!?]/.test(char) ? 0.18 : /[，、；：,;:]/.test(char) ? 0.42 : 1;
-  const styleEnergy = speechState.voiceStyle === "energetic" ? 1.12 : speechState.voiceStyle === "sharp" ? 1.05 : speechState.voiceStyle === "soft" ? 0.9 : 1.02;
-  const mouthScale = speechState.voiceTone === "flustered" ? 1.48 : speechState.voiceTone === "comforting" ? 1.26 : 1.4;
-  const beat = Math.pow(Math.sin(elapsed * 0.033 * settings.speechRate), 2);
-  const secondBeat = Math.pow(Math.sin(elapsed * 0.019 + 0.8), 2) * 0.045;
-  const boundary = animeSpeechBoundaryEnvelope(now);
-  const audioDriven = audioMouthLevel > 0.015 ? audioMouthLevel : 0;
-  const hasTimedShape = Boolean(timedShape);
-  const phonemePulse = hasTimedShape ? 0.98 + beat * 0.035 : 0.78 + beat * 0.2;
-  const phonemeDriven = (shape.open * mouthScale * phonemePulse + (hasTimedShape ? secondBeat * 0.32 : secondBeat)) * pause;
-  const audioBlend = hasTimedShape ? audioDriven * 0.5 : audioDriven * (0.94 + shape.open * 0.7);
-  return clamp(Math.max(audioBlend, phonemeDriven) * styleEnergy * boundary, 0, 0.96);
-}
-
-function speechMouthForm(now = performance.now()) {
-  if (!isSpeaking(now) || !speechState.text) return 0;
-  const shape = mouthShapeAt(now) || mouthShapeForChar(currentSpeechChar(now));
-  const elapsed = now - speechState.startedAt;
-  const wobble = speechState.mouthCues.length ? 0.006 : 0.028;
-  return clamp((shape.form + Math.sin(elapsed * 0.012) * wobble) * animeSpeechBoundaryEnvelope(now), -0.62, 0.62);
-}
-
-function mouthCurveWithSpeech(emotionCurve, speechFormDelta) {
-  const baseCurve = clamp(toNumber(emotionCurve, 0), -1, 1);
-  let result = baseCurve + clamp(toNumber(speechFormDelta, 0), -0.7, 0.7) * 0.38;
-  // Speech may widen/narrow a mouth, but it must not drag a deliberate smile
-  // or frown through zero and briefly recreate the folded neutral wave.
-  if (baseCurve >= 0.22) result = Math.max(result, baseCurve * 0.58);
-  if (baseCurve <= -0.22) result = Math.min(result, baseCurve * 0.58);
-  return clamp(result, -1, 1);
-}
-
-function mouthTemplateCurveForEmotion(emotion, fallbackCurve = 0, expressionPlan = null) {
-  if (Number.isFinite(expressionPlan?.mouthForm)) {
-    return clamp(expressionPlan.mouthForm, -1, 1);
-  }
-  const family = MOUTH_TEMPLATE_FAMILY_BY_EMOTION[emotion] || "";
-  if (family === "smile") return clamp(Math.max(0.82, fallbackCurve), -1, 1);
-  if (family === "awkward") return 0;
-  // Do not use the numeric endpoint as a semantic anger maximum. On the
-  // annotated AiPoet rig the clearest angry mouth is around -0.34.
-  if (family === "angry") return clamp(fallbackCurve, -0.48, -0.24);
-  return clamp(toNumber(fallbackCurve, 0), -1, 1);
-}
-
-function mouthShapeAt(now = performance.now()) {
-  const cues = Array.isArray(speechState.mouthCues) ? speechState.mouthCues : [];
-  if (!cues.length) return null;
-  if (animeMouthState.cachedShape && Math.abs(now - animeMouthState.cachedAt) < 12) {
-    return animeMouthState.cachedShape;
-  }
-  const seconds = ttsAudio ? ttsAudio.currentTime : Math.max(0, (now - speechState.startedAt) / 1000);
-  const duration = speechAudioDurationSeconds();
-  if (seconds <= 0.012 || (duration > 0 && seconds >= duration - 0.035)) {
-    const closed = applyMouthEnvelope(animeShapeForGroup("closed"), "closed", 0);
-    animeMouthState.shape = lerpMouthShape(animeMouthState.shape, closed, 0.42);
-    animeMouthState.cachedAt = now;
-    animeMouthState.cachedShape = { ...animeMouthState.shape };
-    return animeMouthState.cachedShape;
-  }
-  const candidateGroup = dominantAnimeViseme(cues, seconds);
-  const minHold = animeMouthHoldSeconds();
-  const currentGroup = animeMouthState.group || "closed";
-  const targetGroup = shouldSwitchAnimeViseme(currentGroup, candidateGroup, seconds, minHold)
-    ? candidateGroup
-    : currentGroup;
-
-  if (targetGroup !== currentGroup) {
-    animeMouthState.group = targetGroup;
-    animeMouthState.lastSwitchAt = seconds;
-    animeMouthState.holdUntil = seconds + minHold;
-  }
-
-  const baseShape = animeShapeForGroup(animeMouthState.group);
-  const envelope = animeMouthEnvelope();
-  const targetShape = applyMouthEnvelope(baseShape, animeMouthState.group, envelope, animeSpeechBoundaryEnvelope(now));
-  const dt = animeMouthState.lastUpdateAt ? Math.max(0.001, (now - animeMouthState.lastUpdateAt) / 1000) : 0.016;
-  const factor = 1 - Math.exp(-dt * animeMouthSmoothingRate());
-  animeMouthState.shape = lerpMouthShape(animeMouthState.shape, targetShape, factor);
-  animeMouthState.lastUpdateAt = now;
-  animeMouthState.cachedAt = now;
-  animeMouthState.cachedShape = { ...animeMouthState.shape };
-  return animeMouthState.cachedShape;
-}
-
-function createAnimeMouthState() {
-  return {
-    group: "closed",
-    shape: { open: 0.01, form: 0 },
-    lastSwitchAt: 0,
-    holdUntil: 0,
-    lastUpdateAt: 0,
-    cachedAt: 0,
-    cachedShape: null,
-  };
-}
-
-function resetAnimeMouthState() {
-  animeMouthState = createAnimeMouthState();
-}
-
-function dominantAnimeViseme(cues, seconds) {
-  const duration = speechAudioDurationSeconds();
-  const edgeWindow = duration > 0 && (seconds < 0.16 || seconds > duration - 0.18);
-  const windowSize = edgeWindow ? 0.055 : animeMouthAnalysisWindowSeconds();
-  const start = Math.max(0, seconds - windowSize * 0.48);
-  const end = duration > 0 ? Math.min(duration, seconds + windowSize * 0.52) : seconds + windowSize * 0.52;
-  const weights = {};
-  const currentCue = cues.find(item => seconds >= Number(item.start || 0) && seconds < Number(item.end || 0));
-  const currentGroup = animeVisemeGroupForCue(String(currentCue?.value || "X"));
-  for (const cue of cues) {
-    const cueStart = Number(cue.start || 0);
-    const cueEnd = Number(cue.end || cueStart);
-    if (cueEnd <= start || cueStart >= end) continue;
-    const overlap = Math.max(0, Math.min(cueEnd, end) - Math.max(cueStart, start));
-    const group = animeVisemeGroupForCue(String(cue.value || "X"));
-    weights[group] = (weights[group] || 0) + overlap;
-  }
-  if (currentGroup) weights[currentGroup] = (weights[currentGroup] || 0) + windowSize * 0.62;
-  if (audioMouthLevel < 0.025 && !edgeWindow) return "closed";
-  if (currentGroup === "closed" && audioMouthLevel < 0.11 && !edgeWindow) return "closed";
-  return Object.entries(weights).sort((a, b) => b[1] - a[1])[0]?.[0] || currentGroup;
-}
-
-function shouldSwitchAnimeViseme(currentGroup, nextGroup, seconds, minHold) {
-  if (currentGroup === nextGroup) return false;
-  const duration = speechAudioDurationSeconds();
-  const nearEdge = duration > 0 && (seconds < 0.14 || seconds > duration - 0.16);
-  if (nearEdge && nextGroup === "closed") return true;
-  if (nearEdge && currentGroup === "closed" && nextGroup !== "closed") return true;
-  if (nextGroup === "closed") return seconds - animeMouthState.lastSwitchAt > minHold * 0.7 || audioMouthLevel < 0.065;
-  if (currentGroup === "closed" && audioMouthLevel > 0.13) return true;
-  const distance = mouthShapeDistance(animeShapeForGroup(currentGroup), animeShapeForGroup(nextGroup));
-  if (distance < 0.22) return false;
-  if (distance > 0.52 && seconds - animeMouthState.lastSwitchAt > minHold * 0.9) return true;
-  return seconds >= animeMouthState.holdUntil;
-}
-
-function animeMouthHoldSeconds() {
-  const pace = speechState.speechPace || "normal";
-  if (pace === "very_slow") return 0.145;
-  if (pace === "slow") return 0.124;
-  if (pace === "fast" || pace === "very_fast") return 0.082;
-  return 0.102;
-}
-
-function animeMouthAnalysisWindowSeconds() {
-  const pace = speechState.speechPace || "normal";
-  if (pace === "very_slow") return 0.18;
-  if (pace === "slow") return 0.16;
-  if (pace === "fast" || pace === "very_fast") return 0.105;
-  return 0.13;
-}
-
-function animeMouthSmoothingRate() {
-  const pace = speechState.speechPace || "normal";
-  if (pace === "very_slow") return 9.5;
-  if (pace === "slow") return 11;
-  if (pace === "fast" || pace === "very_fast") return 15;
-  return 12.5;
-}
-
-function speechAudioDurationSeconds() {
-  if (ttsAudio && Number.isFinite(ttsAudio.duration) && ttsAudio.duration > 0) return ttsAudio.duration;
-  const duration = (speechState.endsAt - speechState.startedAt) / 1000;
-  return Number.isFinite(duration) && duration > 0 ? duration : 0;
-}
-
-function animeSpeechBoundaryEnvelope(now = performance.now()) {
-  if (!isSpeaking(now)) return 0;
-  const elapsedMs = ttsAudio ? ttsAudio.currentTime * 1000 : Math.max(0, now - speechState.startedAt);
-  const durationMs = speechAudioDurationSeconds() * 1000 || Math.max(1, speechState.endsAt - speechState.startedAt);
-  const start = smoothstep(elapsedMs / 96);
-  const end = smoothstep((durationMs - elapsedMs) / 145);
-  return clamp(start * end, 0, 1);
-}
-
-function animeMouthEnvelope() {
-  return clamp(audioMouthLevel > 0.012 ? audioMouthLevel : 0, 0, 0.78);
-}
-
-function applyMouthEnvelope(shape, group, envelope, boundary = animeSpeechBoundaryEnvelope()) {
-  if (group === "closed") {
-    return { open: clamp(envelope * 0.12, 0.005, 0.055), form: shape.form };
-  }
-  const weightedOpen = shape.open * 0.66 + envelope * 0.76;
-  const minimumOpen = (group === "small" || group === "pucker" ? 0.24 : 0.34) * boundary;
-  return {
-    open: clamp(Math.max(minimumOpen, weightedOpen) * boundary, 0.005, 0.9),
-    form: shape.form,
-  };
-}
-
-function animeVisemeGroupForCue(value) {
-  switch (value) {
-    case "A":
-    case "X":
-      return "closed";
-    case "D":
-      return "open";
-    case "E":
-      return "round";
-    case "F":
-      return "pucker";
-    case "C":
-    case "H":
-      return "wide";
-    case "G":
-      return "medium";
-    case "B":
-    default:
-      return "small";
-  }
-}
-
-function animeShapeForGroup(group) {
-  switch (group) {
-    case "open":
-      return { open: 0.72, form: 0.03 };
-    case "round":
-      return { open: 0.5, form: -0.34 };
-    case "pucker":
-      return { open: 0.34, form: -0.54 };
-    case "wide":
-      return { open: 0.42, form: 0.36 };
-    case "medium":
-      return { open: 0.48, form: 0.08 };
-    case "small":
-      return { open: 0.3, form: -0.02 };
-    case "closed":
-    default:
-      return { open: 0.01, form: 0 };
-  }
-}
-
-function mouthShapeDistance(a, b) {
-  return Math.abs(a.open - b.open) + Math.abs(a.form - b.form) * 0.55;
-}
-
-function lerpMouthShape(from, to, amount) {
-  return {
-    open: from.open + (to.open - from.open) * amount,
-    form: from.form + (to.form - from.form) * amount,
-  };
-}
-
-function smoothstep(value) {
-  const x = clamp(value, 0, 1);
-  return x * x * (3 - 2 * x);
-}
-
-function mouthShapeForCue(value) {
-  switch (value) {
-    case "A":
-      return { open: 0.04, form: 0 };
-    case "B":
-      return { open: 0.12, form: -0.08 };
-    case "C":
-      return { open: 0.34, form: 0.34 };
-    case "D":
-      return { open: 0.66, form: 0.06 };
-    case "E":
-      return { open: 0.48, form: -0.26 };
-    case "F":
-      return { open: 0.26, form: -0.5 };
-    case "G":
-      return { open: 0.18, form: 0.16 };
-    case "H":
-      return { open: 0.38, form: 0.26 };
-    case "X":
-    default:
-      return { open: 0.01, form: 0 };
-  }
-}
-
-function currentSpeechChar(now = performance.now()) {
-  const timeline = Array.isArray(speechState.timeline) ? speechState.timeline : [];
-  if (timeline.length) {
-    const seconds = ttsAudio ? ttsAudio.currentTime : Math.max(0, (now - speechState.startedAt) / 1000);
-    const item = timeline[timelineIndexAt(seconds)];
-    return String(item?.text || "");
-  }
-  const duration = Math.max(1, speechState.endsAt - speechState.startedAt);
-  const progress = clamp((now - speechState.startedAt) / duration, 0, 1);
-  const estimatedIndex = Math.floor(progress * speechState.text.length);
-  const index = Math.max(speechState.charIndex || 0, estimatedIndex);
-  return speechState.text[Math.min(speechState.text.length - 1, index)] || "";
-}
-
-function mouthShapeForChar(char) {
-  if (!char || /[\s]/.test(char)) return { open: 0.02, form: 0 };
-  if (/[。！？.!?]/.test(char)) return { open: 0.04, form: 0 };
-  if (/[，、；：,;:]/.test(char)) return { open: 0.1, form: 0 };
-  if (/[あアぁァかカがガさサざザたタだダなナはハばバぱパまマやヤゃャらラわワ啊阿呀哈]/.test(char)) return { open: 0.62, form: 0.02 };
-  if (/[いイぃィきキぎギしシじジちチぢヂにニひヒびビぴピみミりリ一衣已]/.test(char)) return { open: 0.2, form: 0.42 };
-  if (/[うウぅゥくクぐグすスずズつツっッづヅぬヌふフぶブぷプむムゆユゅュるル呜唔]/.test(char)) return { open: 0.24, form: -0.46 };
-  if (/[えエぇェけケげゲせセぜゼてテでデねネへヘべベぺペめメれレ诶欸]/.test(char)) return { open: 0.38, form: 0.22 };
-  if (/[おオぉォこコごゴそソぞゾとトどドのノほホぼボぽポもモよヨょョろロをヲ哦喔]/.test(char)) return { open: 0.46, form: -0.28 };
-  if (/[んン嗯唔mMnN]/.test(char)) return { open: 0.08, form: -0.08 };
-  return { open: 0.34, form: 0.02 };
-}
-
-function apiConnectionLabel() {
-  if (!settings.modelConfigured) return "API 未配置";
-  return { unverified: "API 已填写，未验证", verified: "API 连接已验证", invalid: "API Key 验证失败", failed: "API 连接失败" }[apiVerification];
-}
-
-function renderApiVerification() {
-  if (dom.settingsStatus) dom.settingsStatus.textContent = `${settings.apiModel || ""} / ${apiConnectionLabel()}`;
-}
-
-function setApiVerification(value) {
-  apiVerification = value;
-  renderApiVerification();
-}
+function buildTtsRequest(...args) { return speechPlayback.buildTtsRequest(...args); }
+function preparedTtsKey(request) { return speechPlayback.preparedTtsKey(request); }
+async function requestPreparedTts(request, generation = null, signal = null) { return speechPlayback.requestPreparedTts(request, generation, signal); }
+function ttsRetryWouldDuplicateWork(error) { return speechPlayback.ttsRetryWouldDuplicateWork(error); }
+async function startLocalTts(...args) { return speechPlayback.startLocalTts(...args); }
+async function startSystemSpeech(...args) { return speechPlayback.startSystemSpeech(...args); }
+function stopLocalTts(preserveSpeechState = false) { return speechPlayback.stopLocalTts(preserveSpeechState); }
+function estimateSpeechDuration(...args) { return speechPlayback.estimateSpeechDuration(...args); }
+function isSpeaking(now = performance.now()) { return speechPlayback.isSpeaking(now); }
+function speechMouthOpen(now = performance.now()) { return speechPlayback.speechMouthOpen(now); }
+function speechMouthForm(now = performance.now()) { return speechPlayback.speechMouthForm(now); }
 
 function updateConnectionStatus(data = {}) {
   const source = String(data.source || "").toLowerCase();
-  if (data.connectionState === "failed") {
-    setApiVerification(data.connectionCode === "upstream_http_401" ? "invalid" : "failed");
-  } else if (source === "api" && !data.connectionState) {
-    setApiVerification("verified");
-  }
+  apiVerificationController?.observeConnection(data);
+  const apiLabel = apiVerificationController?.label() || "";
   const memoryCount = Array.isArray(data.memories) ? data.memories.length : state.memories.length;
   if (data.connectionState === "startup-greeting-fallback") {
     connectionStatus = `STARTUP GREETING LOCAL / MEM ${memoryCount}`;
@@ -11608,12 +5450,12 @@ function updateConnectionStatus(data = {}) {
   } else if (data.connectionState === "backend-failed") {
     connectionStatus = `LOCAL BACKEND LOST / MEM ${memoryCount}`;
   } else if (data.connectionState === "backend-restored") {
-    connectionStatus = `${apiConnectionLabel()} / MEM ${memoryCount}`;
+    connectionStatus = `${apiLabel} / MEM ${memoryCount}`;
   } else if (data.connectionState === "reconnecting") {
     connectionStatus = `API RECONNECT ${data.attempt || 1}/${data.attempts || 3} / MEM ${memoryCount}`;
   } else if (data.connectionState === "failed") {
     const code = String(data.connectionCode || "CONNECTION").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24);
-    connectionStatus = `${apiConnectionLabel()} (${code || "CONNECTION"}) / MEM ${memoryCount}`;
+    connectionStatus = `${apiLabel} (${code || "CONNECTION"}) / MEM ${memoryCount}`;
   } else if (data.toolUsed) {
     const toolState = data.toolStatus === "failed" ? "FAILED" : "OK";
     connectionStatus = `TOOL ${String(data.toolUsed).toUpperCase()} ${toolState} / MEM ${memoryCount}`;
@@ -11622,7 +5464,7 @@ function updateConnectionStatus(data = {}) {
   } else if (source === "tool") {
     connectionStatus = `TOOL ${data.toolUsed || "LOCAL"} / MEM ${memoryCount}`;
   } else if (settings.modelConfigured) {
-    connectionStatus = `${apiConnectionLabel()} / MEM ${memoryCount}`;
+    connectionStatus = `${apiLabel} / MEM ${memoryCount}`;
   } else {
     connectionStatus = `LOCAL / MEM ${memoryCount}`;
   }
@@ -11641,15 +5483,6 @@ function connectionErrorSummary(error) {
   return `${code ? `${code}: ` : ""}${message}`;
 }
 
-function chatRequestId(group, generation, inputCount) {
-  const safeGroup = String(group || "turn").replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 80);
-  return `${safeGroup}:g${generation}:n${inputCount}`;
-}
-
-function retryableChatStatus(status) {
-  return [408, 425, 429, 500, 502, 503, 504].includes(Number(status));
-}
-
 async function requestNativeBackendRecovery() {
   if (!window.pywebview?.api?.ensureBackend) return false;
   try {
@@ -11665,7 +5498,7 @@ async function requestNativeBackendRecovery() {
 }
 
 async function probeLocalBackend() {
-  if (chatRequestInFlight) return true;
+  if (chatController?.isRequestInFlight()) return true;
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 2500);
   try {
@@ -11691,55 +5524,13 @@ function startConnectionWatchdog() {
   connectionWatchdogTimer = window.setInterval(probeLocalBackend, 12000);
 }
 
-function validateFinalTurnEnvelope(result, requestId) {
-  const envelope = result?.finalTurnEnvelope;
-  const expectedTurnId = `${requestId}:turn`;
-  const required = Array.isArray(envelope?.required_acts) ? envelope.required_acts.map(String) : [];
-  const completed = new Set(
-    Array.isArray(envelope?.completed_acts) ? envelope.completed_acts.map(String) : [],
-  );
-  const valid = Boolean(
-    envelope
-    && typeof envelope === "object"
-    && String(envelope.turn_id || "") === expectedTurnId
-    && envelope.turn_complete === true
-    && envelope.standalone === true
-    && envelope.depends_on_undelivered_prefix === false
-    && required.every(item => completed.has(item))
-  );
-  if (!valid) {
-    const error = new Error("最终回答信封与当前请求或必答合同不一致");
-    error.streamFallbackAllowed = false;
-    error.streamErrorType = "invalid_final_turn_envelope";
-    error.streamErrorStage = "client_delivery_validation";
-    throw error;
-  }
-  return envelope;
-}
-
 function createChatUtterancePlayback(generation, requestStartedAt, requestId = "") {
-  speechPipelineAbortController?.abort();
-  speechPipelineAbortController = new AbortController();
-  const controller = speechPipelineAbortController;
-  const pipelineToken = ++speechPipelineGeneration;
-  speechPipelineActive = true;
-  activeAnswerRequestId = String(requestId || activeAnswerRequestId || "");
-  syncChatSubmitButton();
-  const queue = [];
-  let cursor = 0;
-  let closed = false;
-  let running = false;
-  let wake = null;
+  // DOM、交付回执、工具门和上下文身份仍归 chat；播放队列及代次归 controller。
   let progressiveMessage = null;
-  let finalResult = null;
   let toolGateReleased = false;
-  let turnCompleted = false;
-  let textFallbackAfterVoiceFailure = false;
-  let pipelineCancelled = false;
   const deliveryContextEpoch = Math.max(0, Number(state.contextEpoch) || 0);
   const deliveryTurnId = `${requestId}:turn`;
-
-  const recordDelivery = (stage, item = null) => {
+  const recordDelivery = (stage, item = null, finalResult = null) => {
     storageScopedFetch("/api/conversation/delivery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -11759,32 +5550,6 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
     });
   };
 
-  const signalQueue = () => {
-    if (!wake) return;
-    const resolve = wake;
-    wake = null;
-    resolve();
-  };
-  const waitForQueue = (pollMs = 0) => new Promise(resolve => {
-    let timer = 0;
-    const settle = () => {
-      if (wake === settle) wake = null;
-      if (timer) window.clearTimeout(timer);
-      resolve();
-    };
-    wake = settle;
-    if (pollMs > 0) timer = window.setTimeout(settle, pollMs);
-  });
-  const settlePipeline = () => {
-    if (pipelineToken !== speechPipelineGeneration) return;
-    speechPipelineActive = false;
-    speechPipelineAbortController = null;
-    if (activeAnswerRequestId === requestId) activeAnswerRequestId = "";
-    syncChatSubmitButton();
-    // The request owns the thinking indicator. A stream may settle because it
-    // is handing off to the complete-response fallback, so playback cleanup
-    // must not make an unfinished turn appear idle.
-  };
   const releaseToolGate = (item, voiceStarted = false) => {
     if (item.utteranceId !== "tool-preamble" || toolGateReleased) return;
     toolGateReleased = true;
@@ -11811,7 +5576,7 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
       );
     });
   };
-  const markDeliveryPartial = (item, failedIndex) => {
+  const onPartialFailure = (item, failedIndex) => {
     if (progressiveMessage?.message?.meta) {
       progressiveMessage.message.meta.voicePartialFailure = true;
       progressiveMessage.message.meta.voiceFailedSegment = failedIndex + 1;
@@ -11820,9 +5585,7 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
     }
     releaseToolGate(item, false);
   };
-  const reveal = (item, voiceStarted = false) => {
-    if (item.revealed) return;
-    item.revealed = true;
+  const onReveal = (item, voiceStarted = false, finalResult = null, queueLength = 0) => {
     const messageMeta = {
       source: finalResult?.source || "api-stream",
       latencyMs: finalResult?.latencyMs,
@@ -11857,312 +5620,24 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
       progressiveMessage = beginProgressiveAssistantMessage(item.textZh, messageMeta);
       progressiveMessage.spokenParts = [item.speechText];
       progressiveMessage.message.meta.progressiveComplete = false;
-      activeAssistantMessage = progressiveMessage.message;
+      chatController?.setPendingAssistant(progressiveMessage.message);
     } else {
       appendProgressiveAssistantSegment(
         progressiveMessage,
         item.textZh,
         item.speechText,
         item.displayIndex,
-        Math.max(queue.length, item.displayIndex + 1),
+        Math.max(queueLength, item.displayIndex + 1),
       );
     }
     if (item.utteranceId === "tool-preamble") {
       releaseToolGate(item, voiceStarted);
-      showThinkingIndicator(generation, "tool-executing", "开场语已开始播放，正在执行所需工具");
+      thinkingIndicatorController?.show?.(generation, "tool-executing", "开场语已开始播放，正在执行所需工具");
     } else {
-      hideThinkingIndicator(generation);
-    }
-    recordDelivery("text_revealed", item);
-  };
-  const prepare = item => {
-    if (item.preparationStarted) return item.promise;
-    item.preparationStarted = true;
-    const provider = String(settings.ttsProvider || "").trim().toLowerCase();
-    if (item.textOnly) {
-      item.ready = true;
-      item.prepared = null;
-      item.promise = Promise.resolve(null);
-      return item.promise;
-    }
-    if (item.originalAudio?.audioBase64) {
-      item.ready = true;
-      item.prepared = null;
-      item.promise = Promise.resolve(null);
-      recordVoiceDiagnostic("original-reaction-ready", "称呼反应将直接使用已校验的原作音频", {
-        requestId,
-        utteranceId: item.utteranceId,
-        originalClipId: String(item.originalAudio.id || ""),
-      });
-      return item.promise;
-    }
-    if (!settings.voiceEnabled || provider !== "gpt-sovits") {
-      item.ready = true;
-      item.prepared = null;
-      item.promise = Promise.resolve(null);
-      return;
-    }
-    const request = buildSpeechSegmentTtsRequest(item.speechText, item.voiceStyle, {
-      voiceTone: item.voiceTone,
-      voiceIntensity: item.voiceIntensity,
-      speechSpeed: item.speechSpeed,
-      speechPace: item.speechPace,
-      speechLanguage: item.speechLanguage,
-      speechProsody: item.speechProsody,
-      mood: item,
-      requestId,
-      utteranceId: item.utteranceId,
-      segmentIndex: item.displayIndex + 1,
-      segmentTotal: Math.max(
-        queue.length,
-        item.displayIndex + 1,
-        Number(item.visibleSegmentCountAfter) || 1,
-      ),
-    });
-    item.ttsRequest = request;
-    item.promise = requestPreparedTts(request, null, controller.signal)
-      .then(payload => {
-        item.ready = true;
-        item.prepared = { key: preparedTtsKey(request), payload };
-        return item.prepared;
-      })
-      .catch(error => {
-        item.ready = true;
-        if (isSpeechCancellation(error) || controller.signal.aborted) {
-          item.cancelled = true;
-          item.cancellationReason = String(error?.name || "pipeline_aborted");
-          return null;
-        }
-        item.error = error;
-        return null;
-      });
-  };
-  const run = async () => {
-    if (running) return;
-    running = true;
-    try {
-      while (pipelineToken === speechPipelineGeneration && !pipelineCancelled) {
-        if (cursor >= queue.length) {
-          if (closed) break;
-          if (
-            cursor > 0
-            && !speechState.pending
-            && !isSpeaking(performance.now())
-          ) {
-            showThinkingIndicator(
-              generation,
-              "model-generating",
-              "上一句已播完，正在生成或合成下一句",
-            );
-          }
-          await waitForQueue(140);
-          continue;
-        }
-        const item = queue[cursor];
-        if (textFallbackAfterVoiceFailure) {
-          reveal(item, false);
-          recordDelivery("text_revealed_after_audio_failure", item);
-          cursor += 1;
-          continue;
-        }
-        prepare(item);
-        if (cursor > 0) {
-          const currentGeneration = speechState.generation;
-          if (!await waitForSpeechSegmentEnd(currentGeneration, pipelineToken)) break;
-          const previousItem = queue[cursor - 1];
-          if (!await waitForSpeechBoundary(
-            previousItem?.boundaryAfter,
-            previousItem?.speechPace,
-            currentGeneration,
-            pipelineToken,
-          )) break;
-        }
-        if (!item.ready) {
-          showThinkingIndicator(
-            generation,
-            "voice-wait",
-            cursor === 0 ? "第一条完整语句已生成，正在合成语音" : "上一句已播完，正在完成下一句语音",
-          );
-        }
-        await item.promise;
-        if (pipelineToken !== speechPipelineGeneration) break;
-        if (item.cancelled || (pipelineCancelled && !item.error)) break;
-        if (item.textOnly) {
-          reveal(item, false);
-          recordDelivery("text_revealed_after_tts_unavailable", item);
-          cursor += 1;
-          continue;
-        }
-        if (item.error) {
-          textFallbackAfterVoiceFailure = true;
-          // A confirmed failure changes the remainder of this turn to text
-          // delivery.  Cancel an already-prefetched next segment so it cannot
-          // keep the TTS worker and memory busy after speech has been abandoned.
-          controller.abort();
-          failLocalSpeech(item.error, speechGeneration, `第 ${cursor + 1} 条流式语音合成失败`);
-          recordVoiceDiagnostic(
-            "utterance-audio-failed-text-fallback",
-            `第 ${cursor + 1} 条音频已确认失败，改为提交该段及后续文字`,
-            {
-              requestId,
-              utteranceId: item.utteranceId,
-              deterministic: ttsRetryWouldDuplicateWork(item.error),
-            },
-          );
-          recordDelivery("audio_failed", item);
-          reveal(item, false);
-          recordDelivery("text_revealed_after_audio_failure", item);
-          markDeliveryPartial(item, cursor);
-          cursor += 1;
-          continue;
-        }
-        const started = await startSpeech(item.speechText, item.voiceStyle, {
-          displayText: item.textZh,
-          spokenTextJa: item.spokenTextJa,
-          speechText: item.speechText,
-          speechLanguage: item.speechLanguage,
-          speechPace: item.speechPace,
-          speechSpeed: item.speechSpeed,
-          voiceTone: item.voiceTone,
-          voiceIntensity: item.voiceIntensity,
-          mood: item,
-          preparedTts: item.prepared,
-          originalAudio: item.originalAudio,
-          // Playback must consume the exact semantic-unit contract used by
-          // pre-synthesis. Re-deriving sentence boundaries here changes the
-          // cache identity and needlessly synthesizes the same reply again.
-          semanticUnits: Array.isArray(item.ttsRequest?.semanticUnits)
-            ? item.ttsRequest.semanticUnits
-            : [item.speechText],
-          kind: "chat",
-          requestStartedAt,
-          pipelineSegmentIndex: cursor,
-          pipelineSegmentTotal: Math.max(queue.length, cursor + 1),
-        });
-        if (pipelineToken !== speechPipelineGeneration) break;
-        if (started === null) {
-          recordVoiceDiagnostic(
-            "utterance-audio-cancelled",
-            `第 ${cursor + 1} 条音频被新请求取消`,
-            { requestId, utteranceId: item.utteranceId },
-          );
-          break;
-        }
-        if (started !== true) {
-          textFallbackAfterVoiceFailure = true;
-          controller.abort();
-          recordVoiceDiagnostic(
-            "utterance-audio-start-failed-text-fallback",
-            `第 ${cursor + 1} 条音频未能开始，改为提交该段及后续文字`,
-            { requestId, utteranceId: item.utteranceId },
-          );
-          recordDelivery("audio_failed", item);
-          reveal(item, false);
-          recordDelivery("text_revealed_after_audio_failure", item);
-          markDeliveryPartial(item, cursor);
-          cursor += 1;
-          continue;
-        }
-        reveal(item, true);
-        recordDelivery("audio_started", item);
-        if (queue[cursor + 1]) prepare(queue[cursor + 1]);
-        cursor += 1;
-      }
-    } finally {
-      settlePipeline();
-      if (turnCompleted) hideThinkingIndicator(generation);
+      thinkingIndicatorController?.hide?.(generation);
     }
   };
-  return {
-    enqueue(raw) {
-      if (closed || pipelineToken !== speechPipelineGeneration) return;
-      const item = {
-        ...raw,
-        utteranceId: String(raw?.utteranceId || `u${queue.length + 1}`),
-        speechUnitId: String(raw?.unitId || raw?.speechUnitId || raw?.utteranceId || `u${queue.length + 1}`),
-        textZh: String(raw?.textZh || "").trim(),
-        spokenTextJa: String(raw?.spokenTextJa || "").trim(),
-        voiceStyle: String(raw?.voiceStyle || "calm"),
-        voiceTone: String(raw?.voiceTone || "neutral"),
-        voiceIntensity: normalizeVoiceIntensity(raw?.voiceIntensity || "normal"),
-        speechPace: normalizeSpeechPace(raw?.speechPace || "normal"),
-        speechSpeed: clamp(toNumber(raw?.speechSpeed, 1), 0.62, 1.45),
-        speechLanguage: normalizeSpeechLanguage(raw?.speechLanguage || settings.speechLanguage),
-        speechProsody: normalizeSpeechProsody(raw?.speechProsody || settings.speechProsody),
-        emotion: String(raw?.emotion || "neutral"),
-        emotionIntensity: clamp(toNumber(raw?.emotionIntensity, 1), 0.2, 2.5),
-        gesture: String(raw?.gesture || "idle"),
-        blushIntensity: clamp(toNumber(raw?.blushIntensity, 0), 0, 1),
-        eyeContact: clamp(toNumber(raw?.eyeContact, 0.72), 0, 1),
-        gazeX: clamp(toNumber(raw?.gazeX, 0), -0.6, 0.6),
-        gazeY: clamp(toNumber(raw?.gazeY, 0), -0.6, 0.6),
-        tension: clamp(toNumber(raw?.tension, 0), 0, 1),
-        originalAudio: raw?.originalAudio && typeof raw.originalAudio === "object"
-          ? { ...raw.originalAudio }
-          : null,
-        originalReactionId: String(raw?.originalReactionId || raw?.originalAudio?.id || ""),
-        boundaryAfter: normalizeSpeechBoundary(raw?.boundaryAfter),
-        displayIndex: queue.length,
-        revealed: false,
-        ready: false,
-        prepared: null,
-        error: null,
-        cancelled: false,
-        cancellationReason: "",
-        preparationStarted: false,
-        textOnly: Boolean(raw?.textOnly),
-      };
-      item.speechText = chooseSpeechText(item.textZh, item.spokenTextJa, item.speechLanguage);
-      if (!item.textZh || (!item.speechText && !item.textOnly)) return;
-      queue.push(item);
-      if (item.displayIndex === cursor) prepare(item);
-      signalQueue();
-      run().catch(error => {
-        if (!isSpeechCancellation(error)) {
-          recordVoiceDiagnostic("utterance-stream-playback-error", error.message, { pipelineToken });
-        }
-      });
-    },
-    enqueueFinal(result) {
-      finalResult = result;
-      const reply = String(result?.replyWithoutStreamPreamble || result?.reply || "").trim();
-      const spoken = chooseSpeechText(
-        reply,
-        String(result?.spokenTextJaWithoutStreamPreamble || result?.spokenTextJa || "").trim(),
-      );
-      const mood = resolveAssistantMood(result || {}, "", reply);
-      const contracted = Array.isArray(result?.speechUnits)
-        ? result.speechUnits.filter(unit => unit && unit.deliveryRequired !== false).map(unit => ({
-          ...unit,
-          textZh: String(unit.textZh || "").trim(),
-          spokenTextJa: String(unit.spokenTextJa || "").trim(),
-        })).filter(unit => unit.textZh && chooseSpeechText(unit.textZh, unit.spokenTextJa, result?.speechLanguage))
-        : [];
-      const units = contracted.length ? contracted : [{ textZh: reply, spokenTextJa: spoken }];
-      units.forEach((unit, index) => this.enqueue({
-        utteranceId: String(unit.unitId || `final-${index + 1}`),
-        unitId: String(unit.unitId || `final-${index + 1}`),
-        textZh: unit.textZh,
-        spokenTextJa: unit.spokenTextJa,
-        ...mood,
-        ...unit,
-        boundaryAfter: normalizeSpeechBoundary(
-          unit.boundaryAfter,
-          index === units.length - 1 ? "turn_pause" : "phrase_pause",
-        ),
-        speechLanguage: normalizeSpeechLanguage(result?.speechLanguage || settings.speechLanguage),
-        speechPace: resolveSpeechPace(result || {}, ""),
-        speechSpeed: resolveSpeechSpeed(result || {}, "", resolveSpeechPace(result || {}, "")),
-        textOnly: Boolean(result?.textOnlyDelivery) && !chooseSpeechText(
-          unit.textZh,
-          unit.spokenTextJa,
-          result?.speechLanguage || settings.speechLanguage,
-        ),
-      }));
-    },
-    setFinalResult(result) {
-      finalResult = result;
-      recordDelivery("turn_envelope_validated");
+  const onFinalResult = result => {
       bindCompletedTurnIdentity(result, progressiveMessage?.message || null);
       if (progressiveMessage?.message?.meta) {
         Object.assign(progressiveMessage.message.meta, {
@@ -12183,198 +5658,25 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
           progressiveComplete: true,
           ...messageIdentityMeta(result, "assistant"),
         });
-        const metaNode = progressiveMessage.bubble?.querySelector(".meta");
-        if (metaNode) metaNode.textContent = assistantMetaLabel(progressiveMessage.message.meta);
-        if (progressiveMessage.bubble) {
-          progressiveMessage.bubble.dataset.messageId = String(progressiveMessage.message.meta.messageId || "");
-          progressiveMessage.bubble.dataset.turnId = String(progressiveMessage.message.meta.turnId || "");
-        }
+        messageView?.updateMetadata(progressiveMessage.message);
         persist();
       }
-    },
-    close() {
-      closed = true;
-      turnCompleted = true;
-      signalQueue();
-      if (!running && !queue.length) {
-        settlePipeline();
-        hideThinkingIndicator(generation);
-      }
-    },
-    abort() {
-      closed = true;
-      pipelineCancelled = true;
-      controller.abort();
-      if (pipelineToken === speechPipelineGeneration) {
-        speechRequestAbortController?.abort();
-        speechRequestAbortController = null;
-      }
-      signalQueue();
-      if (!running) settlePipeline();
-    },
-    get message() {
-      return progressiveMessage?.message || null;
-    },
-    get queuedCount() {
-      return queue.length;
-    },
   };
-}
-
-async function fetchChatUtteranceStream(payload, controller, playback) {
-  const response = await storageScopedFetch("/api/chat-stream", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: controller.signal,
-    body: JSON.stringify(payload),
+  return speechPlayback.createChatUtterancePlayback(generation, requestStartedAt, requestId, {
+    onStart: id => { chatController?.bindAnswerRequest(id); },
+    onDelivery: recordDelivery,
+    onReveal,
+    onPartialFailure,
+    onFinalResult,
+    onSettled: id => { chatController?.clearAnswerRequest(id); },
+    getMessage: () => progressiveMessage?.message || null,
   });
-  if (!response.ok || !response.body) {
-    const error = new Error(await response.text() || `HTTP ${response.status}`);
-    error.retryable = true;
-    throw error;
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  let finalResult = null;
-  let finalEnvelopeValidated = false;
-  const streamRequestId = String(payload?.requestId || "");
-  let route = "";
-  let hadUtterance = false;
-  let hadAnswerUtterance = false;
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const lines = buffer.split(/\r?\n/);
-    buffer = done ? "" : lines.pop() || "";
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      let event;
-      try {
-        event = JSON.parse(line);
-      } catch (parseError) {
-        const error = new Error("流式接口返回了无法解析的 NDJSON 事件");
-        error.cause = parseError;
-        error.streamFallbackAllowed = !hadUtterance;
-        error.streamErrorType = "stream_event_parse_failed";
-        error.streamErrorStage = "client_ndjson_parse";
-        throw error;
-      }
-      const eventType = String(event.type || "");
-      const eventPayload = event.payload && typeof event.payload === "object" ? event.payload : {};
-      if (eventType === "turn_header") {
-        route = String(eventPayload.route || route);
-        updateThinkingIndicatorStage(
-          route === "fast_chat" ? "model-generating" : "context",
-          route === "fast_chat" ? "快路径已建立，等待第一条完整语句" : "已完成请求分流",
-        );
-      } else if (eventType === "utterance") {
-        hadUtterance = true;
-        hadAnswerUtterance = true;
-        playback.enqueue(eventPayload);
-      } else if (eventType === "progress_utterance") {
-        hadUtterance = true;
-        playback.enqueue({ ...eventPayload, progressOnly: true });
-      } else if (eventType === "tool_status") {
-        updateThinkingIndicatorStage(
-          String(eventPayload.stage || "tool-executing"),
-          String(eventPayload.displayText || "正在执行工具"),
-        );
-      } else if (eventType === "turn_trailer") {
-        finalResult = eventPayload.finalResult || finalResult;
-        route = String(eventPayload.route || route);
-        // Route describes execution policy, not whether answer speech was
-        // already delivered. A tool-gated turn may still stream its complete
-        // answer, so replay only when no answer utterance was observed.
-        // Progress utterances do not count as the final answer.
-        if (finalResult) {
-          // Validate the terminal contract before enqueueing its TTS. A bad
-          // envelope must terminate the turn without starting disposable work.
-          validateFinalTurnEnvelope(finalResult, streamRequestId);
-          finalEnvelopeValidated = true;
-          if (!hadAnswerUtterance) playback.enqueueFinal(finalResult);
-        }
-      } else if (eventType === "turn_abort") {
-        const error = new Error(String(eventPayload.message || eventPayload.reason || "流式回答中断"));
-        error.streamFallbackAllowed = Boolean(eventPayload.fallbackAllowed) && !hadUtterance;
-        error.streamErrorType = String(eventPayload.errorType || eventPayload.reason || "stream_failed");
-        error.code = String(eventPayload.code || "");
-        error.streamErrorStage = String(eventPayload.stage || "stream");
-        error.connectionFailure = Boolean(eventPayload.connectionFailure);
-        error.completedTools = Array.isArray(eventPayload.completedTools) ? eventPayload.completedTools : [];
-        error.streamCancelled = Boolean(eventPayload.cancelled) || isStreamCancellation(error);
-        throw error;
-      }
-    }
-    if (done) break;
-  }
-  if (!finalResult) {
-    const error = new Error("流式接口没有返回完整收尾");
-    error.streamFallbackAllowed = !hadUtterance;
-    throw error;
-  }
-  if (!finalEnvelopeValidated) {
-    validateFinalTurnEnvelope(finalResult, String(payload?.requestId || ""));
-  }
-  playback.setFinalResult(finalResult);
-  playback.close();
-  return { data: finalResult, route, hadUtterance };
-}
-
-async function fetchChatWithReconnect(payload, controller) {
-  const attempts = 3;
-  const retryDelays = [650, 1800];
-  let lastError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    if (controller.signal.aborted) throw new DOMException("Request aborted", "AbortError");
-    try {
-      const response = await storageScopedFetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify(payload),
-      });
-      const responseText = await response.text();
-      let data = {};
-      try {
-        data = responseText ? JSON.parse(responseText) : {};
-      } catch {
-        const parseError = new Error(`本地服务返回了无法解析的响应（HTTP ${response.status}）`);
-        parseError.retryable = response.ok || retryableChatStatus(response.status);
-        throw parseError;
-      }
-      if (!response.ok || data.ok === false) {
-        const error = new Error(data.error || `HTTP ${response.status}`);
-        error.code = String(data.code || "");
-        error.retryable = typeof data.retryable === "boolean"
-          ? data.retryable
-          : retryableChatStatus(response.status);
-        throw error;
-      }
-      if (attempt > 1) toast("连接已恢复，刚才的问题没有丢失");
-      return data;
-    } catch (error) {
-      if (controller.signal.aborted || error?.name === "AbortError") throw error;
-      lastError = error;
-      const retryable = error?.retryable !== false;
-      if (!retryable || attempt >= attempts) break;
-      const localFailure = !error?.code && (error instanceof TypeError || /fetch|网络|解析/.test(String(error?.message || "")));
-      updateConnectionStatus({
-        connectionState: localFailure ? "backend-reconnecting" : "reconnecting",
-        attempt,
-        attempts,
-      });
-      if (localFailure) await requestNativeBackendRecovery();
-      await delay(retryDelays[attempt - 1] || 1200);
-    }
-  }
-  throw lastError || new Error("聊天连接未返回结果");
 }
 
 function updateModelStateLabel() {
   if (!dom.modelState) return;
-  dom.modelState.textContent = runtimeModeStateLabel(`${currentEmotion.toUpperCase()} / ${activeGesture || "IDLE"} / ${connectionStatus}`);
+  const expression = expressionSnapshot();
+  dom.modelState.textContent = runtimeModeStateLabel(`${expression.currentEmotion.toUpperCase()} / ${expression.activeGesture || "IDLE"} / ${connectionStatus}`);
 }
 
 const MAX_CHAT_ATTACHMENTS = 6;
@@ -12391,13 +5693,6 @@ function isImageUpload(file) {
 function attachmentId() {
   if (window.crypto?.randomUUID) return window.crypto.randomUUID();
   return `file-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-}
-
-function formatFileSize(value) {
-  const bytes = Math.max(0, Number(value) || 0);
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function addPendingAttachments(files) {
@@ -12470,7 +5765,7 @@ function renderPendingAttachments() {
     const label = document.createElement("span");
     label.className = "attachment-label";
     label.textContent = item.file.name;
-    label.title = `${item.file.name} · ${formatFileSize(item.file.size)}`;
+    label.title = `${item.file.name} · ${CHAT_MESSAGE_VIEW.formatFileSize(item.file.size)}`;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "remove-attachment-btn";
@@ -12526,9 +5821,9 @@ function chatComposerHasDraft() {
 
 function answerIsBusy() {
   return Boolean(
-    chatRequestInFlight
-    || speechPipelineActive
-    || speechState.pending
+    chatController?.isRequestInFlight()
+    || speechPlayback.pipelineActive
+    || speechPlayback.state.pending
     || isSpeaking(performance.now())
   );
 }
@@ -12559,22 +5854,10 @@ function notifyBackendAnswerCancellation(requestId) {
 
 function stopCurrentAnswer() {
   if (!answerIsBusy()) return;
-  const requestId = String(activeChatRequestId || activeAnswerRequestId || "").trim();
-  const stoppedGeneration = chatRequestGeneration;
-  chatAbortController?.abort();
-  chatAbortController = null;
-  chatRequestGeneration += 1;
-  chatRequestInFlight = false;
-  stopThinkingProgressPolling(requestId);
-  hideThinkingIndicator(stoppedGeneration);
+  chatController?.cancelCurrent({ notifyBackend: true, interruptSpeech: true });
   resetActiveConversationRequestState();
-  supersededChatRequestId = "";
-  interruptCurrentSpeech();
-  activeChatRequestId = "";
-  activeAnswerRequestId = "";
   syncChatSubmitButton();
   setEmotion("neutral", "idle", { restart: true });
-  notifyBackendAnswerCancellation(requestId);
   toast("已终止当前回答");
 }
 
@@ -12624,7 +5907,7 @@ function bindChatResizeHandle() {
     window.removeEventListener("pointerup", finish);
     window.removeEventListener("pointercancel", finish);
     persist();
-    scrollChatToLatest();
+    messageView?.scrollToLatest();
   };
   const move = event => {
     if (!drag) return;
@@ -12648,7 +5931,7 @@ function bindChatResizeHandle() {
   });
   handle.addEventListener("dblclick", () => {
     applyChatWindowHeight(330, { persist: true });
-    scrollChatToLatest();
+    messageView?.scrollToLatest();
   });
   handle.addEventListener("keydown", event => {
     const bounds = chatWindowHeightBounds();
@@ -12661,7 +5944,7 @@ function bindChatResizeHandle() {
     if (next === null) return;
     event.preventDefault();
     applyChatWindowHeight(next, { persist: true });
-    scrollChatToLatest();
+    messageView?.scrollToLatest();
   });
 }
 
@@ -12723,6 +6006,8 @@ function conversationFocusForMessages(messages) {
 async function sendMessage() {
   const text = dom.userInput.value.trim();
   if ((!text && !pendingAttachments.length) || attachmentSerializationInFlight) return;
+  // 用户已经开始新的回合时，失效仍在途的启动/导航历史恢复，避免旧响应重绘当前输入。
+  invalidateConversationHistoryHydration();
   const visibleFocus = conversationFocusForMessages(cleanHistoryForModel());
   attachmentSerializationInFlight = true;
   dom.attachFileBtn.disabled = true;
@@ -12767,243 +6052,149 @@ async function sendMessage() {
     attachments: attachmentMessageMetadata(serializedAttachments),
   });
 
-  if (touchDebounceTimer) {
-    clearTimeout(touchDebounceTimer);
-    touchDebounceTimer = 0;
-    touchState.pendingAfterChat = Boolean(touchState.pendingZone);
-  }
-  if (touchRequestAbortController) {
-    const interruptedTouchGeneration = touchRequestGeneration;
-    touchRequestAbortController.abort();
-    touchRequestAbortController = null;
-    touchRequestGeneration += 1;
-    touchState.requestInFlight = false;
-    touchState.pendingAfterChat = Boolean(touchState.pendingZone);
-    hideThinkingIndicator(-interruptedTouchGeneration);
-  }
+  touchInteractionController?.onChatStarted();
 
-  const priorAnswerRequestId = String(activeAnswerRequestId || activeChatRequestId || "");
+  const priorAnswerRequestId = chatController?.currentRequestId() || "";
   const now = performance.now();
   interruptReplyForNewConversation(now);
   notifyBackendAnswerCancellation(priorAnswerRequestId);
-  if (chatRequestInFlight) {
-    supersededChatRequestId = activeChatRequestId;
-    chatAbortController?.abort();
-    chatRequestGeneration += 1;
-    chatRequestInFlight = false;
-  }
+  if (chatController?.isRequestInFlight()) chatController.supersedeCurrent();
   requestConversationReply();
 }
 
-async function requestConversationReply() {
-  if (!activeConversationInputs.length || chatRequestInFlight) return;
-  const now = performance.now();
-  // Retry paths may enter here without going through sendMessage(). A real
-  // user turn still takes priority over any unfinished assistant audio.
-  interruptReplyForNewConversation(now);
-  const inputs = activeConversationInputs.slice();
-  const proactiveContext = proactiveState.returnContext;
-  const generation = ++chatRequestGeneration;
-  const requestId = chatRequestId(activeConversationGroup, generation, inputs.length);
-  const supersedesRequestId = supersededChatRequestId;
-  supersededChatRequestId = "";
-  const controller = new AbortController();
-  chatAbortController = controller;
-  activeChatRequestId = requestId;
-  activeAnswerRequestId = requestId;
-  chatRequestInFlight = true;
-  syncChatSubmitButton();
-  setEmotion("thinking", "nod", { restart: true });
-  showThinkingIndicator(generation, "context", "正在整理当前对话与记忆");
-  startThinkingProgressPolling(requestId, generation);
-
-  if (settings.debugDirectSpeech) {
-    try {
-      const directText = inputs.join("\n");
-      const applied = await applyAssistant({
-        reply: directText,
-        spokenTextJa: directText,
-        emotion: "neutral",
-        gesture: "idle",
-        voiceStyle: "calm",
-        memoryUpdates: [],
-        source: "debug",
-        debugDirectSpeech: true,
-        clientChatGeneration: generation,
-      }, directText);
-      if (applied && proactiveContext === proactiveState.returnContext) proactiveState.returnContext = "";
-    } finally {
-      if (generation === chatRequestGeneration) {
-        chatRequestInFlight = false;
-        if (!speechPipelineActive && activeAnswerRequestId === requestId) activeAnswerRequestId = "";
-        syncChatSubmitButton();
-      }
-    }
+async function handleChatRequestError(error, { generation, requestId, inputs, proactiveContext }) {
+  if (!chatController?.isCurrent(generation)) return;
+  const detail = connectionErrorSummary(error);
+  const completedTools = Array.isArray(error?.completedTools) ? error.completedTools : [];
+  const typedPipelineFailure = completedTools.length > 0
+    || (Boolean(error?.streamErrorType) && !error?.connectionFailure);
+  if (typedPipelineFailure) {
+    const errorType = String(error.streamErrorType || "internal_pipeline_failed");
+    const stage = String(error.streamErrorStage || "pipeline");
+    const upstreamFailure = errorType === "upstream_http_failed";
+    if (upstreamFailure) updateConnectionStatus({ connectionState: "failed", connectionCode: error.code });
+    const message = upstreamFailure
+      ? `${completedTools.length ? "已有操作完成，但后续模型请求失败。" : ""}${detail}`
+      : completedTools.includes("open_browser")
+      ? "网页已打开，但后续回复生成失败。"
+      : completedTools.length > 0
+      ? "已有操作成功完成，但后续回复生成失败。"
+      : errorType === "cognitive_revision_failed"
+      ? "本次回复没有生成成功。"
+      : errorType === "invalid_reply_anchor"
+      ? "刚才引用的消息没有找到。可以把那句话直接引用过来，我再接着回答。"
+      : errorType === "grounding_validation_failed"
+      ? "我刚才没能确认自己的理解，所以先没有乱说。你愿意的话，我可以换个方式再试一次。"
+      : errorType === "upstream_protocol_failed"
+        ? "我刚才的话没能完整接上。你可以让我再试一次。"
+        : "我刚才没处理好这件事。你可以让我再试一次，或者再告诉我一下你想要的结果。";
+    toast(message);
+    addMessage("assistant", message, {
+      source: "local-recovery",
+      errorType,
+      errorStage: stage,
+      completedTools,
+      noSpeech: true,
+    });
+    recordVoiceDiagnostic(
+      "stream-terminal-failure",
+      "本轮已终止，等待用户明确重新发送",
+      { requestId, errorType, errorStage: stage },
+    );
+    resetActiveConversationRequestState();
     return;
   }
+  updateConnectionStatus({ connectionState: "failed", connectionCode: error?.code || "CONNECTION" });
+  toast(`DeepSeek 连接失败：${detail}`);
+  const applied = await applyAssistant({
+    reply: `DeepSeek 连接失败，已自动重试但仍未收到回答。错误：${detail}。请检查网络、API Key、接口地址或额度后再试。`,
+    spokenTextJa: "接続が一度途切れて、完全な返事を受け取れなかったみたい。質問は分かってるから、もう一度送って。",
+    emotion: "concerned",
+    gesture: "glitch",
+    voiceStyle: "soft",
+    memoryUpdates: [],
+    source: "connection-error",
+    connectionState: "failed",
+    connectionCode: error?.code || "CONNECTION",
+    clientChatGeneration: generation,
+  }, inputs.join("\n"));
+  if (applied && chatController.isCurrent(generation)) clearProactiveReturnContextIf(proactiveContext);
+}
 
+async function requestConversationReply() {
+  if (!activeConversationInputs.length || chatController?.isRequestInFlight()) return;
+  const now = performance.now();
+  // 重试路径也先停止未完成语音；真正的请求代次与 Abort 由控制器唯一持有。
+  interruptReplyForNewConversation(now);
+  const inputs = activeConversationInputs.slice();
+  const proactiveContext = getProactiveReturnContext();
+  const requestId = chatController.createRequestId(activeConversationGroup, inputs.length);
+  const supersedesRequestId = chatController.consumeSupersededRequestId();
   const history = cleanHistoryForModel()
     .filter(message => message.meta?.conversationGroup !== activeConversationGroup)
     .slice(-MODEL_HISTORY_LIMIT);
-  try {
-    const payload = {
-      requestId,
-      clientMessageId: String(activeConversationGroup || requestId),
-      conversationId: String(state.conversationId || `conv_${Math.max(0, Number(state.contextEpoch) || 0)}`),
-      userMessageId: String(activeConversationUserMessageId || createClientMessageId()),
-      conversationFocus: activeConversationFocus ? { ...activeConversationFocus } : null,
-      replyAnchor: activeConversationReplyAnchor ? {
-        anchorId: activeConversationReplyAnchor.anchorId,
-        type: activeConversationReplyAnchor.type,
-        targetMessageIds: [...activeConversationReplyAnchor.targetMessageIds],
-        targetContentHashes: [...(activeConversationReplyAnchor.targetContentHashes || [])],
-        quotedPreview: activeConversationReplyAnchor.quotedPreview,
-      } : null,
-      supersedesRequestId,
-      userMessage: inputs[inputs.length - 1],
-      userMessages: inputs,
-      interruptedPreviousReply: conversationWasInterrupted,
-      proactiveContext,
-      messages: history,
-      attachments: activeConversationAttachments,
-      contextEpoch: Math.max(0, Number(state.contextEpoch) || 0),
-    };
-    let playback = createChatUtterancePlayback(generation, now, requestId);
-    let streamed = null;
-    try {
-      streamed = await fetchChatUtteranceStream(payload, controller, playback);
-    } catch (streamError) {
-      if (isStreamCancellation(streamError)) {
-        playback.abort("stream_cancelled");
-        if (generation === chatRequestGeneration) {
-          recordVoiceDiagnostic(
-            "stream-cancelled",
-            "本轮流式回答已取消，未将取消误记为语音合成失败",
-            { requestId, errorType: String(streamError?.streamErrorType || streamError?.name || "cancelled") },
-          );
-          resetActiveConversationRequestState();
-        }
-        return;
-      }
-      if (streamError?.connectionFailure && streamError?.streamFallbackAllowed) {
-        playback.abort();
-        updateConnectionStatus({ connectionState: "reconnecting", attempt: 1, attempts: 1 });
-        updateThinkingIndicatorStage("backend-reconnecting", "上游暂时不可达，问题已保留，正在自动恢复一次");
-        await delay(2500);
-        if (controller.signal.aborted) throw new DOMException("Request aborted", "AbortError");
-        playback = createChatUtterancePlayback(generation, now, requestId);
-        try {
-          streamed = await fetchChatUtteranceStream(payload, controller, playback);
-          toast("连接已恢复，刚才的问题没有丢失");
-        } catch (recoveryError) {
-          streamError = recoveryError;
-        }
-      }
-      if (streamed) {
-        // Same request id is replay-safe: a completed backend result is reused,
-        // while a failed claim is reopened without adding another user turn.
-      } else if (!streamError?.streamFallbackAllowed) {
-        playback.abort();
-        throw streamError;
-      } else if (settings.architectureFeatures?.frontendFullRetryDisabled) {
-        playback.abort();
-        streamError.streamFallbackAllowed = false;
-        streamError.streamErrorType = String(
-          streamError.streamErrorType || "backend_single_turn_recovery_failed",
-        );
-        throw streamError;
-      } else {
-        playback.abort();
-        updateThinkingIndicatorStage("fallback-legacy", "流式协议不可用，正在切回完整回答路径");
-        const legacyData = await fetchChatWithReconnect(payload, controller);
-        streamed = { data: legacyData, route: "fallback_legacy", hadUtterance: false, legacy: true };
-      }
-    }
-    if (generation !== chatRequestGeneration) return;
-    const data = streamed.data;
-    const assistantData = {
+  const payload = {
+    requestId,
+    clientMessageId: String(activeConversationGroup || requestId),
+    conversationId: String(state.conversationId || `conv_${Math.max(0, Number(state.contextEpoch) || 0)}`),
+    userMessageId: String(activeConversationUserMessageId || createClientMessageId()),
+    conversationFocus: activeConversationFocus ? { ...activeConversationFocus } : null,
+    replyAnchor: activeConversationReplyAnchor ? {
+      anchorId: activeConversationReplyAnchor.anchorId,
+      type: activeConversationReplyAnchor.type,
+      targetMessageIds: [...activeConversationReplyAnchor.targetMessageIds],
+      targetContentHashes: [...(activeConversationReplyAnchor.targetContentHashes || [])],
+      quotedPreview: activeConversationReplyAnchor.quotedPreview,
+    } : null,
+    supersedesRequestId,
+    userMessage: inputs[inputs.length - 1],
+    userMessages: inputs,
+    interruptedPreviousReply: conversationWasInterrupted,
+    proactiveContext,
+    messages: history,
+    attachments: activeConversationAttachments,
+    contextEpoch: Math.max(0, Number(state.contextEpoch) || 0),
+  };
+  const common = {
+    payload,
+    requestId,
+    requestStartedAt: now,
+    inputs,
+    proactiveContext,
+    onLegacy: (data, userMessage, context) => applyAssistant({
       ...data,
-      source: data.source || "api",
-      clientRequestStartedAt: now,
-      clientChatGeneration: generation,
-    };
-    const applied = streamed.legacy
-      ? await applyAssistant(assistantData, inputs.join("\n"))
-      : commitStreamedAssistantResult(assistantData, playback, inputs.join("\n"));
-    if (applied && generation === chatRequestGeneration && proactiveContext === proactiveState.returnContext) {
-      proactiveState.returnContext = "";
-    }
-  } catch (error) {
-    if (controller.signal.aborted || error?.name === "AbortError" || generation !== chatRequestGeneration) return;
-    const detail = connectionErrorSummary(error);
-    const completedTools = Array.isArray(error?.completedTools) ? error.completedTools : [];
-    const typedPipelineFailure = completedTools.length > 0 || (Boolean(error?.streamErrorType) && !error?.connectionFailure);
-    if (typedPipelineFailure) {
-      const errorType = String(error.streamErrorType || "internal_pipeline_failed");
-      const stage = String(error.streamErrorStage || "pipeline");
-      const upstreamFailure = errorType === "upstream_http_failed";
-      if (upstreamFailure) updateConnectionStatus({ connectionState: "failed", connectionCode: error.code });
-      const message = upstreamFailure
-        ? `${completedTools.length ? "已有操作完成，但后续模型请求失败。" : ""}${detail}`
-        : completedTools.includes("open_browser")
-        ? "网页已打开，但后续回复生成失败。"
-        : completedTools.length > 0
-        ? "已有操作成功完成，但后续回复生成失败。"
-        : errorType === "cognitive_revision_failed"
-        ? "本次回复没有生成成功。"
-        : errorType === "invalid_reply_anchor"
-        ? "刚才引用的消息没有找到。可以把那句话直接引用过来，我再接着回答。"
-        : errorType === "grounding_validation_failed"
-        ? "我刚才没能确认自己的理解，所以先没有乱说。你愿意的话，我可以换个方式再试一次。"
-        : errorType === "upstream_protocol_failed"
-          ? "我刚才的话没能完整接上。你可以让我再试一次。"
-          : "我刚才没处理好这件事。你可以让我再试一次，或者再告诉我一下你想要的结果。";
-      toast(message);
-      addMessage("assistant", message, {
-        source: "local-recovery",
-        errorType,
-        errorStage: stage,
-        completedTools,
-        noSpeech: true,
-      });
-      if (generation === chatRequestGeneration) {
-        recordVoiceDiagnostic(
-          "stream-terminal-failure",
-          "本轮已终止，等待用户明确重新发送",
-          { requestId, errorType, errorStage: stage },
-        );
-        resetActiveConversationRequestState();
-      }
-      return;
-    }
-    updateConnectionStatus({ connectionState: "failed", connectionCode: error?.code || "CONNECTION" });
-    toast(`DeepSeek 连接失败：${detail}`);
-    const applied = await applyAssistant({
-      reply: `DeepSeek 连接失败，已自动重试但仍未收到回答。错误：${detail}。请检查网络、API Key、接口地址或额度后再试。`,
-      spokenTextJa: "接続が一度途切れて、完全な返事を受け取れなかったみたい。質問は分かってるから、もう一度送って。",
-      emotion: "concerned",
-      gesture: "glitch",
-      voiceStyle: "soft",
+      clientChatGeneration: context.generation,
+    }, userMessage),
+    onCommit: (data, playback, userMessage) => commitStreamedAssistantResult(data, playback, userMessage),
+    onCommitted: context => clearProactiveReturnContextIf(context.proactiveContext),
+    onCancelled: streamError => {
+      recordVoiceDiagnostic(
+        "stream-cancelled",
+        "本轮流式回答已取消，未将取消误记为语音合成失败",
+        { requestId, errorType: String(streamError?.streamErrorType || streamError?.name || "cancelled") },
+      );
+      resetActiveConversationRequestState();
+    },
+    onError: handleChatRequestError,
+    allowLegacyFallback: true,
+    frontendFullRetryDisabled: Boolean(settings.architectureFeatures?.frontendFullRetryDisabled),
+  };
+  if (settings.debugDirectSpeech) {
+    common.execute = () => ({
+      reply: inputs.join("\n"),
+      spokenTextJa: inputs.join("\n"),
+      emotion: "neutral",
+      gesture: "idle",
+      voiceStyle: "calm",
       memoryUpdates: [],
-      source: "connection-error",
-      connectionState: "failed",
-      connectionCode: error?.code || "CONNECTION",
-      clientChatGeneration: generation,
-    }, inputs.join("\n"));
-    if (applied && generation === chatRequestGeneration && proactiveContext === proactiveState.returnContext) {
-      proactiveState.returnContext = "";
-    }
-  } finally {
-    if (generation === chatRequestGeneration) {
-      stopThinkingProgressPolling(requestId);
-      if (!speechPipelineActive) hideThinkingIndicator(generation);
-      chatRequestInFlight = false;
-      chatAbortController = null;
-      activeChatRequestId = "";
-      if (!speechPipelineActive && activeAnswerRequestId === requestId) activeAnswerRequestId = "";
-      syncChatSubmitButton();
-    }
+      source: "debug",
+      debugDirectSpeech: true,
+    });
+  } else {
+    common.createPlayback = (generation, requestStartedAt, id) =>
+      createChatUtterancePlayback(generation, requestStartedAt, id);
   }
+  return chatController.startTurn(common);
 }
 
 function commitStreamedAssistantResult(data, playback, userMessage = "") {
@@ -13018,7 +6209,7 @@ function commitStreamedAssistantResult(data, playback, userMessage = "") {
   refreshMemoryEditor();
   if (typeof data.coldShoulder === "boolean") {
     persistentColdShoulder = data.coldShoulder;
-    if (persistentColdShoulder) cancelTouchInteractionForColdShoulder();
+    if (persistentColdShoulder) touchInteractionController?.cancelForColdShoulder();
   }
   if (data.relationshipTone) relationshipTone = String(data.relationshipTone);
   updateConnectionStatus(data);
@@ -13029,35 +6220,15 @@ function commitStreamedAssistantResult(data, playback, userMessage = "") {
   );
   playback?.setFinalResult(data);
   refreshTodosAfterAssistantAction(data);
-  refreshBookmarksAfterAssistantAction(data);
-  if (playback?.message) activeAssistantMessage = playback.message;
+  bookmarksController?.refreshAfterAssistantAction(data);
+  if (playback?.message) chatController?.setPendingAssistant(playback.message);
   if (
-    Number(data.clientChatGeneration || 0) === chatRequestGeneration
+    chatController?.isCurrent(Number(data.clientChatGeneration || 0))
   ) {
     resetActiveConversationRequestState();
   }
   persist();
   return true;
-}
-
-function proactiveDeliveryStillCurrent(data) {
-  // A real Todo reminder is authorized separately from unsolicited chat. Keep
-  // normal conversation/playback ordering without letting silence revoke it.
-  if (data?.source === "todo-reminder" && String(data.reminderId || "")) {
-    return !chatRequestInFlight;
-  }
-  const isProactive = data?.interactionKind === "proactive"
-    || data?.source === "proactive"
-    || data?.source === "api-proactive"
-    || data?.source === "todo-reminder";
-  if (!isProactive) return true;
-  // 普通主动消息要复核暂停状态和请求代际；上方已单独处理具有提醒标识的待办。
-  const generation = Number(data.proactiveRequestGeneration || 0);
-  const sequenceId = Number(data.proactiveSequenceId ?? -1);
-  return !proactiveOutreachPaused()
-    && !chatRequestInFlight
-    && (!generation || generation === proactiveRequestGeneration)
-    && (sequenceId < 0 || sequenceId === proactiveState.sequenceId);
 }
 
 async function applyAssistant(data, userMessage = "") {
@@ -13070,17 +6241,17 @@ async function applyAssistant(data, userMessage = "") {
     applyProactiveControl(data.proactiveControl, { persistState: false });
   }
   refreshTodosAfterAssistantAction(data);
-  refreshBookmarksAfterAssistantAction(data);
+  bookmarksController?.refreshAfterAssistantAction(data);
   const incomingSource = String(data.source || "");
   const touchCannotOverrideColdShoulder = incomingSource === "touch" && persistentColdShoulder;
   if (touchCannotOverrideColdShoulder) {
     preservePersistentFuriousPose();
-    hideThinkingIndicator(Number(data.clientChatGeneration || 0));
+    thinkingIndicatorController?.hide?.(Number(data.clientChatGeneration || 0));
     return true;
   }
   if (typeof data.coldShoulder === "boolean") {
     persistentColdShoulder = data.coldShoulder;
-    if (persistentColdShoulder) cancelTouchInteractionForColdShoulder();
+    if (persistentColdShoulder) touchInteractionController?.cancelForColdShoulder();
   }
   if (data.silentLocked || data.silentInteraction) {
     const mood = resolveAssistantMood(data, userMessage, "");
@@ -13088,7 +6259,7 @@ async function applyAssistant(data, userMessage = "") {
     updateConnectionStatus(data);
     setEmotion(mood.emotion, mood.gesture, mood);
     updateDeveloperExchange("", "", data);
-    hideThinkingIndicator(Number(data.clientChatGeneration || 0));
+    thinkingIndicatorController?.hide?.(Number(data.clientChatGeneration || 0));
     return true;
   }
   const reply = String(data.reply || "……你这个问题，倒也不是不能回答。");
@@ -13183,7 +6354,10 @@ async function applyAssistant(data, userMessage = "") {
       });
       progressiveMessage.spokenParts = [String(spokenSegment || "").trim()].filter(Boolean);
       progressiveMessage.message.meta.progressiveComplete = Number(total) <= 1;
-      activeAssistantMessage = progressiveMessage.message;
+      // 普通 chat 的交付由 chat controller 持有；触摸/主动交互仍归页面
+      // interaction owner，避免 progressive 音频把消息误放入 chat pending。
+      if (messageMeta.kind === "chat") chatController?.setPendingAssistant(progressiveMessage.message);
+      else activeInteractionAssistantMessage = progressiveMessage.message;
     } else {
       appendProgressiveAssistantSegment(
         progressiveMessage,
@@ -13193,7 +6367,7 @@ async function applyAssistant(data, userMessage = "") {
         total,
       );
     }
-    hideThinkingIndicator(Number(data.clientChatGeneration || 0));
+    thinkingIndicatorController?.hide?.(Number(data.clientChatGeneration || 0));
   };
   const revealFailedPipelineSegment = (index, displaySegment, spokenSegment, total) => {
     if (progressiveMessage?.message?.meta) {
@@ -13241,18 +6415,18 @@ async function applyAssistant(data, userMessage = "") {
     });
   const startedVoice = await speechReady;
   if (!proactiveDeliveryStillCurrent(data)) {
-    if (speechState.kind === "proactive") interruptCurrentSpeech();
+    if (speechPlayback.state.kind === "proactive") interruptCurrentSpeech();
     return false;
   }
   const supersededByNewChat = messageMeta.kind === "chat"
     && Number(data.clientChatGeneration || 0) > 0
-    && Number(data.clientChatGeneration) !== chatRequestGeneration;
+    && !chatController?.isCurrent(Number(data.clientChatGeneration));
   if (startedVoice === null && supersededByNewChat) return false;
   if (!startedVoice) {
     setEmotion(mood.emotion, mood.gesture, mood);
   }
   updateDeveloperExchange(reply, speechText, data);
-  hideThinkingIndicator(Number(data.clientChatGeneration || 0));
+  thinkingIndicatorController?.hide?.(Number(data.clientChatGeneration || 0));
   const voiceGatedText = (
     settings.voiceEnabled
     && provider === "gpt-sovits"
@@ -13274,14 +6448,15 @@ async function applyAssistant(data, userMessage = "") {
     );
   }
   if (!progressiveMessage) {
-    activeAssistantMessage = addMessage("assistant", reply, messageMeta);
+    const addedAssistantMessage = addMessage("assistant", reply, messageMeta);
+    if (messageMeta.kind === "chat") chatController?.setPendingAssistant(addedAssistantMessage);
+    else activeInteractionAssistantMessage = addedAssistantMessage;
   }
-  const committedAssistantMessage = progressiveMessage?.message || activeAssistantMessage;
+  const committedAssistantMessage = progressiveMessage?.message
+    || (messageMeta.kind === "chat" ? chatController?.getPendingAssistant() : activeInteractionAssistantMessage);
   bindCompletedTurnIdentity(data, committedAssistantMessage);
   if (data.requiresUserResponse === true && incomingSource !== "touch") {
-    state.waitingForUser = true;
-    nextProactiveInteractionAt = 0;
-    persist();
+    markAssistantRequiresUserResponse(incomingSource);
   }
   if (messageMeta.kind === "proactive" && committedAssistantMessage) {
     committedAssistantMessage.meta.requiresUserResponse = data.requiresUserResponse === true;
@@ -13289,7 +6464,7 @@ async function applyAssistant(data, userMessage = "") {
   }
   if (
     messageMeta.kind === "chat"
-    && Number(data.clientChatGeneration || 0) === chatRequestGeneration
+    && chatController?.isCurrent(Number(data.clientChatGeneration || 0))
   ) {
     // The written answer is complete as soon as it is committed to the chat.
     // A later user message may stop only its audio; it must begin a fresh turn
@@ -13306,36 +6481,27 @@ async function applyAssistant(data, userMessage = "") {
 }
 
 function updateInteractionCoordinator(now = performance.now()) {
-  if (speechPipelineActive || speechState.pending || isSpeaking(now)) return;
-  const completedKind = speechState.kind;
+  if (speechPlayback.pipelineActive || speechPlayback.state.pending || isSpeaking(now)) return;
+  const completedKind = speechPlayback.state.kind;
   if (completedKind !== "idle") {
-    speechState.kind = "idle";
-    activeAssistantMessage = null;
+    speechPlayback.markIdle();
+    chatController?.clearPendingAssistant();
+    activeInteractionAssistantMessage = null;
     if (completedKind === "chat") {
       resetActiveConversationRequestState();
     }
   }
-  if (activeConversationInputs.length && !chatRequestInFlight) {
+  if (activeConversationInputs.length && !chatController?.isRequestInFlight()) {
     requestConversationReply();
     return;
   }
-  if (chatRequestInFlight || proactiveInteractionInFlight) return;
-  if (deferredTouchAssistant) {
-    const pending = deferredTouchAssistant;
-    deferredTouchAssistant = null;
-    touchState.pendingAfterChat = false;
-    applyAssistant(pending, "");
-    return;
-  }
-  if (touchState.pendingAfterChat && !touchState.requestInFlight && !touchDebounceTimer) {
-    touchState.pendingAfterChat = false;
-    scheduleTouchInteraction(120);
-  }
+  if (chatController?.isRequestInFlight() || proactiveController?.isRequestInFlight()) return;
+  if (touchInteractionController?.onInteractionIdle()) return;
 }
 
 function markActiveTouchInterrupted() {
-  if (!activeAssistantMessage || activeAssistantMessage.meta?.kind !== "touch") return;
-  activeAssistantMessage.meta.interrupted = true;
+  if (!activeInteractionAssistantMessage || activeInteractionAssistantMessage.meta?.kind !== "touch") return;
+  activeInteractionAssistantMessage.meta.interrupted = true;
   renderMessages();
   persist();
 }
@@ -13350,178 +6516,42 @@ function delay(ms) {
 }
 
 function resolveSpeechPace(data, userMessage = "") {
-  if (/慢慢念|慢慢说|慢点|慢一点|说慢|放慢|ゆっくり|slow/i.test(userMessage)) return /慢慢|ゆっくり/i.test(userMessage) ? "very_slow" : "slow";
-  if (/快点|快一点|说快|加快|很快|超快|早口|fast/i.test(userMessage)) return /很快|超快|早口/i.test(userMessage) ? "very_fast" : "fast";
-  const requested = normalizeSpeechPace(data.speechPace || data.speech_pace || "");
-  if (requested !== "normal") return requested;
-  return "normal";
+  return assistantPresentationController?.resolveSpeechPace?.(data, userMessage) || "normal";
 }
 
 function explicitlyRequestedSpeechPace(userMessage = "") {
-  return /慢慢念|慢慢说|慢点|慢一点|说慢|放慢|快点|快一点|说快|加快|很快|超快|早口|ゆっくり|slow|fast/i.test(userMessage);
+  return assistantPresentationController?.explicitlyRequestedSpeechPace?.(userMessage) || false;
 }
 
 function resolveSpeechSpeed(data, userMessage = "", speechPace = "normal") {
-  const paceSpeed = speedForSpeechPace(speechPace);
-  if (explicitlyRequestedSpeechPace(userMessage) || String(data.speechPaceSource || "") === "user_request") {
-    return clamp(paceSpeed, 0.62, 1.45);
-  }
-  const requested = toNumber(data.speechSpeed, paceSpeed);
-  const paceBounds = {
-    very_slow: [0.66, 0.78],
-    slow: [0.82, 0.92],
-    normal: [0.94, 1.08],
-    fast: [1.08, 1.24],
-    very_fast: [1.22, 1.40],
-  }[normalizeSpeechPace(speechPace)] || [0.94, 1.08];
-  return clamp(requested, paceBounds[0], paceBounds[1]);
+  return assistantPresentationController?.resolveSpeechSpeed?.(data, userMessage, speechPace) ?? 1;
 }
 
 function chooseSpeechText(reply, spokenTextJa, speechLanguage = settings.speechLanguage) {
-  const provider = String(settings.ttsProvider || "").toLowerCase();
-  if (provider === "gpt-sovits") {
-    if (speechLanguageProfile(speechLanguage).speechLanguage === "zh-CN") {
-      return String(reply || "").trim();
-    }
-    // Japanese mode consumes the semantically aligned Japanese script. If
-    // alignment failed, keep it silent rather than reading unrelated text.
-    return String(spokenTextJa || "").trim();
-  }
-  return reply;
+  return assistantPresentationController?.chooseSpeechText?.(reply, spokenTextJa, speechLanguage) ?? reply;
+}
+
+function normalizeVoiceIntensity(value) {
+  return assistantPresentationController?.normalizeVoiceIntensity?.(value) || "normal";
+}
+
+function normalizeSpeechPace(value) {
+  return assistantPresentationController?.normalizeSpeechPace?.(value) || "normal";
+}
+
+function speedForSpeechPace(pace) {
+  return assistantPresentationController?.speedForSpeechPace?.(pace) ?? 1;
 }
 
 function resolveAssistantMood(data, userMessage, reply) {
-  // 优先采用后端提供的合法情绪标签，缺失时再使用文字特征推断。
-  const hasExplicitEmotionLabel = typeof data.emotion === "string" && Boolean(emotionTargets[data.emotion]);
-  const incoming = normalizeEmotion(data.emotion);
-  let emotion = incoming;
-  let gesture = normalizeGesture(data.gesture);
-  let voiceStyle = String(data.voiceStyle || "calm");
-  let voiceTone = normalizeVoiceTone(data.voiceTone || data.voice_tone || voiceStyle);
-  const requestedVoiceIntensity = data.voiceIntensity ?? data.voice_intensity;
-  const deliveryMode = String(data.deliveryMode || data.delivery_mode || "normal").toLowerCase() === "outburst"
-    ? "outburst" : "normal";
-  let emotionIntensityValue = clamp(
-    toNumber(data.emotionIntensity, 1),
-    0.2,
-    deliveryMode === "outburst" ? 2.5 : 1.25
-  );
-  let emotionDeltaValue = clamp(toNumber(data.emotionDelta ?? data.emotion_delta, 0), -0.45, 0.45);
-  const defaults = expressionDefaultsFor(emotion);
-  let blushIntensity = clamp(toNumber(data.blushIntensity, defaults.blushIntensity), 0, 1);
-  let eyeContact = clamp(toNumber(data.eyeContact, defaults.eyeContact), 0, 1);
-  let gazeX = clamp(toNumber(data.gazeX, defaults.gazeX), -0.6, 0.6);
-  let gazeY = clamp(toNumber(data.gazeY, defaults.gazeY), -0.6, 0.6);
-  let tension = clamp(toNumber(data.tension, defaults.tension), 0, 1);
-  const text = `${userMessage}\n${reply}`;
-
-  if (!hasExplicitEmotionLabel && isShyTrigger(text) && ["neutral", "amused", "thinking"].includes(incoming)) {
-    emotion = /爱你|喜欢你|表白|亲|恋|好き|愛して/.test(text) ? "flustered" : "shy";
-    voiceStyle = voiceStyle === "calm" ? "teasing" : voiceStyle;
-    voiceTone = emotion === "flustered" ? "flustered" : "shy";
-    emotionIntensityValue = Math.max(emotionIntensityValue, emotion === "flustered" ? 1.08 : 0.96);
-    blushIntensity = Math.max(blushIntensity, emotion === "flustered" ? 0.88 : 0.78);
-    eyeContact = Math.min(eyeContact, emotion === "flustered" ? 0.31 : 0.42);
-    gazeX = gazeX || -0.22;
-    gazeY = Math.max(gazeY, 0.16);
-  } else if (!hasExplicitEmotionLabel && isConcernTrigger(userMessage) && incoming === "neutral") {
-    emotion = /危险|伤害|别管|撑不住|自杀|死|崩溃/.test(userMessage) ? "protective" : "concerned";
-    gesture = "soften";
-    voiceStyle = "soft";
-    voiceTone = "comforting";
-    emotionIntensityValue = Math.max(emotionIntensityValue, 0.9);
-    eyeContact = Math.max(eyeContact, 0.78);
-  } else if (!hasExplicitEmotionLabel && isAnnoyedTrigger(userMessage) && incoming === "neutral") {
-    emotion = /突然|吓|惊|变态/.test(userMessage) ? "startled" : "annoyed";
-    if (/变态|笨蛋|吓/.test(userMessage)) gesture = "recoil";
-    voiceStyle = "sharp";
-    voiceTone = "dry";
-    tension = Math.max(tension, 0.55);
-  } else if (!hasExplicitEmotionLabel && isThinkingTrigger(userMessage) && incoming === "neutral") {
-    emotion = /证据|严谨|排查|复现|定位|变量|指标|标准|bug|错误|失败|问题/.test(userMessage) ? "focused" : "thinking";
-    gesture = /解释|讲|怎么|为什么|原理|流程|方案|代码|算法|模型|api/i.test(userMessage) ? "explain" : "nod";
-    voiceTone = "serious";
-  } else if (incoming === "excited") {
-    gesture = gesture === "idle" ? "perk" : gesture;
-  } else if (incoming === "laughing") {
-    gesture = gesture === "idle" ? "laugh" : gesture;
-    voiceStyle = voiceStyle === "calm" ? "energetic" : voiceStyle;
-    voiceTone = "laughing";
-    emotionIntensityValue = Math.max(emotionIntensityValue, 1.08);
-    eyeContact = Math.max(eyeContact, 0.76);
-  } else if (incoming === "furious") {
-    gesture = "look_away";
-    voiceStyle = "sharp";
-    voiceTone = "cold";
-    tension = Math.max(tension, 0.92);
-    eyeContact = Math.min(eyeContact, 0.2);
-    gazeX = Math.abs(gazeX) >= 0.3 ? gazeX : 0.5;
-  }
-
-  const moderateFaceTouch = (
-    String(data.source || "") === "touch"
-    && String(data.touchZone || "") === "face"
-    && String(data.touchBoundaryLevel || "normal") === "normal"
-    && String(data.touchExpressionBand || "") === "middle"
-  );
-  if (moderateFaceTouch) {
-    if (["flustered", "startled"].includes(emotion)) emotion = "shy";
-    emotionIntensityValue = clamp(emotionIntensityValue, 0.82, 0.88);
-    emotionDeltaValue = clamp(emotionDeltaValue, -0.02, 0.02);
-    blushIntensity = clamp(blushIntensity, 0.22, 0.38);
-    tension = clamp(tension, 0.12, 0.3);
-    eyeContact = clamp(eyeContact, 0.46, 0.6);
-    gazeX = clamp(gazeX, -0.22, 0.22);
-    gazeY = clamp(gazeY, 0.04, 0.14);
-    if (voiceTone === "flustered") voiceTone = "shy";
-  }
-
-  gesture = contextualGestureForEmotion(emotion, gesture);
-
-  if (emotion === "shy" && !["shy", "shy_annoyed"].includes(voiceTone)) {
-    voiceTone = "shy";
-    if (voiceStyle === "calm") voiceStyle = "soft";
-  } else if (emotion === "flustered" && voiceTone !== "flustered") {
-    voiceTone = "flustered";
-    if (voiceStyle === "calm") voiceStyle = "energetic";
-  } else if (emotion === "startled") {
-    voiceTone = "startled";
-    if (voiceStyle === "calm") voiceStyle = "energetic";
-  } else if (emotion === "laughing") {
-    voiceTone = "laughing";
-  }
-
-  const voiceIntensity = resolveVoiceIntensity(requestedVoiceIntensity, emotionIntensityValue, emotionDeltaValue);
-
-  return {
-    emotion,
-    gesture,
-    voiceStyle,
-    voiceTone,
-    voiceIntensity,
-    emotionIntensity: emotionIntensityValue,
-    emotionDelta: emotionDeltaValue,
-    blushIntensity,
-    eyeContact,
-    gazeX,
-    gazeY,
-    tension,
-    deliveryMode,
-    outburst: deliveryMode === "outburst",
-    holdMs: toNumber(data.holdMs, emotion === "neutral" ? 0 : 45000),
-    fadeMs: toNumber(data.fadeMs, emotion === "neutral" ? 1200 : 10000),
-    annotatedVariantUnit: undefined,
-    accumulateExpression: moderateFaceTouch
-      ? false
-      : Boolean(data.accumulateExpression || data.accumulate_expression),
-    smoothEmotionTransition: moderateFaceTouch
-      ? false
-      : Boolean(data.smoothEmotionTransition || data.source === "touch"),
+  return assistantPresentationController?.resolveAssistantMood?.(data, userMessage, reply) || {
+    emotion: "neutral",
+    gesture: "idle",
+    voiceStyle: "calm",
+    voiceTone: "neutral",
+    voiceIntensity: "normal",
+    emotionIntensity: 1,
   };
-}
-
-function normalizeEmotion(value) {
-  return emotionTargets[value] ? value : "neutral";
 }
 
 function normalizeGesture(value) {
@@ -13529,128 +6559,11 @@ function normalizeGesture(value) {
   return allowed.has(value) ? value : "idle";
 }
 
-function contextualGestureForEmotion(emotion, gesture) {
-  const normalized = normalizeGesture(gesture);
-  if (normalized !== "idle") return normalized;
-  const cycle = EMOTION_GESTURE_CYCLES[emotion];
-  if (!cycle?.length) return normalized;
-  const step = emotionGestureSteps.get(emotion) || 0;
-  emotionGestureSteps.set(emotion, step + 1);
-  return cycle[step % cycle.length];
+function normalizeEmotion(value) {
+  return emotionTargets[value] ? value : "neutral";
 }
 
-function normalizeVoiceTone(value) {
-  const tone = String(value || "").toLowerCase();
-  const allowed = new Set(["neutral", "dry", "gentle", "shy", "shy_annoyed", "flustered", "startled", "serious", "playful", "laughing", "comforting", "urgent", "warm", "cold"]);
-  const aliases = {
-    calm: "neutral",
-    soft: "gentle",
-    sharp: "dry",
-    teasing: "playful",
-    energetic: "urgent",
-    embarrassed: "shy",
-    surprised: "startled",
-    shocked: "startled",
-    laugh: "laughing",
-    laughter: "laughing",
-    joyful: "laughing",
-  };
-  return allowed.has(tone) ? tone : aliases[tone] || "neutral";
-}
-
-function normalizeVoiceIntensity(value) {
-  const raw = String(value || "normal").toLowerCase();
-  const aliases = { low: "subtle", mild: "subtle", medium: "normal", moderate: "normal", high: "strong", intense: "strong" };
-  const normalized = aliases[raw] || raw;
-  return ["subtle", "normal", "strong"].includes(normalized) ? normalized : "normal";
-}
-
-function resolveVoiceIntensity(value, emotionIntensityValue, emotionDeltaValue = 0) {
-  const effective = clamp(toNumber(emotionIntensityValue, 1) + toNumber(emotionDeltaValue, 0) * 0.65, 0.2, 2.5);
-  const inferred = effective <= 0.76 ? "subtle" : effective >= 1.08 ? "strong" : "normal";
-  const raw = String(value ?? "").trim().toLowerCase();
-  const aliases = { low: "subtle", mild: "subtle", medium: "normal", moderate: "normal", high: "strong", intense: "strong" };
-  const requested = aliases[raw] || raw;
-  if (!["subtle", "normal", "strong"].includes(requested)) return inferred;
-  if (requested === "normal" && inferred !== "normal") return inferred;
-  if (new Set([requested, inferred]).size === 2 && requested !== "normal" && inferred !== "normal") return "normal";
-  return requested;
-}
-
-function normalizeSpeechPace(value) {
-  const pace = String(value || "").toLowerCase();
-  const aliases = {
-    slower: "slow",
-    veryslow: "very_slow",
-    very_slowly: "very_slow",
-    normal_speed: "normal",
-    faster: "fast",
-    veryfast: "very_fast",
-  };
-  const normalized = aliases[pace] || pace;
-  return ["very_slow", "slow", "normal", "fast", "very_fast"].includes(normalized) ? normalized : "normal";
-}
-
-function speedForSpeechPace(pace) {
-  return {
-    very_slow: 0.66,
-    slow: 0.8,
-    normal: 1,
-    fast: 1.16,
-    very_fast: 1.32,
-  }[normalizeSpeechPace(pace)] || 1;
-}
-
-function isShyTrigger(text) {
-  if (/不喜欢你|不可爱|讨厌你|别自作多情/.test(text)) return false;
-  return /喜欢你|可爱|漂亮|美|天才少女|老婆|女友|抱|亲|摸头|害羞|脸红|傲娇|辛苦了|想你|厉害|谢谢你|陪我|红莉栖/.test(text);
-}
-
-function isConcernTrigger(text) {
-  return /难受|崩溃|焦虑|害怕|孤独|睡不着|痛苦|不开心|撑不住|累了|失败/.test(text);
-}
-
-function isAnnoyedTrigger(text) {
-  return /克里斯蒂娜|变态|笨蛋|助手|别扭|傲娇/.test(text);
-}
-
-function isThinkingTrigger(text) {
-  return /代码|bug|模型|api|算法|论文|时间|机器|神经|量子|实验|世界线|部署|接口/.test(text.toLowerCase());
-}
-
-function speakPulse(length) {
-  const now = performance.now();
-  const duration = clamp(length * 46, 900, 5200);
-  resetAnimeMouthState();
-  speechState = {
-    active: true,
-    pending: false,
-    startedAt: now,
-    endsAt: now + duration,
-    text: "あ".repeat(clamp(Math.round(length / 3), 4, 80)),
-    displayText: "",
-    spokenTextJa: "",
-    timeline: [],
-    mouthCues: [],
-    alignmentSource: "",
-    ttsMetrics: null,
-    charIndex: 0,
-    voiceStyle: "calm",
-    voiceTone: "neutral",
-    voiceIntensity: "normal",
-    speechPace: "normal",
-    speechSpeed: 1,
-    pipelineSegmentIndex: 1,
-    pipelineSegmentTotal: 1,
-    utterance: null,
-    mood: null,
-    kind: "debug",
-    generation: ++speechGeneration,
-    systemSpeechActive: false,
-    systemSpeechDeadline: 0,
-  };
-  speakUntil = speechState.endsAt;
-}
+function speakPulse(length) { return speechPlayback.speakPulse(length); }
 
 const VISIBLE_STAGE_DIRECTION_TERMS = /(?:眯(?:起)?眼|睁(?:开)?眼|闭(?:上)?眼|眼神|视线|目光|嘴角|偏(?:过)?头|歪(?:了)?头|低头|抬头|转头|别开(?:脸|视线)|移开视线|看向|望向|盯着|注视|微笑|苦笑|冷笑|笑意|笑容|轻笑|叹气|脸红|红晕|皱眉|挑眉|耸肩|抱臂|点头|摇头|后退|前倾|轻哼|沉默|语气|声音|表情|神情|动作|姿势|心想|心里|心中|脑海|内心|心理|暗自|假装|故作|装作|目を|目線|視線|顔を|首を|俯く|笑み|ため息|頬|赤ら|そっぽ|smiles?|sighs?|looks?\s+away|tilts?\s+(?:her\s+)?head|blush(?:es|ed)?)/i;
 const VISIBLE_STAGE_BLOCK_PATTERNS = [
@@ -13706,12 +6619,12 @@ function beginProgressiveAssistantMessage(content, meta = {}) {
   state.messages.push(message);
   state.messages = state.messages.slice(-MAX_MESSAGES);
   persist();
-  const bubble = appendBubble("assistant", visibleContent, message.meta);
-  return { message, bubble, displayParts: [visibleContent], spokenParts: [] };
+  messageView?.append(message);
+  return { message, displayParts: [visibleContent], spokenParts: [] };
 }
 
 function appendProgressiveAssistantSegment(progress, content, spokenText, index, total) {
-  if (!progress?.message || !progress?.bubble) return;
+  if (!progress?.message) return;
   const visibleContent = visibleMessageContent("assistant", content);
   if (visibleContent) progress.displayParts.push(visibleContent);
   if (String(spokenText || "").trim()) progress.spokenParts.push(String(spokenText).trim());
@@ -13724,15 +6637,9 @@ function appendProgressiveAssistantSegment(progress, content, spokenText, index,
       progress.message.meta.spokenTextJa = progress.message.meta.speechText;
     }
   }
-  const body = progress.bubble.querySelector(".message-body");
-  if (body) body.textContent = progress.message.content;
-  const ja = progress.bubble.querySelector(".dev-ja-line");
-  if (ja && progress.spokenParts.length) {
-    const label = normalizeSpeechLanguage(progress.message.meta.speechLanguage) === "zh-CN" ? "ZH" : "JA";
-    ja.textContent = `${label}: ${stripVisibleStageDirections(progress.spokenParts.join("\n\n"))}`;
-  }
+  messageView?.updateProgressive(progress.message);
   persist();
-  scrollChatToLatest();
+  messageView?.scrollToLatest();
 }
 
 function addMessage(role, content, meta = {}) {
@@ -13749,531 +6656,24 @@ function addMessage(role, content, meta = {}) {
   state.messages.push(message);
   state.messages = state.messages.slice(-MAX_MESSAGES);
   persist();
-  appendBubble(role, visibleContent, message.meta);
+  messageView?.append(message);
   return message;
 }
 
 function renderMessages() {
-  dom.chatLog.innerHTML = "";
-  state.messages.slice(-MAX_MESSAGES).forEach(message => appendBubble(message.role, message.content, message.meta || {}));
-  scrollChatToLatest();
-}
-
-function scrollChatToLatest() {
-  if (!dom.chatLog) return;
-  const scroll = () => { dom.chatLog.scrollTop = dom.chatLog.scrollHeight; };
-  scroll();
-  requestAnimationFrame(() => {
-    scroll();
-    requestAnimationFrame(scroll);
-  });
-  window.setTimeout(scroll, 120);
+  messageView?.render(state.messages.slice(-MAX_MESSAGES));
 }
 
 function openChatHistorySearch() {
   if (!dom.settingsModal?.classList.contains("hidden")) closeSettings();
   setChatCollapsed(false, { scroll: false });
-  closeConversationPicker();
-  closeBookmarkPanel();
-  dom.chatHistorySearchPanel?.classList.remove("hidden");
-  dom.chatHistorySearchBtn?.setAttribute("aria-expanded", "true");
-  chatHistorySearchState.offset = 0;
-  updateChatHistorySearchRoleButtons();
-  performChatHistorySearch();
-  window.setTimeout(() => dom.chatHistorySearchInput?.focus(), 0);
+  conversationPickerController?.close();
+  bookmarksController?.close();
+  chatHistorySearchController?.open();
 }
 
 function closeChatHistorySearch() {
-  window.clearTimeout(chatHistorySearchState.timer);
-  chatHistorySearchState.controller?.abort();
-  chatHistorySearchState.controller = null;
-  dom.chatHistorySearchPanel?.classList.add("hidden");
-  dom.chatHistorySearchBtn?.setAttribute("aria-expanded", "false");
-}
-
-function scheduleChatHistorySearch() {
-  window.clearTimeout(chatHistorySearchState.timer);
-  chatHistorySearchState.query = String(dom.chatHistorySearchInput?.value || "").trim();
-  chatHistorySearchState.offset = 0;
-  chatHistorySearchState.timer = window.setTimeout(performChatHistorySearch, 180);
-}
-
-function updateChatHistorySearchRoleButtons() {
-  dom.chatHistorySearchRoleButtons?.forEach(button => {
-    const active = String(button.dataset.historyRole || "all") === chatHistorySearchState.role;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-  });
-}
-
-function formatHistorySearchTime(value) {
-  const parsed = new Date(String(value || ""));
-  if (!Number.isFinite(parsed.getTime())) return "时间未知";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(parsed);
-}
-
-function appendHighlightedHistoryText(node, text, query) {
-  const source = String(text || "");
-  const needle = String(query || "").trim();
-  if (!needle) {
-    node.textContent = source;
-    return;
-  }
-  const sourceFolded = source.normalize("NFKC").toLocaleLowerCase();
-  const needleFolded = needle.normalize("NFKC").toLocaleLowerCase();
-  const index = sourceFolded.indexOf(needleFolded);
-  if (index < 0) {
-    node.textContent = source;
-    return;
-  }
-  node.append(
-    document.createTextNode(source.slice(0, index)),
-    Object.assign(document.createElement("mark"), {
-      textContent: source.slice(index, index + needle.length),
-    }),
-    document.createTextNode(source.slice(index + needle.length)),
-  );
-}
-
-function findLoadedHistoryBubble(result) {
-  const candidates = [
-    ...(result.matchRoles || []).map(role => ({
-      role,
-      content: role === "user" ? result.user : result.assistant,
-    })),
-  ];
-  return [...(dom.chatLog?.querySelectorAll(".msg") || [])].find(bubble => {
-    const role = bubble.classList.contains("assistant") ? "assistant" : "user";
-    const body = bubble.querySelector(".message-body");
-    return candidates.some(candidate =>
-      candidate.role === role
-      && String(body?.textContent || "").trim() === String(candidate.content || "").trim()
-      && (
-        !result.at
-        || !bubble.dataset.historyAt
-        || bubble.dataset.historyAt === String(result.at)
-      )
-    );
-  }) || null;
-}
-
-function activateHistorySearchResult(result, card) {
-  const loaded = findLoadedHistoryBubble(result);
-  if (loaded) {
-    closeChatHistorySearch();
-    loaded.classList.add("history-search-hit");
-    loaded.scrollIntoView({ block: "center", behavior: "smooth" });
-    window.setTimeout(() => loaded.classList.remove("history-search-hit"), 2600);
-    return;
-  }
-  card.classList.toggle("expanded");
-  card.querySelectorAll(".chat-history-result-copy").forEach(node => {
-    node.style.whiteSpace = card.classList.contains("expanded") ? "pre-wrap" : "";
-  });
-}
-
-function renderChatHistorySearchResults() {
-  if (!dom.chatHistorySearchResults) return;
-  dom.chatHistorySearchResults.replaceChildren();
-  if (!chatHistorySearchState.results.length) {
-    const empty = document.createElement("div");
-    empty.className = "chat-history-search-empty";
-    empty.textContent = chatHistorySearchState.query
-      ? "没有找到相关聊天记录"
-      : "还没有可显示的聊天记录";
-    dom.chatHistorySearchResults.appendChild(empty);
-  }
-  chatHistorySearchState.results.forEach(result => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "chat-history-result";
-    card.dataset.historyResultId = String(result.id || "");
-    const head = document.createElement("span");
-    head.className = "chat-history-result-head";
-    const actor = document.createElement("strong");
-    actor.textContent = (result.matchRoles || []).includes("user")
-      && !(result.matchRoles || []).includes("assistant")
-      ? "我"
-      : (result.matchRoles || []).includes("assistant")
-        && !(result.matchRoles || []).includes("user")
-        ? "AMADEUS"
-        : "本轮对话";
-    const at = document.createElement("span");
-    at.textContent = formatHistorySearchTime(result.at);
-    head.append(actor, at);
-    card.appendChild(head);
-    for (const [role, content] of [
-      ["user", result.user],
-      ["assistant", result.assistant],
-    ]) {
-      if (!String(content || "").trim()) continue;
-      const copy = document.createElement("span");
-      copy.className = "chat-history-result-copy";
-      copy.dataset.role = role;
-      appendHighlightedHistoryText(
-        copy,
-        `${role === "user" ? "我" : "AMADEUS"}：${String(content).trim()}`,
-        chatHistorySearchState.query,
-      );
-      card.appendChild(copy);
-    }
-    card.addEventListener("click", () => activateHistorySearchResult(result, card));
-    dom.chatHistorySearchResults.appendChild(card);
-  });
-  const page = Math.floor(chatHistorySearchState.offset / chatHistorySearchState.limit) + 1;
-  if (dom.chatHistorySearchPage) dom.chatHistorySearchPage.textContent = `第 ${page} 页`;
-  if (dom.chatHistorySearchPrevBtn) dom.chatHistorySearchPrevBtn.disabled = chatHistorySearchState.offset <= 0;
-  if (dom.chatHistorySearchNextBtn) dom.chatHistorySearchNextBtn.disabled = !chatHistorySearchState.hasMore;
-}
-
-async function performChatHistorySearch() {
-  if (dom.chatHistorySearchPanel?.classList.contains("hidden")) return;
-  window.clearTimeout(chatHistorySearchState.timer);
-  chatHistorySearchState.query = String(dom.chatHistorySearchInput?.value || "").trim();
-  chatHistorySearchState.controller?.abort();
-  const controller = new AbortController();
-  chatHistorySearchState.controller = controller;
-  if (dom.chatHistorySearchStatus) dom.chatHistorySearchStatus.textContent = "正在查找…";
-  const params = new URLSearchParams({
-    q: chatHistorySearchState.query,
-    role: chatHistorySearchState.role,
-    limit: String(chatHistorySearchState.limit),
-    offset: String(chatHistorySearchState.offset),
-  });
-  try {
-    const response = await storageScopedFetch(
-      `/api/conversation/search?${params.toString()}`,
-      { cache: "no-store", signal: controller.signal },
-    );
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
-    if (controller !== chatHistorySearchState.controller) return;
-    chatHistorySearchState.total = Math.max(0, Number(data.total) || 0);
-    chatHistorySearchState.hasMore = Boolean(data.hasMore);
-    chatHistorySearchState.results = Array.isArray(data.results) ? data.results : [];
-    if (dom.chatHistorySearchStatus) {
-      dom.chatHistorySearchStatus.textContent = chatHistorySearchState.query
-        ? `找到 ${chatHistorySearchState.total} 条相关记录`
-        : `最近 ${chatHistorySearchState.total} 条记录`;
-    }
-    renderChatHistorySearchResults();
-  } catch (error) {
-    if (error?.name === "AbortError") return;
-    if (dom.chatHistorySearchStatus) dom.chatHistorySearchStatus.textContent = "查找失败";
-    chatHistorySearchState.results = [];
-    renderChatHistorySearchResults();
-    toast(`聊天记录查找失败：${error.message}`);
-  }
-}
-
-function hideThinkingIndicator(generation = 0) {
-  if (!thinkingIndicator) return;
-  const indicatorGeneration = Number(thinkingIndicator.dataset.generation || 0);
-  if (generation && indicatorGeneration && generation !== indicatorGeneration) return;
-  thinkingIndicator.remove();
-  thinkingIndicator = null;
-}
-
-const THINKING_PIPELINE_STAGES = {
-  received: ["已接收请求", "消息已经进入处理队列", 0],
-  attachments: ["读取输入", "正在读取消息与本轮附件", 0],
-  context: ["整理上下文", "正在组合对话、记忆与人格信息", 1],
-  "tool-executing": ["执行工具", "正在获取回答所需的视觉、文件或联网证据", 2],
-  researching: ["补充证据", "现有证据不足，正在继续检索", 2],
-  "model-generating": ["生成回答", "模型正在形成第一版回答", 3],
-  "fallback-legacy": ["继续生成", "快速回复没有完整收尾，正在继续组织回答", 3],
-  "model-synthesizing": ["综合证据", "模型正在结合工具结果形成回答", 3],
-  validating: ["检查回答", "正在检查完整性、上下文与证据", 4],
-  repairing: ["修正回答", "正在根据校验结果定向修正", 4],
-  finalizing: ["整理输出", "正在选择完整回答并整理情绪参数", 4],
-  postprocessing: ["准备交付", "正在校准日语发声稿与记忆更新", 4],
-  "speech-segmenting": ["切分语音", "正在按自然语义安排分段播放", 5],
-  "voice-first": ["合成首段", "正在优先生成可以立即播放的第一段", 5],
-  "voice-prefetch": ["预合成后续", "前一段播放期间正在准备下一段", 5],
-  "voice-wait": ["衔接语音", "下一段尚未准备完成，正在保持自然衔接", 5],
-  "voice-playing": ["播放语音", "语音已经开始播放，后续段在后台准备", 5],
-  complete: ["处理完成", "回答已经交付", 5],
-  failed: ["处理失败", "处理链路发生错误", 5],
-};
-
-function thinkingStageDefinition(stage) {
-  return THINKING_PIPELINE_STAGES[String(stage || "").toLowerCase()] || ["处理中", "正在完成当前步骤", 1];
-}
-
-function updateThinkingIndicatorStage(stage, detail = "", elapsedMs = null) {
-  if (!thinkingIndicator) return;
-  const [labelText, defaultDetail, step] = thinkingStageDefinition(stage);
-  thinkingIndicator.dataset.stage = String(stage || "working");
-  const label = thinkingIndicator.querySelector(".thinking-label");
-  if (label) label.textContent = DEV_MODE ? labelText : "正在思考";
-  const detailNode = thinkingIndicator.querySelector(".thinking-stage-detail");
-  if (detailNode) detailNode.textContent = String(detail || defaultDetail);
-  const elapsedNode = thinkingIndicator.querySelector(".thinking-elapsed");
-  if (elapsedNode && Number.isFinite(Number(elapsedMs))) {
-    elapsedNode.textContent = `${(Number(elapsedMs) / 1000).toFixed(1)}s`;
-  }
-  thinkingIndicator.querySelectorAll(".thinking-stage-track i").forEach((node, index) => {
-    node.classList.toggle("done", index < step);
-    node.classList.toggle("active", index === step);
-  });
-}
-
-function stopThinkingProgressPolling(requestId = "") {
-  if (requestId && thinkingProgressRequestId && requestId !== thinkingProgressRequestId) return;
-  if (thinkingProgressTimer) window.clearInterval(thinkingProgressTimer);
-  thinkingProgressTimer = 0;
-  thinkingProgressRequestId = "";
-}
-
-function startThinkingProgressPolling(requestId, generation) {
-  stopThinkingProgressPolling();
-  if (!DEV_MODE || !requestId) return;
-  thinkingProgressRequestId = requestId;
-  const poll = async () => {
-    if (requestId !== thinkingProgressRequestId || generation !== chatRequestGeneration) return;
-    try {
-      const response = await fetch(`/api/developer/chat-progress?requestId=${encodeURIComponent(requestId)}`, {
-        cache: "no-store",
-      });
-      if (!response.ok) return;
-      const progress = await response.json();
-      if (!progress.ok || requestId !== thinkingProgressRequestId) return;
-      updateThinkingIndicatorStage(progress.stage, progress.detail, progress.elapsedMs);
-    } catch {
-      // Progress is diagnostic-only and must never disturb the chat request.
-    }
-  };
-  poll();
-  thinkingProgressTimer = window.setInterval(poll, 420);
-}
-
-function showThinkingIndicator(generation, stage = "context", detail = "") {
-  if (!dom.chatLog) return;
-  hideThinkingIndicator();
-  const bubble = document.createElement("article");
-  bubble.className = "msg assistant thinking-indicator";
-  bubble.classList.toggle("developer-pipeline", DEV_MODE);
-  bubble.dataset.generation = String(generation || 0);
-  bubble.setAttribute("role", "status");
-  bubble.setAttribute("aria-live", "polite");
-  bubble.setAttribute("aria-label", "AMADEUS 正在思考");
-
-  const meta = document.createElement("span");
-  meta.className = "meta";
-  meta.textContent = DEV_MODE ? "AMADEUS · PIPELINE" : "AMADEUS · THINKING";
-  const body = document.createElement("span");
-  body.className = "message-body thinking-body";
-  const label = document.createElement("span");
-  label.className = "thinking-label";
-  label.textContent = "正在思考";
-  const dots = document.createElement("span");
-  dots.className = "thinking-dots";
-  dots.setAttribute("aria-hidden", "true");
-  for (let index = 0; index < 3; index += 1) {
-    const dot = document.createElement("i");
-    dot.style.setProperty("--thinking-dot-index", String(index));
-    dots.appendChild(dot);
-  }
-  body.append(label, dots);
-  if (DEV_MODE) {
-    const stagePanel = document.createElement("span");
-    stagePanel.className = "thinking-stage-panel";
-    const track = document.createElement("span");
-    track.className = "thinking-stage-track";
-    track.setAttribute("aria-hidden", "true");
-    for (let index = 0; index < 6; index += 1) track.appendChild(document.createElement("i"));
-    const stageDetail = document.createElement("span");
-    stageDetail.className = "thinking-stage-detail";
-    const elapsed = document.createElement("span");
-    elapsed.className = "thinking-elapsed";
-    elapsed.textContent = "0.0s";
-    stagePanel.append(track, stageDetail, elapsed);
-    body.appendChild(stagePanel);
-  }
-  bubble.append(meta, body);
-  dom.chatLog.appendChild(bubble);
-  thinkingIndicator = bubble;
-  updateThinkingIndicatorStage(stage, detail, 0);
-  scrollChatToLatest();
-  requestAnimationFrame(() => bubble.scrollIntoView({ block: "end", inline: "nearest" }));
-}
-
-function appendBubble(role, content, metaData = {}) {
-  const bubble = document.createElement("article");
-  bubble.className = `msg ${role === "assistant" ? "assistant" : "user"}`;
-  bubble.dataset.historyAt = String(metaData.at || "");
-  bubble.dataset.historyRole = role === "assistant" ? "assistant" : "user";
-  bubble.dataset.messageId = String(metaData.messageId || "");
-  bubble.dataset.turnId = String(metaData.turnId || "");
-  const meta = document.createElement("span");
-  meta.className = "meta";
-  meta.textContent = role === "assistant" ? assistantMetaLabel(metaData) : "YOU";
-  const body = document.createElement("span");
-  body.className = "message-body";
-  body.textContent = visibleMessageContent(role, content);
-  const actions = document.createElement("span");
-  actions.className = "message-actions";
-  const replyButton = document.createElement("button");
-  replyButton.type = "button";
-  replyButton.className = "reply-message-btn";
-  replyButton.textContent = "回复";
-  replyButton.title = "回复这条消息";
-  replyButton.setAttribute("aria-label", "回复这条消息");
-  replyButton.addEventListener("click", () => replyToMessage(role, body.textContent, metaData));
-  const copyButton = document.createElement("button");
-  copyButton.type = "button";
-  copyButton.className = "copy-message-btn";
-  copyButton.textContent = "复制";
-  copyButton.title = "复制这条对话文字";
-  copyButton.setAttribute("aria-label", "复制这条对话文字");
-  copyButton.addEventListener("click", () => copyMessageText(body.textContent));
-  actions.append(replyButton, copyButton);
-  const replyAnchor = metaData.replyAnchor && typeof metaData.replyAnchor === "object"
-    ? metaData.replyAnchor : null;
-  let replySource = null;
-  if (replyAnchor?.targetMessageIds?.length) {
-    replySource = document.createElement("button");
-    replySource.type = "button";
-    replySource.className = "message-reply-source";
-    replySource.textContent = `回复自：${String(replyAnchor.quotedPreview || "原消息").slice(0, 180)}`;
-    replySource.title = "跳到被回复的消息";
-    replySource.addEventListener("click", () => scrollToQuotedMessage(replyAnchor.targetMessageIds[0]));
-  }
-  bubble.append(meta, actions);
-  if (replySource) bubble.appendChild(replySource);
-  bubble.appendChild(body);
-  appendAttachmentCards(bubble, metaData.attachments);
-  const diagnosticSpeechText = metaData.speechText || metaData.spokenTextJa;
-  if (DEV_MODE && role === "assistant" && diagnosticSpeechText) {
-    const ja = document.createElement("span");
-    ja.className = "dev-ja-line";
-    const label = normalizeSpeechLanguage(metaData.speechLanguage) === "zh-CN" ? "ZH" : "JA";
-    ja.textContent = `${label}: ${stripVisibleStageDirections(diagnosticSpeechText)}`;
-    bubble.appendChild(ja);
-  }
-  if (role === "assistant" && Array.isArray(metaData.sources) && metaData.sources.length) {
-    const sourceList = document.createElement("details");
-    sourceList.className = "message-sources";
-    const summary = document.createElement("summary");
-    summary.textContent = `参考来源 · ${Math.min(metaData.sources.length, 8)}`;
-    summary.title = "展开查看来源";
-    const sourceDetails = document.createElement("div");
-    sourceDetails.className = "message-source-details";
-    sourceList.append(summary, sourceDetails);
-    metaData.sources.slice(0, 8).forEach(source => {
-      const safeUrl = safeExternalSourceUrl(source.url);
-      const link = document.createElement("a");
-      link.href = safeUrl || "#";
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = `[${source.id || "S?"}] ${source.title || source.domain || "网页来源"}`;
-      link.title = String(source.excerpt || source.url || "");
-      link.addEventListener("click", async event => {
-        if (!safeUrl) {
-          event.preventDefault();
-          toast("来源 URL 未通过安全校验");
-          return;
-        }
-        event.preventDefault();
-        try {
-          const response = await fetch("/api/actions/open-browser", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              url: safeUrl,
-              actionId: `source_${String(source.sourceUid || source.id || Date.now())}`,
-            }),
-          });
-          const result = await response.json();
-          if (!response.ok || !result.ok) {
-            toast(result.message || "浏览器没有接受打开请求");
-          }
-        } catch (_error) {
-          toast("打开请求未能交给本地浏览器网关");
-        }
-      });
-      sourceDetails.appendChild(link);
-    });
-    bubble.appendChild(sourceList);
-  }
-  appendGeneratedFileCards(bubble, metaData.files);
-  dom.chatLog.appendChild(bubble);
-  dom.chatLog.scrollTop = dom.chatLog.scrollHeight;
-  return bubble;
-}
-
-async function copyMessageText(value) {
-  const text = String(value || "");
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const helper = document.createElement("textarea");
-    helper.value = text;
-    helper.style.position = "fixed";
-    helper.style.opacity = "0";
-    document.body.appendChild(helper);
-    helper.select();
-    document.execCommand("copy");
-    helper.remove();
-  }
-  toast("对话文字已复制");
-}
-
-function appendAttachmentCards(bubble, attachments) {
-  if (!Array.isArray(attachments) || !attachments.length) return;
-  const list = document.createElement("div");
-  list.className = "message-attachments";
-  attachments.slice(0, MAX_CHAT_ATTACHMENTS).forEach(item => {
-    if (!item || typeof item !== "object") return;
-    const card = document.createElement("div");
-    card.className = "message-attachment-card";
-    const icon = document.createElement("span");
-    icon.className = "message-file-icon";
-    icon.textContent = String(item.mimeType || "").startsWith("image/") || item.kind === "image" ? "IMG" : "FILE";
-    const label = document.createElement("span");
-    label.className = "message-file-label";
-    const name = document.createElement("strong");
-    name.textContent = String(item.name || "附件");
-    const size = document.createElement("small");
-    size.textContent = formatFileSize(item.size);
-    label.append(name, size);
-    card.append(icon, label);
-    list.appendChild(card);
-  });
-  bubble.appendChild(list);
-}
-
-function appendGeneratedFileCards(bubble, files) {
-  if (!Array.isArray(files) || !files.length) return;
-  const list = document.createElement("div");
-  list.className = "generated-files";
-  files.forEach(item => {
-    if (!item || typeof item !== "object" || !item.id) return;
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "generated-file-card";
-    card.title = `保存 ${item.name || "生成文件"}`;
-    const icon = document.createElement("span");
-    icon.className = "message-file-icon";
-    icon.textContent = "SAVE";
-    const label = document.createElement("span");
-    label.className = "message-file-label";
-    const name = document.createElement("strong");
-    name.textContent = String(item.name || "生成文件");
-    const size = document.createElement("small");
-    size.textContent = `${formatFileSize(item.size)} · 点击保存`;
-    label.append(name, size);
-    card.append(icon, label);
-    card.addEventListener("click", () => saveGeneratedFile(item));
-    list.appendChild(card);
-  });
-  bubble.appendChild(list);
+  chatHistorySearchController?.close();
 }
 
 async function saveGeneratedFile(item) {
@@ -14291,273 +6691,25 @@ async function saveGeneratedFile(item) {
   link.remove();
 }
 
-// 来源地址按不可信输入处理，限制协议并排除常见本地地址；后端网关仍需独立校验。
-function safeExternalSourceUrl(value) {
-  try {
-    const parsed = new URL(String(value || ""));
-    if (!["http:", "https:"].includes(parsed.protocol)) return "";
-    const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
-    if (!host || host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return "";
-    if (/^(127\.|10\.|169\.254\.|192\.168\.)/.test(host)) return "";
-    const private172 = host.match(/^172\.(\d+)\./);
-    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return "";
-    if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")) return "";
-    return parsed.href;
-  } catch {
-    return "";
-  }
+function hydrateConversationHistory() {
+  return conversationStateController?.hydrate();
 }
 
-function assistantMetaLabel(metaData = {}) {
-  const bits = ["AMADEUS"];
-  const source = String(metaData.source || "");
-  const internalRecoverySources = new Set([
-    "pipeline-error",
-    "local-recovery",
-    "local-action-state-recovery",
-    "model-pipeline-rescue",
-  ]);
-  if (source && !internalRecoverySources.has(source)) bits.push(source.toUpperCase());
-  if (metaData.latencyMs) bits.push(`${metaData.latencyMs}MS`);
-  if (typeof metaData.memoryCount === "number") bits.push(`MEM ${metaData.memoryCount}`);
-  if (DEV_MODE && metaData.dialoguePolicy?.reply_mode) {
-    bits.push(`MODE ${String(metaData.dialoguePolicy.reply_mode).toUpperCase()}`);
-  }
-  if (DEV_MODE && Number.isFinite(Number(metaData.dialogueValidation?.sentence_count))) {
-    bits.push(`${Number(metaData.dialogueValidation.sentence_count)}S`);
-  }
-  if (metaData.spokenTextJaRepaired) bits.push("JA_REPAIRED");
-  return bits.join(" · ");
-}
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-      || (!REQUESTED_DEV_MODE ? localStorage.getItem("amadeus-live2d-chat-v1") : null);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        messages: Array.isArray(parsed.messages)
-          ? parsed.messages.map(message => ({
-              ...message,
-              content: visibleMessageContent(message?.role, message?.content),
-              meta: message?.meta && message.role === "assistant"
-                ? { ...message.meta, spokenTextJa: stripVisibleStageDirections(message.meta.spokenTextJa) }
-                : message?.meta,
-            }))
-          : [],
-        memories: Array.isArray(parsed.memories) ? parsed.memories : DEFAULT_MEMORIES.slice(),
-        memoryRecords: [],
-        contextEpoch: Math.max(0, Number(parsed.contextEpoch) || 0),
-        conversationId: String(parsed.conversationId || `conv_${Math.max(0, Number(parsed.contextEpoch) || 0)}`),
-        chatWindowHeight: clamp(toNumber(parsed.chatWindowHeight, 330), 220, 1200),
-        proactiveControl: normalizeProactiveControl(parsed.proactiveControl),
-        waitingForUser: parsed.waitingForUser === true
-          || parsed.proactiveControl?.reason === "unanswered_question_no_nudge",
-      };
-    }
-  } catch {
-    // Rebuild damaged local state below.
-  }
-  return {
-    messages: [],
-    memories: DEFAULT_MEMORIES.slice(),
-    memoryRecords: [],
-    contextEpoch: 0,
-    conversationId: "conv_0",
-    chatWindowHeight: 330,
-    proactiveControl: normalizeProactiveControl(null),
-    waitingForUser: false,
-  };
-}
-
-function messageHistorySignature(message) {
-  const role = message?.role === "assistant" ? "assistant" : "user";
-  const messageId = String(message?.meta?.messageId || "").trim();
-  if (messageId) return `id\u0000${messageId}`;
-  return `${role}\u0000${visibleMessageContent(role, message?.content).trim()}`;
-}
-
-async function hydrateConversationHistory() {
-  try {
-    const response = await storageScopedFetch("/api/conversation/history", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) {
-      if (String(data.code || "").startsWith("context_")) toast(data.error || "旧记录恢复失败，原文件已保留");
-      return;
-    }
-    if (data.compatibilityRecovery?.status === "recovered") {
-      toast(data.compatibilityRecovery.notice || "旧格式记录已恢复，原文件备份已保留");
-    }
-    if (data.recoveryRequired) {
-      toast("检测到会话索引不一致；已从只读归档恢复显示，原始文件没有被覆盖");
-      console.warn("conversation recovery is active:", data.storageHealth || {});
-    }
-    const previousConversationId = state.conversationId;
-    state.contextEpoch = Math.max(
-      0,
-      Number(data.conversationEpoch ?? state.contextEpoch) || 0,
-    );
-    state.conversationId = String(data.conversationId || `conv_${state.contextEpoch}`);
-    if (typeof data.waitingForUser === "boolean") {
-      state.waitingForUser = data.waitingForUser
-        || (state.conversationId === previousConversationId && state.waitingForUser === true);
-    }
-    if (data.proactiveControl && typeof data.proactiveControl === "object") {
-      applyProactiveControl(data.proactiveControl, { persistState: false });
-    }
-    state.messages = (Array.isArray(state.messages) ? state.messages : []).filter(message => {
-      const messageConversationId = String(message?.meta?.conversationId || "");
-      return messageConversationId
-        ? messageConversationId === state.conversationId
-        : Math.max(0, Number(message?.meta?.contextEpoch) || 0) === state.contextEpoch;
-    });
-    if (!Array.isArray(data.messages) || !data.messages.length) {
-      renderMessages();
-      persist();
-      return;
-    }
-    const localMessages = Array.isArray(state.messages) ? state.messages : [];
-    // 以服务端历史为恢复基线，保存可按签名匹配的本地元数据，供下方逐条合并。
-    const localBySignature = new Map();
-    localMessages.forEach(message => {
-      const key = messageHistorySignature(message);
-      if (!localBySignature.has(key)) localBySignature.set(key, []);
-      localBySignature.get(key).push(message);
-    });
-    const restored = data.messages.map(message => {
-      const role = message?.role === "assistant" ? "assistant" : "user";
-      const content = visibleMessageContent(role, message?.content);
-      const key = messageHistorySignature({ role, content });
-      const richerLocal = localBySignature.get(key)?.shift();
-      return {
-        role,
-        content,
-        meta: {
-          ...(message?.meta || {}),
-          ...(richerLocal?.meta || {}),
-          actionReceipt: message?.meta?.actionReceipt || richerLocal?.meta?.actionReceipt || null,
-          todoContext: message?.meta?.todoContext || richerLocal?.meta?.todoContext || null,
-          toolUsed: message?.meta?.toolUsed || richerLocal?.meta?.toolUsed || "",
-          toolStatus: message?.meta?.toolStatus || richerLocal?.meta?.toolStatus || "",
-          contextEpoch: Math.max(
-            0,
-            Number(message?.meta?.contextEpoch ?? richerLocal?.meta?.contextEpoch ?? 0) || 0,
-          ),
-          restored: true,
-        },
-      };
-    });
-    let sharedPrefix = 0;
-    const prefixLimit = Math.min(restored.length, localMessages.length);
-    while (
-      sharedPrefix < prefixLimit
-      && messageHistorySignature(restored[sharedPrefix]) === messageHistorySignature(localMessages[sharedPrefix])
-    ) sharedPrefix += 1;
-    // 只有两端历史共享完整前缀时才接回本地尾部，避免把分叉历史混入当前会话。
-    const localOnlyTail = sharedPrefix === prefixLimit ? localMessages.slice(sharedPrefix) : [];
-    state.messages = [...restored, ...localOnlyTail].slice(-MAX_MESSAGES);
-    persist();
-  } catch (error) {
-    console.warn("conversation history restore failed:", error);
-  }
-}
-
-async function recordProactiveConversationEvent(message, mood = {}) {
-  if (!message || message.role !== "assistant" || message.meta?.kind !== "proactive") return;
-  const waitingSequence = proactiveState.sequenceId;
-  const eventId = String(
-    message.meta.proactiveEventId
-    || `proactive-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-  );
-  message.meta.proactiveEventId = eventId;
-  // 已持久化标记与在途集合共同去重；失败不设成功标记，后续可用同一事件标识重试。
-  if (message.meta.proactivePersisted || proactivePersistenceInFlight.has(eventId)) return;
-  proactivePersistenceInFlight.add(eventId);
-  persist();
-  try {
-    const response = await storageScopedFetch("/api/conversation/proactive", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        eventId,
-        reply: String(message.content || ""),
-        emotion: String(mood.emotion || message.meta.emotion || currentEmotion || "neutral"),
-        proactiveKind: String(message.meta.proactiveKind || ""),
-        proactiveSubject: String(message.meta.proactiveSubject || ""),
-        proactivePhase: String(message.meta.proactivePhase || ""),
-        unansweredCount: Math.max(0, Number(message.meta.proactiveUnansweredCount) || 0),
-        silenceLimit: Math.max(0, Number(message.meta.proactiveSilenceLimit) || 0),
-        proactiveDirective: String(message.meta.proactiveDirective || "unchanged"),
-        proactiveObservation: message.meta.proactiveObservation || null,
-        requiresUserResponse: message.meta.requiresUserResponse === true,
-        ...(typeof message.meta.proactiveAfterUserTurnId === "string"
-          ? { afterUserTurnId: message.meta.proactiveAfterUserTurnId } : {}),
-        contextEpoch: Math.max(0, Number(state.contextEpoch) || 0),
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || "proactive persistence failed");
-    if (data.waitingForUser === true && waitingSequence === proactiveState.sequenceId) state.waitingForUser = true;
-    if (data.proactiveControl && typeof data.proactiveControl === "object") {
-      applyProactiveControl(data.proactiveControl, { persistState: false });
-    }
-    message.meta.proactivePersisted = true;
-    delete message.meta.proactiveObservation;
-    persist();
-  } catch (error) {
-    console.warn("proactive conversation persistence failed:", error);
-  } finally {
-    proactivePersistenceInFlight.delete(eventId);
-  }
-}
-
-function syncPendingProactiveConversationEvents() {
-  state.messages
-    .filter(message =>
-      message?.role === "assistant"
-      && message.meta?.kind === "proactive"
-      && !message.meta?.proactivePersisted
-    )
-    .forEach(message => recordProactiveConversationEvent(message));
+function invalidateConversationHistoryHydration() {
+  return conversationStateController?.invalidateHydration();
 }
 
 // 仅向当前会话提供有效历史，排除连接错误提示及已废弃的固定兜底回复。
 function cleanHistoryForModel() {
-  const currentEpoch = Math.max(0, Number(state.contextEpoch) || 0);
-  const currentConversationId = String(state.conversationId || "");
-  return state.messages.filter(message => {
-    const messageConversationId = String(message.meta?.conversationId || "");
-    const belongsToConversation = messageConversationId
-      ? messageConversationId === currentConversationId
-      : Math.max(0, Number(message.meta?.contextEpoch) || 0) === currentEpoch;
-    return belongsToConversation
-      && message.meta?.source !== "connection-error"
-      && !String(message.content || "").startsWith("接口没有正常回应。")
-      && !STALE_FALLBACK_REPLIES.has(String(message.content || "").trim());
-  });
+  return conversationStateController?.cleanHistoryForModel?.() || [];
 }
 
 function pruneStaleFallbacks() {
-  const cleaned = state.messages.filter(message =>
-    !STALE_FALLBACK_REPLIES.has(String(message.content || "").trim())
-  );
-  if (cleaned.length !== state.messages.length) {
-    state.messages = cleaned.slice(-MAX_MESSAGES);
-    persist();
-  }
+  return conversationStateController?.pruneStaleFallbacks?.();
 }
 
 function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    messages: state.messages.slice(-MAX_MESSAGES),
-    memories: state.memories.slice(0, MAX_MEMORIES),
-    contextEpoch: Math.max(0, Number(state.contextEpoch) || 0),
-    conversationId: String(state.conversationId || `conv_${Math.max(0, Number(state.contextEpoch) || 0)}`),
-    chatWindowHeight: clamp(toNumber(state.chatWindowHeight, 330), 220, 1200),
-    proactiveControl: normalizeProactiveControl(state.proactiveControl),
-    waitingForUser: state.waitingForUser === true,
-  }));
+  return conversationStateController?.persist?.();
 }
 
 function toast(message) {
@@ -14582,24 +6734,17 @@ function clearVoiceFailure() {
 }
 
 // 只结束仍属于当前代次的语音任务，清理播放与嘴型状态，并保留失败原因供界面显示。
-function failLocalSpeech(error, generation = speechGeneration, title = "本地语音合成失败") {
-  if (generation !== speechGeneration) return null;
-  console.warn(`${title}:`, error);
-  speechState.pending = false;
-  speechState.active = false;
-  speechState.textRevealPending = false;
-  speechState.systemSpeechActive = false;
-  speechState.endsAt = performance.now();
-  speakUntil = speechState.endsAt;
-  resetAnimeMouthState();
-  const message = error instanceof Error ? error.message : String(error || "未知错误");
-  recordVoiceDiagnostic("local-failed", `${title}，本次未播放系统音：${message}`, { generation });
-  showVoiceFailure(title, error);
-  return false;
+function failLocalSpeech(error, generation = speechPlayback.generation, title = "本地语音合成失败") {
+  return speechPlayback.failLocalSpeech(error, generation, title);
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function smoothstep(value) {
+  const x = clamp(value, 0, 1);
+  return x * x * (3 - 2 * x);
 }
 
 function toNumber(value, fallback) {

@@ -51,6 +51,7 @@ class TurnPreflight:
     confidence: float
     risk_flags: tuple[str, ...]
     perception: PerceptionNeed
+    current_state_evidence_requirement: Mapping[str, Any] | None = None
     reasons: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -64,6 +65,11 @@ class TurnPreflight:
             "confidence": self.confidence,
             "riskFlags": list(self.risk_flags),
             "perception": self.perception.to_dict(),
+            "currentStateEvidenceRequirement": (
+                dict(self.current_state_evidence_requirement)
+                if isinstance(self.current_state_evidence_requirement, Mapping)
+                else None
+            ),
             "reasons": list(self.reasons),
         }
 

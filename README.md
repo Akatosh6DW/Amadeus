@@ -20,7 +20,7 @@
 
 ## 直接使用 Release
 
-1. 打开 [v1.0.1 试发版](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.1)，下载 `AMADEUS-v1.0.1-setup.zip`。
+1. 打开 [v1.0.0 发布版](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.0)，下载 `AMADEUS-v1.0.0-setup.zip`。
 2. 将 ZIP 解压到一个文件夹，双击其中的 `install-release.cmd`。
 3. 安装完成后运行生成的 `AMADEUS.exe`。
 4. 首次打开后进入“设置 → API”，填入自己的 API Key。

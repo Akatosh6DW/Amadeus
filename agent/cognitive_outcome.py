@@ -5,12 +5,14 @@ are optional and never serve as a delivery gate or proof of factual correctness.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping
 from copy import deepcopy
 from hashlib import sha256
 import json
 
 from .proactive_control import PROACTIVE_DIRECTIVE_INSTRUCTION
+from .cognitive_tools import canonical_tool_arguments, receipt_matches_request
 
 
 CLAIM_KINDS = (
@@ -20,6 +22,7 @@ CLAIM_KINDS = (
 _CURRENT_SENSITIVE_CLAIMS = frozenset({"tool_completion", "tool_fact", "perceptual_fact"})
 _USER_EVIDENCE_SOURCES = frozenset({"user_message", "user_memory", "user_adaptation"})
 ADVISORY_CLAIM_KINDS = frozenset({"inference", "user_fact", "external_fact"})
+_CURRENT_STATE_READ_TOOLS = frozenset({"list_directory", "read_text_file"})
 OUTCOME_REPAIR_GUIDANCE = (
     "普通身份、知识、观点和解释无需 claims、basis 或 evidenceRefs，不要因普通事实注释缺失而补造引用或调用工具。"
     "只有执行/观察声明需要按真实回执修正：tool_fact 对应 sourceType=tool 且 ok=true、正文非空；"
@@ -49,6 +52,122 @@ sourceType=user_message/user_memory/user_adaptation 提供用户原话、经历�
 工具调用轮仍使用 kind=tool_use，不需伪造已经完成的 outcome。
 任务有 successCriteria 时，宣告 taskStatus=completed 必须给 criteriaAssessment 数组，逐项引用本轮合同给出的 criterionId，并给 status:met/unmet/unknown、reason 和 evidenceRefs。你负责结合当前目标、正文、操作回执和回答内容判断是否达到条件；无法判断用 unknown，尚未达到用 unmet，不能只因工具步骤结束就说达成。所有条件 met 才能结束任务，仍可用 taskStatus=active 继续工作。条件被用户修改后使用新合同中的 ID。
 """
+
+
+@dataclass(frozen=True)
+class CurrentStateEvidenceRequirement:
+    """当前本地状态断言所需的只读工具回执。"""
+
+    requirement_id: str
+    tool_name: str
+    arguments: Mapping[str, Any]
+    source_type: str = "workspace"
+    freshness: str = "current"
+    read_only: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requirementId": self.requirement_id,
+            "sourceType": self.source_type,
+            "toolName": self.tool_name,
+            "arguments": deepcopy(dict(self.arguments)),
+            "freshness": self.freshness,
+            "readOnly": self.read_only,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> "CurrentStateEvidenceRequirement | None":
+        if not isinstance(value, Mapping):
+            return None
+        tool_name = str(value.get("toolName") or value.get("tool_name") or "").strip()
+        arguments = value.get("arguments")
+        if tool_name not in _CURRENT_STATE_READ_TOOLS or not isinstance(arguments, Mapping):
+            return None
+        canonical = canonical_tool_arguments(tool_name, arguments)
+        encoded = json.dumps(
+            {"sourceType": "workspace", "toolName": tool_name, "arguments": canonical},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return cls(
+            requirement_id=(
+                str(value.get("requirementId") or value.get("requirement_id") or "").strip()
+                or "current-state-" + sha256(encoded.encode("utf-8")).hexdigest()[:20]
+            ),
+            tool_name=tool_name,
+            arguments=canonical,
+        )
+
+
+def current_state_evidence_requirement(
+    request: Mapping[str, Any] | None,
+) -> CurrentStateEvidenceRequirement | None:
+    """把已解析的只读工作区请求转成可校验的证据需求。"""
+
+    if not isinstance(request, Mapping):
+        return None
+    name = str(request.get("name") or request.get("tool") or "").strip()
+    args = request.get("args")
+    if name not in _CURRENT_STATE_READ_TOOLS or not isinstance(args, Mapping):
+        return None
+    return CurrentStateEvidenceRequirement.from_mapping({
+        "toolName": name,
+        "arguments": args,
+    })
+
+
+def current_state_evidence_status(
+    requirement: Mapping[str, Any] | CurrentStateEvidenceRequirement | None,
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """按工具种类和规范参数核对本轮成功回执。"""
+
+    active = (
+        requirement
+        if isinstance(requirement, CurrentStateEvidenceRequirement)
+        else CurrentStateEvidenceRequirement.from_mapping(requirement)
+    )
+    if active is None:
+        return {"required": False, "satisfied": True, "status": "not_required"}
+    request = {"name": active.tool_name, "args": dict(active.arguments)}
+    matches: list[str] = []
+    successful: list[str] = []
+    readable: list[str] = []
+    for ref, entry in evidence.items():
+        if not isinstance(entry, Mapping) or entry.get("historical"):
+            continue
+        receipt = entry.get("receipt")
+        if (
+            entry.get("sourceType") != "tool"
+            or not isinstance(receipt, Mapping)
+            or not receipt_matches_request(receipt, request)
+        ):
+            continue
+        matches.append(str(ref))
+        if (
+            entry.get("ok") is True
+            and receipt.get("ok") is True
+            and entry.get("executionStatus") == "success"
+        ):
+            successful.append(str(ref))
+            if str(entry.get("body") or "").strip():
+                readable.append(str(ref))
+    status = (
+        "success" if readable
+        else "unreadable" if successful
+        else "failed" if matches
+        else "missing"
+    )
+    return {
+        "required": True,
+        "satisfied": bool(readable),
+        "status": status,
+        "requirement": active.to_dict(),
+        "matchingEvidenceRefs": matches,
+        "successfulEvidenceRefs": successful,
+        "readableEvidenceRefs": readable,
+    }
 
 
 def evidence_freshness(entry: Mapping[str, Any]) -> str:
@@ -227,6 +346,7 @@ def success_criteria_catalog(task: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def final_outcome_contract(
     task: Mapping[str, Any], *, evidence: Mapping[str, Any] | None = None,
+    current_state_requirement: Mapping[str, Any] | CurrentStateEvidenceRequirement | None = None,
 ) -> dict[str, Any]:
     """One output contract for initial generation and correction continuations.
 
@@ -293,6 +413,23 @@ def final_outcome_contract(
             claim_contract_for_evidence(item, evidence_ref=ref, compact=True)
             for ref, item in evidence.items() if isinstance(item, Mapping)
         ]
+    requirement = (
+        current_state_requirement
+        if isinstance(current_state_requirement, CurrentStateEvidenceRequirement)
+        else CurrentStateEvidenceRequirement.from_mapping(current_state_requirement)
+    )
+    if requirement is not None:
+        contract["currentStateEvidenceRequirement"] = {
+            **requirement.to_dict(),
+            "completionRule": (
+                "outcome.status=completed 前必须取得本轮同一工具和规范参数的成功、可读回执；"
+                "历史回执、失败回执、其他路径、其他工具或模型自己的 completed 判断均不满足。"
+            ),
+            "unavailableRule": (
+                "无法取得对应回执时，如实使用 partial、needs_input 或 failed；"
+                "不得编造精确的当前文件、目录或内容状态。"
+            ),
+        }
     catalog = success_criteria_catalog(task)
     if catalog:
         contract["successCriteriaCatalog"] = catalog
@@ -344,6 +481,7 @@ def bind_outcome_receipt_metadata(outcome: Any, evidence: Mapping[str, Any]) -> 
 def verify_outcome(
     outcome: Any, *, evidence: Mapping[str, Any], require_external_evidence: bool = False,
     task: Mapping[str, Any] | None = None,
+    current_state_requirement: Mapping[str, Any] | CurrentStateEvidenceRequirement | None = None,
 ) -> dict[str, Any]:
     # Kept as a compatibility keyword for existing callers. Knowledge challenge
     # and research state are handled by their own task/patch contracts, never by
@@ -414,6 +552,24 @@ def verify_outcome(
                         reject("task_success_criteria_incomplete", criterionIds=sorted(set(catalog) - seen))
     if status not in {"completed", "partial", "needs_input", "failed"}:
         reject("outcome_status_invalid")
+    current_state_status = current_state_evidence_status(
+        current_state_requirement,
+        evidence,
+    )
+    if status == "completed" and not current_state_status["satisfied"]:
+        evidence_status = str(current_state_status.get("status") or "missing")
+        reject(
+            {
+                "failed": "outcome_current_state_evidence_failed",
+                "unreadable": "outcome_current_state_evidence_unreadable",
+            }.get(evidence_status, "outcome_current_state_evidence_missing"),
+            requirement=current_state_status.get("requirement"),
+            matchingEvidenceRefs=current_state_status.get("matchingEvidenceRefs", []),
+            repair=(
+                "Use kind=tool_use with the exact required read-only tool and arguments, then answer from its current successful receipt. "
+                "If that evidence cannot be obtained, report partial/needs_input/failed without a precise current-state assertion."
+            ),
+        )
     claims = outcome.get("claims", [])
     if not isinstance(claims, list):
         reject("outcome_claims_must_be_list")

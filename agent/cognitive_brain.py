@@ -221,9 +221,17 @@ def cognitive_generation_guidance(packet: Mapping[str, Any], *, analysis_only: b
 def cognitive_prompt(packet: Mapping[str, Any], *, analysis_only: bool = False) -> str:
     from agent.cognitive_answer_scope import ANSWER_SCOPE_RULE
     task = packet.get("task") if isinstance(packet.get("task"), Mapping) else {}
+    current_state_requirement = (
+        packet.get("currentStateEvidenceRequirement")
+        if isinstance(packet.get("currentStateEvidenceRequirement"), Mapping)
+        else None
+    )
     local_contract: dict[str, Any] = {
         "currentUserRequest": packet.get("currentUserRequest", ""),
-        **final_outcome_contract(task),
+        **final_outcome_contract(
+            task,
+            current_state_requirement=current_state_requirement,
+        ),
         **cognitive_generation_guidance(packet, analysis_only=analysis_only),
     }
     active_question = (packet.get("dialogueWaiting") or {}).get("active") or {}

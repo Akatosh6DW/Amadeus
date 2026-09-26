@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import json
 import re
 import sqlite3
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 import unicodedata
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -460,13 +461,16 @@ def match_active_todos_to_dialogue(
         {
             "taskId": str(item.get("taskId") or ""),
             "title": str(item.get("title") or ""),
-            "details": str(item.get("details") or "")[:500],
+            "details": str(item.get("details") or "")[:4000],
             "status": str(item.get("status") or "pending"),
+            "priority": str(item.get("priority") or "normal"),
             "dueAt": str(item.get("dueAt") or ""),
             "dueDate": str(item.get("dueDate") or ""),
             "allDay": not bool(item.get("dueAt")),
             "timezone": str(item.get("timezone") or ""),
+            "remindBeforeMinutes": int(item.get("remindBeforeMinutes") or 0),
             "recurrenceRule": str(item.get("recurrenceRule") or ""),
+            "snoozedUntil": str(item.get("snoozedUntil") or ""),
             "version": int(item.get("version") or 0),
             "matchType": str(item.get("matchType") or ""),
             "matchScore": int(item.get("matchScore") or 0),
@@ -1121,6 +1125,24 @@ def acknowledge_reminder(
         result["nextDueAt"] = recurring_task.get("dueAt")
         result["task"] = recurring_task
     return result
+
+
+def acknowledge_reminder_in_transaction(
+    reminder_id: str,
+    *,
+    delivered: bool,
+    error: str = "",
+    state_database: Callable[[], AbstractContextManager[sqlite3.Connection]],
+) -> dict[str, Any]:
+    """在待办仓储事务内确认提醒；原状态机异常继续交给调用方处理。"""
+
+    with state_database() as connection:
+        return acknowledge_reminder(
+            connection,
+            reminder_id,
+            delivered=delivered,
+            error=error,
+        )
 
 
 def release_claimed_reminder(

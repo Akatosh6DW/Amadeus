@@ -47,6 +47,7 @@ _STRUCTURED_TOOL_FACT_FIELDS = {
     "bookmark_list": ("query", "items", "count"),
     "bookmark_manage": ("bookmark", "destinationKnowledge"),
     "list_directory": ("path", "entries", "truncated"),
+    "read_text_file": ("path", "size"),
 }
 
 
