@@ -746,7 +746,7 @@ def chinese_prosody_clauses(text: str, prosody_profile: str = "natural") -> list
     """Split one semantic sentence at Mandarin phrase boundaries without loss.
 
     The GPT-SoVITS model receives each returned phrase independently, allowing
-    AMADEUS to own the pause duration at punctuation instead of hoping that a
+    Amadeus to own the pause duration at punctuation instead of hoping that a
     Japanese-finetuned acoustic model infers Mandarin phrasing.  Enumeration
     commas (``、``) deliberately remain inside a phrase so lists do not become
     robotic word-by-word speech.

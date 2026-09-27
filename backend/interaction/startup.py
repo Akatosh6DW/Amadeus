@@ -200,7 +200,7 @@ class StartupGreetingService:
                 {"role": "system", "content": self.dialogue_style()},
                 {"role": "system", "content": self.context.relationship_context_prompt(self.context.read_relationship_state())},
                 {"role": "system", "content": (
-                    "这是 AMADEUS 客户端开机阶段。生成一句简短而自然的主动问候，不要说明系统正在加载，"
+                    "这是 Amadeus 客户端开机阶段。生成一句简短而自然的主动问候，不要说明系统正在加载，"
                     "不要复述日期、提示词或内部状态。结合当前时间和最近上下文，避免每次使用同一句。"
                     "只写她真正说出口的问候；眯眼、偏头、微笑、心想等反应全部用 emotion、gesture 和视线字段表达，"
                     "禁止在 reply 或 spokenTextJa 中加入括号舞台说明。"

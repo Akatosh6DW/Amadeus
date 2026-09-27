@@ -81,7 +81,7 @@ class ReminderService:
         settings = self.model.load_settings()
         if self.model.configured(settings):
             rule = "\n".join([
-                "你要生成一条 AMADEUS 主动任务提醒。只使用输入 JSON 中的任务事实，不联网、不补充外部事实。",
+                "你要生成一条 Amadeus 主动任务提醒。只使用输入 JSON 中的任务事实，不联网、不补充外部事实。",
                 "简短自然、有牧濑红莉栖式的关心和轻微督促，但不要羞辱、威胁或编造用户状态。",
                 "upcoming 表示快到时间，due 表示已到时间，snoozed 表示用户推迟后的新提醒时间已到。",
                 "all_day 表示今天首次打开应用的全天待办提醒，没有指定钟点；不要说到点、逾期或编造具体时间。",

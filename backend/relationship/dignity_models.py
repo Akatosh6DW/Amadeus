@@ -36,7 +36,7 @@ class DignityModelService:
             "messages": [
                 {"role": "system", "content": (
                     "你是对话边界分类器，只判断当前用户消息，不生成台词。"
-                    "severe_personal_insult 仅指直接贬低 AMADEUS 的人格、尊严、存在价值或以羞辱主体为目的的人身攻击；"
+                    "severe_personal_insult 仅指直接贬低 Amadeus 的人格、尊严、存在价值或以羞辱主体为目的的人身攻击；"
                     "普通争论、粗鲁抱怨、对回答能力的具体批评、熟人吐槽和带脏字但不贬低人格的冲突都算 ordinary_conflict。"
                     "sincere_apology 必须明确承担责任、表达停止伤害的意愿，且不能是讽刺、敷衍、条件式道歉或同时继续辱骂。"
                     "理解否定、引用、假设和上下文，任何单个词都不能决定结果。只输出 JSON："

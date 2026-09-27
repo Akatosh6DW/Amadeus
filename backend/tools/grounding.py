@@ -30,10 +30,10 @@ def tool_grounding_instruction(results: list[dict[str, Any]]) -> str:
             {},
         )
         self_exclusion_note = (
-            "本次抓屏前已经临时隐藏 AMADEUS 自身窗口；excludedWindows 只是排除记录，不属于截图内容。"
+            "本次抓屏前已经临时隐藏 Amadeus 自身窗口；excludedWindows 只是排除记录，不属于截图内容。"
             if screen_result.get("selfExcluded")
             else (
-                "若截图里出现 AMADEUS、THINKING/API/MEM/TOOL 状态栏、聊天气泡、输入框，或白衬衫红领带的助手立绘，"
+                "若截图里出现 Amadeus、THINKING/API/MEM/TOOL 状态栏、聊天气泡、输入框，或白衬衫红领带的助手立绘，"
                 "那是助手自己的窗口遮挡，必须排除，不能将其当作用户要求观察的主体或目标软件内容。"
             )
         )
@@ -50,7 +50,7 @@ def tool_grounding_instruction(results: list[dict[str, Any]]) -> str:
             "仍然只能依据人物姿势、衣着与明确视觉描述，证据不足就说不确定；不得把 API 内容限制猜成识别结论，"
             "也不得凭空增加画面中不存在的露骨细节。若人物年龄不明确，不得推断其成年，也不得进行性化评价。"
             "不得声称自己看不到屏幕或没有截图能力。当前截图是带时间点的最新视觉证据，优先于历史截图描述；"
-            "它属于 AMADEUS 的工具观测，不是用户说过的话，禁止写成‘你刚才说屏幕上有……’。"
+            "它属于 Amadeus 的工具观测，不是用户说过的话，禁止写成‘你刚才说屏幕上有……’。"
             "要用视觉事实和有边界的推断直接完成 Turn Contract，不得把视觉服务、OCR、"
             "工具名或内部识别流程写进给用户的回答。"
             + self_exclusion_note

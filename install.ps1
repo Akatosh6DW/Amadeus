@@ -142,7 +142,7 @@ function Get-SourceTree {
     $archive = Join-Path $Staging "source.zip"
     $archiveUri = "https://github.com/$sourceRepository/archive/refs/heads/$sourceRef.zip"
     $authenticatedUri = "https://api.github.com/repos/$sourceRepository/zipball/$sourceRef"
-    Write-Host "Downloading AMADEUS deployment source..."
+    Write-Host "Downloading Amadeus deployment source..."
     if (Invoke-SourceArchiveDownload -ArchiveUri $archiveUri -AuthenticatedUri $authenticatedUri -OutFile $archive) {
         try {
             $archiveStaging = Join-Path $Staging "archive"
@@ -187,7 +187,7 @@ function Get-SourceTree {
             Remove-Item -LiteralPath $resolvedGitSource -Recurse -Force
         }
     }
-    throw "Could not download the private AMADEUS source. Sign in with 'gh auth login' or configure Git Credential Manager, then rerun the installer."
+    throw "Could not download the private Amadeus source. Sign in with 'gh auth login' or configure Git Credential Manager, then rerun the installer."
 }
 
 function Invoke-AmadeusDeployment {
@@ -203,7 +203,7 @@ function Invoke-AmadeusDeployment {
     } finally {
         $ErrorActionPreference = $previousErrorAction
     }
-    if ($deploymentExit -ne 0) { throw "AMADEUS deployment failed with exit code $deploymentExit. Rerun the same command to retry." }
+    if ($deploymentExit -ne 0) { throw "Amadeus deployment failed with exit code $deploymentExit. Rerun the same command to retry." }
 }
 if (Test-Path -LiteralPath $bootstrap -PathType Leaf) {
     # Resume an interrupted installation; existing user data stays in place.

@@ -223,7 +223,7 @@ def touch_event_prompt(event: dict[str, Any]) -> str:
     lines = [
         "[隐藏肢体互动事件]",
         "下面是界面命中测试产生的结构化事件，不是用户发出的可见文字。绝对不要复述字段名、标签、坐标、计数器或关系阶段。",
-        "事件角色不可交换：用户是动作发起者，AMADEUS 是被触摸者；AMADEUS 只能对此作出语言和表情反应，不能声称是自己主动触摸用户。",
+        "事件角色不可交换：用户是动作发起者，Amadeus 是被触摸者；Amadeus 只能对此作出语言和表情反应，不能声称是自己主动触摸用户。",
         json.dumps(event, ensure_ascii=False, indent=2),
     ]
     if event.get("aggregatedBurst"):

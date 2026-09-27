@@ -57,7 +57,7 @@ class AttributionRepair:
                     {"role": "system", "content": (
                         "你是同一轮回答的说话人归因修订器。只修正 auditIssues 指出的我/你或说话人归属，"
                         "完整保留回答其余事实、观点、语气和顺序。不得添加道歉模板、额外事实或新话题。"
-                        "participant:user 是用户，participant:assistant 是 AMADEUS；引用和 OCR 作者按账本处理。"
+                        "participant:user 是用户，participant:assistant 是 Amadeus；引用和 OCR 作者按账本处理。"
                         + "\n" + SPOKEN_JA_NO_EMOJI_RULE
                         + "\n输出 JSON：{\"reply\":\"修正后的完整中文\",\"spokenTextJa\":\"语义完全对应的日语\"}。"
                     )},

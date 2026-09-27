@@ -166,7 +166,7 @@ class BackendRuntime:
                 if self.port_is_listening(port):
                     restart_target = "重新打开 AMADEUS.exe" if self.config.release_mode else "重新运行 run_amadeus.ps1"
                     raise RuntimeError(
-                        f"桌面后端端口 {port} 已被其他程序或旧版 AMADEUS 占用。"
+                        f"桌面后端端口 {port} 已被其他程序或旧版 Amadeus 占用。"
                         f"请关闭占用进程后{restart_target}。"
                     )
             process = self.spawn_backend_service(port)
@@ -179,12 +179,12 @@ class BackendRuntime:
                         return
                     detail = self.backend_log_tail()
                     raise RuntimeError(
-                        f"AMADEUS 桌面后端启动失败（退出码 {process.returncode}）。"
+                        f"Amadeus 桌面后端启动失败（退出码 {process.returncode}）。"
                         + (f"\n{detail}" if detail else f"详情见 {self.config.log_path}")
                     )
                 self.sleep(0.18)
             raise RuntimeError(
-                f"AMADEUS 桌面后端在 {self.config.start_timeout_seconds:.0f} 秒内未就绪。详情见 {self.config.log_path}"
+                f"Amadeus 桌面后端在 {self.config.start_timeout_seconds:.0f} 秒内未就绪。详情见 {self.config.log_path}"
             )
 
     def post_runtime_lease(self, port: int, path: str, client_id: str, mode: str, timeout: float = 1.5) -> bool:

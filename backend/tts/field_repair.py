@@ -72,7 +72,7 @@ class SpeechFieldRepair:
             "messages": [
                 *self.operations.persona_repair_prefix(persona_snapshot, legacy_system_prompt=False),
                 {"role": "system", "content": (
-                    "你是 AMADEUS 的字段修复器，不重新回答用户，也不改写中文台词。"
+                    "你是 Amadeus 的字段修复器，不重新回答用户，也不改写中文台词。"
                     "只输出一个 JSON 对象，只填写 requestedFields 指定的字段；即使你认为中文可以改进也不得输出 reply。"
                     "spokenTextJa 必须完整对应 frozenReply 的全部语义和情绪，使用自然年轻女性日语口语及官方专名读法。"
                     "不要输出 emotion、speechUnits、gesture 或其他未请求字段。"
@@ -189,7 +189,7 @@ class SpeechFieldRepair:
             "messages": [
                 *self.operations.persona_repair_prefix(persona_snapshot, legacy_system_prompt=False),
                 {"role": "system", "content": (
-                    "你是 AMADEUS 的语音交付计划修复器。正文与日语发声稿已经验收并冻结，"
+                    "你是 Amadeus 的语音交付计划修复器。正文与日语发声稿已经验收并冻结，"
                     "不得改写、概括、补充或重新回答用户。只输出一个 JSON 对象，且只能包含 speechUnits。"
                     f"speechUnits 必须有一到 {self.max_units()} 项，每项只含 zh、ja、boundaryAfter；"
                     "zh 依次拼接必须与 frozenReply 完全一致，ja 依次拼接必须与 frozenSpokenTextJa 完全一致。"

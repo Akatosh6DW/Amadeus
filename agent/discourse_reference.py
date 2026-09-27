@@ -1069,8 +1069,8 @@ def render_discourse_context(
     return "\n".join([
         "[结构化指代账本：高优先级]",
         serialized,
-        "participant:user 是用户；participant:assistant 是 AMADEUS。非引用区的第一、第二人称按当前消息 speaker/addressee 绑定。",
-        "引号内第一人称必须继承 currentQuotes.quoted_speaker；quoted_speaker=unknown 时保持未知，不能自动变成用户或 AMADEUS。",
+        "participant:user 是用户；participant:assistant 是 Amadeus。非引用区的第一、第二人称按当前消息 speaker/addressee 绑定。",
+        "引号内第一人称必须继承 currentQuotes.quoted_speaker；quoted_speaker=unknown 时保持未知，不能自动变成用户或 Amadeus。",
         "visualTextSources 的 contentAuthorship 默认 unknown：用户提交图片不等于图片中文字由用户说出。",
         "回答中文与日语发声稿必须使用同一 referenceLinks；翻译只能改变表面词，不能改变‘我/你/第三方’的实体。",
         "声称‘用户说过’或‘我之前说过’时，必须能指向 speaker 对应的具体 antecedent messageId。",

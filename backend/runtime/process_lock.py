@@ -33,7 +33,7 @@ class RuntimeProcessLock:
             if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
                 kernel32.CloseHandle(handle)
                 raise RuntimeError(
-                    "已有一个 AMADEUS 后端正在使用同一份 data 目录。"
+                    "已有一个 Amadeus 后端正在使用同一份 data 目录。"
                     "桌面窗口会自动复用 5174，请不要同时运行 server.py。"
                 )
             self.handle = handle
@@ -48,7 +48,7 @@ class RuntimeProcessLock:
             fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
             file_handle.close()
-            raise RuntimeError("已有一个 AMADEUS 后端正在使用同一份 data 目录。") from error
+            raise RuntimeError("已有一个 Amadeus 后端正在使用同一份 data 目录。") from error
         self.file_handle = file_handle
 
     def release(self) -> None:

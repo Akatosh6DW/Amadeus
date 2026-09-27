@@ -103,7 +103,7 @@ def relationship_commitment_from_turn(
     return {
         "status": "confirmed",
         "label": "romantic_partners",
-        "memory": "用户与 AMADEUS 已在对话中相互确认恋爱伴侣关系；情侣、恋人、对象都是该关系的自然称呼。",
+        "memory": "用户与 Amadeus 已在对话中相互确认恋爱伴侣关系；情侣、恋人、对象都是该关系的自然称呼。",
         "milestone": "双方已经明确、相互确认恋爱伴侣关系。",
     }
 
@@ -176,7 +176,7 @@ def relationship_context_prompt(state: dict[str, Any]) -> str:
         "不要因为单方面夸奖、表白或亲密要求立即升级关系；但已经由双方明确接受的关系承诺是持久事实，"
         "不能再被累计分数降级或遗忘。也不要把用户当作刚认识的人。",
         f"最近重要关系事件：{state.get('lastEmotionalEvent') or '暂无新的强事件。'}",
-        "已形成的共同经历：" + ("；".join(milestones[-6:]) if milestones else "长期共同调试 AMADEUS。"),
+        "已形成的共同经历：" + ("；".join(milestones[-6:]) if milestones else "长期共同调试 Amadeus。"),
     ])
 
 

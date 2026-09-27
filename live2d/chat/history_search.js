@@ -141,7 +141,7 @@
           ? "我"
           : (result.matchRoles || []).includes("assistant")
             && !(result.matchRoles || []).includes("user")
-            ? "AMADEUS"
+            ? "Amadeus"
             : "本轮对话";
         const at = document.createElement("span");
         at.textContent = formatTime(result.at);
@@ -157,7 +157,7 @@
           copy.dataset.role = role;
           appendHighlightedText(
             copy,
-            `${role === "user" ? "我" : "AMADEUS"}：${String(content).trim()}`,
+            `${role === "user" ? "我" : "Amadeus"}：${String(content).trim()}`,
             state.query,
           );
           card.appendChild(copy);

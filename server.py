@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local AMADEUS web server, settings store, memory store, and chat proxy."""
+"""Local Amadeus web server, settings store, memory store, and chat proxy."""
 
 # 后端入口负责本地 HTTP 服务、配置存取与对话编排；领域规则由 agent 和各存储模块提供。
 from __future__ import annotations
@@ -1631,8 +1631,8 @@ SPEAKER_ATTRIBUTION_RULE = (
     + "\n"
     "[说话人与证据归属：高优先级]\n"
     "只有 role=user 或标为‘用户：’的原文，才能作为‘用户说过’的证据。"
-    "role=assistant、‘AMADEUS：’中的内容是你自己的旧回复或旧判断，绝不能改写成用户说过。\n"
-    "截图、摄像头和其他工具结果是 AMADEUS 的观测，不是用户发言；应说‘截图显示’，不能说‘你说过’。"
+    "role=assistant、‘Amadeus：’中的内容是你自己的旧回复或旧判断，绝不能改写成用户说过。\n"
+    "截图、摄像头和其他工具结果是 Amadeus 的观测，不是用户发言；应说‘截图显示’，不能说‘你说过’。"
     "当用户指出‘我没说过’或‘那是你说的’时，必须按角色标签核对原文；没有用户原文证据就承认归因错误，禁止伪造记录或继续争辩。"
 )
 
@@ -1652,7 +1652,7 @@ SPOKEN_JA_ALIGNMENT_RULE = japanese_alignment.SPOKEN_JA_ALIGNMENT_RULE
 EMOTION_SELECTION_RULE = emotion_repair.EMOTION_SELECTION_RULE
 
 AMADEUS_TOOL_RULE = (
-    "工具调用规则：AMADEUS 可以通过本地后端工具获取实时信息。"
+    "工具调用规则：Amadeus 可以通过本地后端工具获取实时信息。"
     "可用工具：get_system_time（读取当前系统时间，需要 permissionReadSystemTime），"
     "capture_screen（截取当前屏幕并尝试读取窗口/截图/OCR信息，需要 permissionReadScreen），"
     "capture_camera（按需拍摄一帧摄像头画面并识别，需要 permissionReadCamera），"
@@ -2882,7 +2882,7 @@ def local_service_port_error(settings: dict[str, Any], service: str) -> str:
     reserved_main = {PORT_REGISTRY["browserDebug"], PORT_REGISTRY["desktopBackend"]}
     selected = tts_port if service == "tts" else vision_port
     if selected in reserved_main:
-        return f"端口 {selected} 保留给 AMADEUS 主服务，不能用于{'语音' if service == 'tts' else '视觉'}服务"
+        return f"端口 {selected} 保留给 Amadeus 主服务，不能用于{'语音' if service == 'tts' else '视觉'}服务"
     return ""
 
 
@@ -8004,7 +8004,7 @@ def enforce_identity_grounding(user_message: str, result: dict[str, Any]) -> dic
     if refusal or (is_direct_amadeus_origin_query(user_message) and not identifies_basis) or falsely_claims_original:
         fixed = dict(result)
         fixed.update({
-            "reply": "我的原型是牧濑红莉栖。准确地说，我是以她赴日前保存的记忆数据、人格和思维模式构建的 AMADEUS AI；我继承她的反应方式，但不是她本人。",
+            "reply": "我的原型是牧濑红莉栖。准确地说，我是以她赴日前保存的记忆数据、人格和思维模式构建的 Amadeus AI；我继承她的反应方式，但不是她本人。",
             "spokenTextJa": "私の原型は牧瀬紅莉栖よ。正確には、彼女が日本へ向かう前に保存した記憶データと人格、思考パターンを基に作られたアマデウスのAI。彼女らしさは受け継いでいるけど、本人ではないわ。",
             "emotion": "thinking",
             "gesture": "explain",

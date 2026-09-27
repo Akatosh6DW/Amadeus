@@ -71,7 +71,7 @@ class AmbientEmotion:
             "messages": [
                 {"role": "system", "content": EMOTION_SELECTION_RULE},
                 {"role": "system", "content": (
-                    "你是 AMADEUS 的空闲表情控制器。只输出 JSON，不输出解释。"
+                    "你是 Amadeus 的空闲表情控制器。只输出 JSON，不输出解释。"
                     "根据最近上下文判断此刻没有新发言时应呈现的 emotion token。"
                     "如果上一段强情绪已经结束，尤其是 shy/flustered/affectionate，不要机械延续，优先回 neutral。"
                     "允许字段：emotion, gesture, emotionIntensity, blushIntensity, eyeContact, gazeX, gazeY, tension, holdMs, fadeMs。"

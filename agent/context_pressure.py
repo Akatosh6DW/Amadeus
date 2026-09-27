@@ -189,7 +189,7 @@ def _message_bucket(text: str, index: int, total: int) -> str:
         return "relationship"
     if index == 0:
         return "system_prompt"
-    if "人格" in text or "AMADEUS" in text:
+    if "人格" in text or "amadeus" in text.lower():
         return "persona"
     return "other"
 

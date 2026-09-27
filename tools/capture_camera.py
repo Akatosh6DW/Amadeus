@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture one camera frame for the local AMADEUS vision tool."""
+"""Capture one camera frame for the local Amadeus vision tool."""
 
 from __future__ import annotations
 

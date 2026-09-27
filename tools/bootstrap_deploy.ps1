@@ -224,7 +224,7 @@ function Ensure-BuildTools {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { $parameters.Verb="RunAs" }
     $process = Start-Process @parameters
     if ($process.ExitCode -eq 3010) {
-        throw "Microsoft C++ tools require a Windows restart. Restart when convenient, then run start.cmd again. AMADEUS has not restarted Windows."
+        throw "Microsoft C++ tools require a Windows restart. Restart when convenient, then run start.cmd again. Amadeus has not restarted Windows."
     }
     if ($process.ExitCode -ne 0 -or -not (Find-MsvcCompiler)) {
         throw "Microsoft C++ build tools were not installed successfully (exit $($process.ExitCode)). Run start.cmd again after resolving the installer error."
@@ -354,7 +354,7 @@ if ($VerifyOnly) {
     exit 0
 }
 
-if (-not [Environment]::Is64BitOperatingSystem) { throw "AMADEUS requires 64-bit Windows" }
+if (-not [Environment]::Is64BitOperatingSystem) { throw "Amadeus requires 64-bit Windows" }
 $selectedBackend = Resolve-Backend
 Write-Host "Selected acceleration backend: $selectedBackend"
 $conda = Find-Conda
@@ -372,5 +372,5 @@ $assetArguments = @("-X", "utf8", "tools\install_deployment_assets.py")
 if ($AssetArchiveDirectory) { $assetArguments += @("--archive-dir", $AssetArchiveDirectory) }
 Invoke-Native -FilePath $desktopPython -Arguments $assetArguments
 Invoke-Native -FilePath $desktopPython -Arguments @("-X", "utf8", "tools\verify_deployment.py")
-Write-Host "AMADEUS deployment is ready. Enter your own API key in Settings on first launch."
+Write-Host "Amadeus deployment is ready. Enter your own API key in Settings on first launch."
 if (-not $NoLaunch) { & (Join-Path $root "run_amadeus.ps1") }

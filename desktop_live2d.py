@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AMADEUS 桌面入口：解析运行模式，装配窗口、桥接和本地后端生命周期。"""
+"""Amadeus 桌面入口：解析运行模式，装配窗口、桥接和本地后端生命周期。"""
 
 from __future__ import annotations
 
@@ -217,7 +217,7 @@ def backend_service_main(port: int) -> None:
             name="amadeus-vision-starter",
         ).start()
     write_server_log("desktop_backend_started", port=port, pid=os.getpid(), build=APP_BUILD)
-    print(f"AMADEUS desktop backend: http://{HOST}:{port} ({APP_BUILD})", flush=True)
+    print(f"Amadeus desktop backend: http://{HOST}:{port} ({APP_BUILD})", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
@@ -239,13 +239,13 @@ def backend_port_from_args() -> int:
 
 
 def show_startup_error(message: str) -> None:
-    text = str(message or "AMADEUS 启动失败")
+    text = str(message or "Amadeus 启动失败")
     write_server_log("desktop_startup_failed", error=text[:800])
     if os.name == "nt":
         try:
             import ctypes
 
-            ctypes.windll.user32.MessageBoxW(None, text, "AMADEUS 启动失败", 0x10)
+            ctypes.windll.user32.MessageBoxW(None, text, "Amadeus 启动失败", 0x10)
             return
         except Exception:
             pass
@@ -334,7 +334,7 @@ def main() -> None:
         settings.get("layoutMode"),
     )
     window = webview.create_window(
-        "AMADEUS Live2D DEV" if dev_mode else "AMADEUS Live2D TEST" if test_mode else "AMADEUS Live2D",
+        "Amadeus Live2D DEV" if dev_mode else "Amadeus Live2D TEST" if test_mode else "Amadeus Live2D",
         url=url,
         js_api=UserLive2DApi(port) if release_mode else Live2DApi(port),
         width=initial_width,

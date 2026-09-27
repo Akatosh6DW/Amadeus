@@ -170,7 +170,7 @@ class MemoryGenerationService:
                 )
 
         instruction = (
-            "你要为一个长期陪伴型 AMADEUS 智能体整理长期记忆文件。"
+            "你要为一个长期陪伴型 Amadeus 智能体整理长期记忆文件。"
             "只保留长期有用、稳定、可帮助之后对话的信息。"
             "不要保存一次性闲聊。不要保存敏感隐私，除非用户明确要求长期记住。"
             "严格区分说话人：只能从 role=user 和 userNotes 提取用户事实；role=assistant 的猜测、"

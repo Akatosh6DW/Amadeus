@@ -256,7 +256,7 @@ def microcompact_turns(
                 or assistant_claims[-1].get("provenanceType")
                 or "assistant_unverified_claim"
             ) if assistant_claims else "assistant_unverified_claim"
-            dialogue.append(f"[turn:{turn_id}][{provenance}] AMADEUS：{assistant}")
+            dialogue.append(f"[turn:{turn_id}][{provenance}] Amadeus：{assistant}")
 
     prefix = "\n".join(header)
     available = max(0, max(800, int(max_characters)) - len(prefix) - 1)
@@ -414,6 +414,6 @@ def validate_compaction(
             issues.append("missing_protected_claim:" + claim)
     if "用户：" in artifact.text and "[user_" not in artifact.text:
         issues.append("user_attribution_missing")
-    if "AMADEUS：" in artifact.text and "[assistant_" not in artifact.text and "[verified_" not in artifact.text and "[tool_" not in artifact.text:
+    if "amadeus：" in artifact.text.lower() and "[assistant_" not in artifact.text and "[verified_" not in artifact.text and "[tool_" not in artifact.text:
         issues.append("assistant_attribution_missing")
     return tuple(dict.fromkeys(issues))

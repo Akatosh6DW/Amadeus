@@ -611,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except (DownloadError, OSError, ValueError) as error:
-        print(f"AMADEUS runtime download failed: {error}", file=sys.stderr)
+        print(f"Amadeus runtime download failed: {error}", file=sys.stderr)
         return 1
 
 

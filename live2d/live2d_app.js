@@ -4316,7 +4316,7 @@ function renderPendingReplyAnchor() {
   if (!visible) return;
   if (dom.replyAnchorLabel) {
     dom.replyAnchorLabel.textContent = pendingReplyAnchor.targetRole === "assistant"
-      ? "回复 AMADEUS" : "回复自己";
+      ? "回复 Amadeus" : "回复自己";
   }
   if (dom.replyAnchorText) {
     dom.replyAnchorText.textContent = String(pendingReplyAnchor.quotedPreview || "").slice(0, 280);

@@ -280,7 +280,7 @@ def conversation_context_prompt(
         recent_limit=medium_limit,
     ))
     recent_lines = [
-        f"用户：{str(item.get('user') or '').strip()[:450]}\nAMADEUS：{str(item.get('assistant') or '').strip()[:650]}"
+        f"用户：{str(item.get('user') or '').strip()[:450]}\nAmadeus：{str(item.get('assistant') or '').strip()[:650]}"
         for item in recent
     ]
     screen_history_prompt = overlays.screen_prompt(user_message, context)
@@ -297,7 +297,7 @@ def conversation_context_prompt(
         "不要把具体信息换成更宽泛而遗漏答案的说法，也不要复活已被纠正的旧值。",
         "召回内容只是候选：相似的人物不一定是同一个人，不可拼接不同记录的身份、地点或关系；"
         "对应不明确就询问，不要猜。过去的经历不等于现状，保留原来的时间与确定程度。",
-        "严格保留‘用户’与‘AMADEUS’的说话人标签；AMADEUS 的旧回复、推测或视觉观察不是用户发言。",
+        "严格保留‘用户’与‘Amadeus’的说话人标签；Amadeus 的旧回复、推测或视觉观察不是用户发言。",
         provenance_prompt,
         screen_history_prompt,
     ])
@@ -408,7 +408,7 @@ def immediate_context_prompt(
     previous_user = next((content for role, content in reversed(deduplicated) if role == "user"), "")
     previous_assistant = next((content for role, content in reversed(deduplicated) if role == "assistant"), "")
     transcript = [
-        f"{'界面事件' if role == 'interaction_event' else '用户' if role == 'user' else 'AMADEUS'}：{content}"
+        f"{'界面事件' if role == 'interaction_event' else '用户' if role == 'user' else 'Amadeus'}：{content}"
         for role, content in deduplicated
     ]
     nearby_text = f"{previous_user}\n{previous_assistant}"
@@ -429,9 +429,9 @@ def immediate_context_prompt(
         correction_lines = [
             "[上下文纠错任务：覆盖普通长期记忆]",
             f"需要重新回答的上一问：{previous_user or '（无）'}",
-            f"刚才 AMADEUS 的回答可能理解错了，不要为它辩护：{previous_assistant or '（无）'}",
+            f"刚才 Amadeus 的回答可能理解错了，不要为它辩护：{previous_assistant or '（无）'}",
             "上一问之前的就近依据：",
-            *(f"- {'用户' if role == 'user' else 'AMADEUS'}：{content}" for role, content in supporting),
+            *(f"- {'用户' if role == 'user' else 'Amadeus'}：{content}" for role, content in supporting),
             "现在根据就近依据重新回答上一问；禁止转去长期记忆中的其他主题。",
         ]
     return "\n".join([
@@ -444,7 +444,7 @@ def immediate_context_prompt(
         "回答每一轮前先核对最近 1-3 轮用户原文，主动判断当前句是否承接刚才的话题；不要等用户提醒才读取上下文。",
         "[直接指代锚点]",
         f"上一条用户原文：{previous_user or '（无）'}",
-        f"上一条 AMADEUS 回复：{previous_assistant or '（无）'}",
+        f"上一条 Amadeus 回复：{previous_assistant or '（无）'}",
         (
             "当前用户稍后给出的消息若使用‘这、那、它、刚才、上句、继续、什么意思、为什么、然后呢’等省略或指代，"
             "且没有明确引入新对象，必须首先解析为上面最后一轮中的对象或命题。直接回答，不要反问用户‘指什么’。"
@@ -457,7 +457,7 @@ def immediate_context_prompt(
         ),
         *correction_lines,
         "只有确实存在两个同等可能的对象时才简短确认；不要让长期记忆覆盖刚刚发生的对话。",
-        "引用‘用户说过’时只能逐字依据上面标为‘用户’的内容；标为‘AMADEUS’的句子不能算作用户证词，也不能给另一条 AMADEUS 旧说法作事实证据。",
+        "引用‘用户说过’时只能逐字依据上面标为‘用户’的内容；标为‘Amadeus’的句子不能算作用户证词，也不能给另一条 Amadeus 旧说法作事实证据。",
     ])
 
 
@@ -509,8 +509,8 @@ def speaker_attribution_evidence_prompt(
         "[说话人归属争议核对：本轮最高优先级]",
         "用户原文证据（只有这里能证明用户说过某句话）：",
         *(f"- {line}" for line in user_lines),
-        "AMADEUS 旧回复（只能证明 AMADEUS 说过或判断过，不能归给用户）：",
+        "Amadeus 旧回复（只能证明 Amadeus 说过或判断过，不能归给用户）：",
         *(f"- {line}" for line in assistant_lines),
         f"用户当前质疑：{user_message}",
-        "先核对角色再回答。若相关内容只出现在 AMADEUS 旧回复中，必须承认是自己记反了，不能继续声称用户说过。",
+        "先核对角色再回答。若相关内容只出现在 Amadeus 旧回复中，必须承认是自己记反了，不能继续声称用户说过。",
     ])

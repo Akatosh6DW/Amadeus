@@ -290,7 +290,7 @@ def local_visual_summary_zh(
         parts.append(f"还能看到 {'、'.join(unique_markers[:6])} 等菜单，说明目标画面是游戏或视觉小说界面。")
 
     if self_ui_visible:
-        parts.append("截图同时混入了 AMADEUS 自己的角色与聊天窗口；这部分是助手自身界面，不算用户要观察的目标内容。")
+        parts.append("截图同时混入了 Amadeus 自己的角色与聊天窗口；这部分是助手自身界面，不算用户要观察的目标内容。")
     if not parts:
         parts.append("画面已经取得，但本地中文兜底只能确认有可见内容，暂时不能可靠概括更多细节。")
     if explicit_sex:
@@ -341,8 +341,8 @@ def concise_local_visual_summary_zh(
         useful += "。"
     if len(useful) > 110:
         useful = useful[:108].rstrip("，,；;：:") + "。"
-    if self_ui_visible and "AMADEUS" not in useful:
-        useful += "AMADEUS 助手自身界面不算目标内容。"
+    if self_ui_visible and "amadeus" not in useful.lower():
+        useful += "Amadeus 助手自身界面不算目标内容。"
     return useful
 
 

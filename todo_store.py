@@ -1,4 +1,4 @@
-"""SQLite persistence and reminder leasing for the AMADEUS Todo domain."""
+"""SQLite persistence and reminder leasing for the Amadeus Todo domain."""
 
 from __future__ import annotations
 

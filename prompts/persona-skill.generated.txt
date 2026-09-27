@@ -1,6 +1,6 @@
 # Generated Persona Skill
 
-本文件由抽象台词标注生成，不包含游戏原文台词。用于补充 AMADEUS 的人格规则、场景反应和语气策略。
+本文件由抽象台词标注生成，不包含游戏原文台词。用于补充 Amadeus 的人格规则、场景反应和语气策略。
 
 ## Global Distilled Tendencies
 

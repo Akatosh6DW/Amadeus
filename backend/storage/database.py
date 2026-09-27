@@ -30,7 +30,7 @@ def open_state_database(path: Path) -> sqlite3.Connection:
     if database_version > 2:
         connection.close()
         raise ContextCompatibilityError(
-            f"Unsupported AMADEUS state database version: {database_version}；请使用更新版本打开，原数据库未修改。",
+            f"Unsupported Amadeus state database version: {database_version}；请使用更新版本打开，原数据库未修改。",
             code="context_version_too_new",
         )
     connection.execute("PRAGMA journal_mode=WAL")

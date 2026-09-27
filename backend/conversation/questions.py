@@ -150,7 +150,7 @@ def pending_assistant_question_prompt(
     continues_authorized_todo = pending_todo.get("type") == "todo_mutation"
     return "\n".join([
         "[待回答问题：相邻话轮连续性]",
-        f"AMADEUS 上一轮亲自提出的问题：{question}",
+        f"Amadeus 上一轮亲自提出的问题：{question}",
         f"问题ID：{pending.get('questionId', '')}；这只是可接续的上下文，不是强制作答。",
         f"问题来源：{'随机主动互动' if origin == 'proactive' else '正常对话追问'}"
         + (f"；提出时间：{asked_at}" if asked_at else ""),

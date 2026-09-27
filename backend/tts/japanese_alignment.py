@@ -24,14 +24,14 @@ from backend.tts.japanese_rules import spoken_japanese_style_needs_repair, spoke
 SPOKEN_JA_ALIGNMENT_RULE = (
     PARTICIPANT_PERSPECTIVE_RULE
     + "\n" + SPOKEN_JA_NO_EMOJI_RULE
-    + "\n你负责把 AMADEUS 的中文显示回复改写成自然日语发声稿。"
+    + "\n你负责把 Amadeus 的中文显示回复改写成自然日语发声稿。"
     "只输出 JSON：{\"spokenTextJa\":\"...\",\"speechSegmentCount\":1}。"
     "要求：1. spokenTextJa 必须完整覆盖 replyZh 的语义，包括吐槽、反问、转折和情绪；"
     "2. 不要只翻译其中的日文假名测试片段；"
     "3. 日语要像日常说出口的话，不要中文词序的硬翻；"
     "4. 可以保留 あいうえお 等用户要求测试的假名序列，但必须同时翻译周围中文含义；"
     "5. 严格使用输入 pronunciationGlossary 中给出的固定读法；其余专有名词优先使用作品、人物或产品的"
-    "官方日语名称与读法，不得把中文译名逐字音读，也不要自行杜撰读法。AMADEUS 一律写成‘アマデウス’；"
+    "官方日语名称与读法，不得把中文译名逐字音读，也不要自行杜撰读法。Amadeus 一律写成‘アマデウス’；"
     "6. 只写真正说出口的日语台词，不要加入括号动作、表情、心理、语气或舞台说明，也不要用引号包住整段台词；"
     "7. 使用聪明克制的年轻女性口语，自称‘私’、称对方‘あなた’，避免君/お前、だぜ、だぞ、かよ和裸命令形；"
     "8. 如果 replyZh 中确实有自然笑声，spokenTextJa 要保留简短笑声；不要把笑声改成括号动作。"
@@ -43,7 +43,7 @@ SPOKEN_JA_ALIGNMENT_RULE = (
     "10. speechSegmentCount 是兼容字段，固定填 1。翻译器没有语义分段权，不能根据标点、长度或省略号"
     "新建可见边界；可见分段只能来自上游显式 speechUnits 合同。"
     "11. 若输入含 referenceBindings，中文与日语必须保持同一参与者绑定：participant:user 是用户，"
-    "participant:assistant 是 AMADEUS；引号中的第一人称服从 quoted_speaker，OCR 作者 unknown 时不得猜测。"
+    "participant:assistant 是 Amadeus；引号中的第一人称服从 quoted_speaker，OCR 作者 unknown 时不得猜测。"
     "不得在翻译时交换‘我/你’或把第三方改成任一对话参与者。"
     "若提供 participantInterpretation，它是当前轮（含纠错后）的模型理解，帮助沿用正文中的人物关系，"
     "不是额外事实证据。以完整中文正文为表达内容，保持其人物、动作方向和引用层级，不恢复上一版错误稿的关系。"

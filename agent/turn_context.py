@@ -342,7 +342,7 @@ def reply_context_prompt(snapshot: Mapping[str, Any] | None) -> str:
     budget = MAX_REPLY_CONTEXT_CHARS
     selection = str(resolved.get("selectedText") or "")
     for index, item in enumerate(messages):
-        label = "用户旧消息" if item.get("role") == "user" else "AMADEUS 旧回复"
+        label = "用户旧消息" if item.get("role") == "user" else "Amadeus 旧回复"
         text = str(item.get("text") or "")
         if selection and item.get("messageId") in resolved.get("targetMessageIds", []):
             text = selection
@@ -363,7 +363,7 @@ def reply_context_prompt(snapshot: Mapping[str, Any] | None) -> str:
     for item in reversed(chain.get("messages", [])):
         if budget <= 0:
             break
-        label = "用户旧消息" if item.get("role") == "user" else "AMADEUS 旧回复"
+        label = "用户旧消息" if item.get("role") == "user" else "Amadeus 旧回复"
         line = f"- {label} [{item.get('messageId')}]: {item.get('text') or ''}"[:budget]
         chain_lines.append(line)
         budget -= len(line)

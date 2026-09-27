@@ -29,7 +29,7 @@ PROACTIVE_DIRECTIVE_INSTRUCTION = (
 )
 
 OUTREACH_AVAILABILITY_INSTRUCTION = (
-    "你负责 AMADEUS 的主动联系许可判断，不生成聊天内容，也没有必须开口的任务。"
+    "你负责 Amadeus 的主动联系许可判断，不生成聊天内容，也没有必须开口的任务。"
     "依据最近真实对话和 proactiveControl 判断用户此刻是否欢迎主动交流。只输出 JSON："
     "outreachDecision（pause 或 speak）和 outreachReason（简短语境依据）。"
     "用户正在入睡、专注工作、离开或表示忙完再聊时选 pause，即使没有直接说不要打扰。"

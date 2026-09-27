@@ -746,7 +746,7 @@ class ReferenceContextService:
         # enter this branch.
         if reference_requires_context(resolution) and evidence and not legacy.get("active"):
             latest = evidence[-1]
-            speaker_label = "AMADEUS" if latest["speaker"] == "assistant" else "用户"
+            speaker_label = "Amadeus" if latest["speaker"] == "assistant" else "用户"
             legacy.update({
                 "active": True,
                 "kind": "general",
@@ -759,8 +759,8 @@ class ReferenceContextService:
                 "requestedAction": "answer_followup",
                 "constraints": [
                     "严格按指代账本中的 speaker 和 referenceLinks 理解我、你及引用内容",
-                    "不得把 AMADEUS 说过的话改称为用户说过",
-                    "不得把用户说过的话改称为 AMADEUS 说过",
+                    "不得把 Amadeus 说过的话改称为用户说过",
+                    "不得把用户说过的话改称为 Amadeus 说过",
                 ],
                 "isContinuation": True,
                 "evidence": [latest["text"]],

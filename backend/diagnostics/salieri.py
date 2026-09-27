@@ -68,7 +68,7 @@ class SalieriRecorder:
         if user_text:
             blocks.extend(["用户:", user_text])
         if assistant_text:
-            blocks.extend(["AMADEUS:", assistant_text])
+            blocks.extend(["Amadeus:", assistant_text])
         return "\n".join(blocks) + "\n\n"
 
 
@@ -121,7 +121,7 @@ class SalieriRecorder:
                     self.ports.private_dir().mkdir(parents=True, exist_ok=True)
                     archive_turns = self.ports.read_archive()
                     if not self.ports.transcript_path().exists():
-                        header = "AMADEUS / SALIERI DIALOGUE RECORD\n"
+                        header = "Amadeus / SALIERI DIALOGUE RECORD\n"
                         header += f"记录启用时间: {self.ports.now()}\n"
                         header += "此文件独立于聊天、短期记忆和长期记忆的清除操作。\n\n"
                         with self.ports.transcript_path().open(

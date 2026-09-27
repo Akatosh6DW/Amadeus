@@ -74,7 +74,7 @@ class GptSovitsService:
     def port_error(self, settings: dict[str, Any]) -> str:
         port = clamp_int(settings.get("gptSovitsPort"), 1024, 65535, 9881)
         if port in self.config.reserved_ports:
-            return f"端口 {port} 保留给 AMADEUS 主服务，不能用于语音服务"
+            return f"端口 {port} 保留给 Amadeus 主服务，不能用于语音服务"
         return ""
 
     def model_route_arguments(self, settings: dict[str, Any]) -> list[str]:

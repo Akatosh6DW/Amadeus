@@ -112,7 +112,7 @@
   "modules": [
     {
       "id": "identity_self",
-      "label": "AMADEUS 自我认知",
+      "label": "Amadeus 自我认知",
       "priority": 100,
       "triggers": ["原型", "你是谁", "身份", "人工智能", "\\bAI\\b", "阿马迪乌斯", "AMADEUS", "牧濑红莉栖.*本人"],
       "sources": [

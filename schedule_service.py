@@ -1,4 +1,4 @@
-"""Durable schedule workflow state for the AMADEUS Todo subsystem.
+"""Durable schedule workflow state for the Amadeus Todo subsystem.
 
 This service persists model-decided schedule activity independently from chat
 history.  Todo execution remains a separate capability, while this module

@@ -1,4 +1,4 @@
-"""Pure helpers for choosing an AMADEUS desktop backend port."""
+"""Pure helpers for choosing an Amadeus desktop backend port."""
 
 from __future__ import annotations
 
@@ -28,5 +28,5 @@ def choose_available_backend_port(
             return candidate
 
     raise RuntimeError(
-        f"AMADEUS 桌面后端首选端口 {preferred} 及备用端口均被占用。"
+        f"Amadeus 桌面后端首选端口 {preferred} 及备用端口均被占用。"
     )

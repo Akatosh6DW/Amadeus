@@ -456,7 +456,7 @@ class PersonaContextService:
             "emotionalSceneAnchorsPath": str(paths.emotional_anchors_path),
             "systemPrompt": (system_prompt_reader or self.read_system_prompt)(),
             "summary": {
-                "agentPositioning": "AMADEUS：自我认知为基于牧濑红莉栖记忆与人格模式构建的本地 AI；除自我认知外，性格、反应习惯、科学思维和关系张力应严格贴近牧濑红莉栖。",
+                "agentPositioning": "Amadeus：自我认知为基于牧濑红莉栖记忆与人格模式构建的本地 AI；除自我认知外，性格、反应习惯、科学思维和关系张力应严格贴近牧濑红莉栖。",
                 "deepseekReady": True,
                 "integration": "每轮 /api/chat 固定发送 3,000-5,000 字表层人格；完整关系网、情感锚点、蒸馏 skill 和专业规则按当前问题动态检索，避免与短期任务争夺注意力。",
                 "distillationSource": generated_rules.get("source") or "unknown",

@@ -314,7 +314,7 @@ class TouchInteractionService:
                         f"重新生成，只回应当前的“{event['actionLabel']}”肢体事件，并严格采用 "
                         f"responseDirective.angle={event['responseDirective']['angle']} 的表达角度。"
                         "必须改变交流目的和句子结构，不能只替换同义词。"
-                        "用户始终是触摸发起者，AMADEUS 始终是被触摸者；不得把动作主体反写。"
+                        "用户始终是触摸发起者，Amadeus 始终是被触摸者；不得把动作主体反写。"
                         + (
                             "本轮中文必须自然说出一次“变态”或“色狼”，日语必须对应说出“変態”或“スケベ”；"
                             "这不是要求复读固定台词，而是要求保留红莉栖式越界斥责并改变其余表达。"

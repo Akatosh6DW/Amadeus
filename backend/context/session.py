@@ -147,7 +147,7 @@ class SessionContextService:
         ).total_seconds()))
         lines = [
             "[本次运行会话的时间基准]",
-            f"本次 AMADEUS 后端启动：{session_started_local.isoformat(timespec='minutes')}",
+            f"本次 Amadeus 后端启动：{session_started_local.isoformat(timespec='minutes')}",
             f"最近一次本机时间快照：{snapshot.isoformat(timespec='minutes')}",
             f"按本次运行时长推算的当前时间：{approximate_now.isoformat(timespec='minutes')}",
             "这是一次新的应用运行会话。重启前的最后一句不是刚刚发生；涉及昨晚、今天、刚才、睡觉或作息时，必须先按时间间隔判断。",

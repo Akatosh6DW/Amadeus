@@ -1,4 +1,4 @@
-"""Fail-closed local retrieval for AMADEUS context skills.
+"""Fail-closed local retrieval for Amadeus context skills.
 
 The module intentionally has no network client and imports optional numerical
 dependencies only inside the ONNX/index loaders.  A production selection is

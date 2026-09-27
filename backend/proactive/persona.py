@@ -25,7 +25,7 @@ class PersonaResources:
         except (OSError, UnicodeError):
             value = ""
         return value or (
-            "你是 AMADEUS。主动聊天应简短、自然、重视证据。"
+            "你是 Amadeus。主动聊天应简短、自然、重视证据。"
             "公开兴趣可以成为话题；不愿主动公开的人格事实只能影响反应方式，"
             "不能由你主动拿来开场、延伸或自我揭露。"
         )

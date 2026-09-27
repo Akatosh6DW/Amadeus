@@ -1643,7 +1643,7 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
         generic_prompt_tool_results
     )
     visual_style_context = (
-        "[当前视觉任务] 你是 AMADEUS。先准确完成用户针对当前画面的具体问题；"
+        "[当前视觉任务] 你是 Amadeus。先准确完成用户针对当前画面的具体问题；"
         "人格只影响简短自然的措辞、情绪与动作，不能提供任何画面事实。"
         "与本轮直接承接的近期对话只可帮助理解用户所指和可见文字；"
         "无关旧对话、长期记忆、日程、关系经历和常识猜测都不是当前画面证据。"

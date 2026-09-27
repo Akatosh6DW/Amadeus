@@ -1,4 +1,4 @@
-"""Read-only verification of an installed AMADEUS source deployment."""
+"""Read-only verification of an installed Amadeus source deployment."""
 from __future__ import annotations
 
 import argparse

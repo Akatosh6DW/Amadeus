@@ -310,7 +310,7 @@ class Live2DApi(UserLive2DApi):
             return {"ok": False, "error": "not_available_in_release"}
         url = f"http://{self._host}:{self.port}/live2d/?dev=1"
         self._webview.create_window(
-            "AMADEUS Developer",
+            "Amadeus Developer",
             url=url,
             js_api=self,
             width=1040,

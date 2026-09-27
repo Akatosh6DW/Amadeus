@@ -393,7 +393,7 @@ def identity_question_scope(text: str) -> IdentityQuestionScope | None:
     recognizes direct identity/name questions about one of the two dialogue
     participants.  Public questions such as "凤凰院凶真是谁" remain ordinary
     external-world questions, while explicit legal/real-name wording remains
-    separate from the configured AMADEUS relationship identity.
+    separate from the configured Amadeus relationship identity.
     """
 
     value = re.sub(r"\s+", "", str(text or ""))

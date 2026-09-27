@@ -1,4 +1,4 @@
-# AMADEUS
+# Amadeus
 
 [English](README.en.md)
 
@@ -11,12 +11,6 @@
 - 管理 Todo 和日程，在需要时给出提醒。
 - 按需使用截图、摄像头、文件和网页等工具。
 - 生成带情绪的日语语音，并让角色口型跟随声音变化。
-
-## 大致架构
-
-- 界面层：Live2D 模型运行在 WebView2 中，由前端负责窗口、动作、表情和交互。
-- 服务层：Python 负责对话流程，连接用户配置的大模型接口，并处理记忆、Todo、日程和按需工具。
-- 语音层：GPT-SoVITS 负责语音合成，Rhubarb Lip Sync 根据语音生成口型时间轴。
 
 ## 直接使用 Release
 
@@ -39,7 +33,7 @@ cd Amadeus
 .\start.cmd
 ```
 
-首次运行 `start.cmd` 会从依赖软件源安装所需环境，并从本仓库的 Releases 下载声音与人格检索资源，然后启动桌面界面。Live2D 模型随源码提供。以后双击同一个文件即可；下载中断时重新运行。开发时在编辑器中选择 `.conda/amadeus-desktop/python.exe` 作为 Python 解释器。
+首次运行 `start.cmd` 会从依赖软件源安装所需环境，并从本仓库的 Releases 下载声音与人格检索资源，然后启动桌面界面。Live2D 模型随源码提供。以后双击同一个文件即可；下载中断时重新运行。
 
 ## 使用提示
 
@@ -56,8 +50,8 @@ API Key、模型和工具权限都在界面设置中管理。屏幕、摄像头�
 
 ## 许可证
 
-本项目的原创代码采用 [MIT 许可证](LICENSE)。MIT 只覆盖项目维护者有权授权的原创部分：Live2D 形象与贴图、声音模型权重、参考音频、角色设定和相关商标不在其范围内，只能随 AMADEUS 使用，不得单独提取再发布。GPT-SoVITS、PixiJS、Live2D Cubism Core、Rhubarb 等第三方组件继续适用各自的原许可证。
+本项目的原创代码采用 [MIT 许可证](LICENSE)。MIT 只覆盖项目维护者有权授权的原创部分：Live2D 形象与贴图、声音模型权重、参考音频、角色设定和相关商标不在其范围内，只能随 Amadeus 使用，不得单独提取再发布。GPT-SoVITS、PixiJS、Live2D Cubism Core、Rhubarb 等第三方组件继续适用各自的原许可证。
 
 Live2D 形象来源：“标准实验服”模型来自 ai-poet 的 [amadeus-system-new](https://github.com/ai-poet/amadeus-system-new) 项目；“日常服”是本项目在该模型基础上绘制的换装皮肤，仍使用原模型的网格、物理、表情和动作。模型版权归原作者所有。牧濑红莉栖及《命运石之门》相关角色和商标归其各自权利人所有。
 
-声音模型由项目维护者基于 GPT-SoVITS 训练。训练所用的角色语音素材及声音相关权利归原权利人所有，因此模型权重和参考音频不适用 MIT 许可证，仅供随 AMADEUS 使用。
+声音模型由项目维护者基于 GPT-SoVITS 训练。训练所用的角色语音素材及声音相关权利归原权利人所有，因此模型权重和参考音频不适用 MIT 许可证，仅供随 Amadeus 使用。

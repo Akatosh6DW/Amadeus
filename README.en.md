@@ -1,4 +1,4 @@
-# AMADEUS
+# Amadeus
 
 [中文](README.md)
 
@@ -11,12 +11,6 @@ A fan project that attempts to recreate Amadeus from *Steins;Gate* on the Window
 - Manages Todos and schedules, with reminders when needed.
 - Provides optional screenshot, camera, file, and web tools.
 - Produces emotional Japanese speech and synchronizes the character's mouth to the audio.
-
-## High-level architecture
-
-- UI layer: the Live2D model runs in WebView2; the frontend handles the window, motion, expressions, and interaction.
-- Service layer: Python manages the conversation flow, connects to the model endpoint you configure, and handles memory, Todos, schedules, and optional tools.
-- Voice layer: GPT-SoVITS synthesizes speech, while Rhubarb Lip Sync turns the audio into a mouth-timing track.
 
 ## Use the Release
 
@@ -39,7 +33,7 @@ cd Amadeus
 .\start.cmd
 ```
 
-On the first run, `start.cmd` installs the required environments from their package sources and downloads voice and persona-retrieval assets from this repository's Releases, then starts the desktop interface. Live2D models are included with the source. Use the same file for later launches or to retry an interrupted download. For development, select `.conda/amadeus-desktop/python.exe` as the Python interpreter in your editor.
+On the first run, `start.cmd` installs the required environments from their package sources and downloads voice and persona-retrieval assets from this repository's Releases, then starts the desktop interface. Live2D models are included with the source. Use the same file for later launches or to retry an interrupted download.
 
 ## Usage notes
 
@@ -56,8 +50,8 @@ An NVIDIA GPU with a compatible CUDA driver can accelerate processing. CPU mode 
 
 ## License
 
-The original AMADEUS source code is released under the [MIT License](LICENSE). The license covers only the parts the maintainer has the right to license: Live2D characters and textures, voice model weights, reference audio, character settings and related trademarks are not covered and may be used only as part of AMADEUS, not extracted and redistributed separately. Third-party components such as GPT-SoVITS, PixiJS, Live2D Cubism Core and Rhubarb remain under their own licenses.
+The original Amadeus source code is released under the [MIT License](LICENSE). The license covers only the parts the maintainer has the right to license: Live2D characters and textures, voice model weights, reference audio, character settings and related trademarks are not covered and may be used only as part of Amadeus, not extracted and redistributed separately. Third-party components such as GPT-SoVITS, PixiJS, Live2D Cubism Core and Rhubarb remain under their own licenses.
 
 Live2D model credit: the "lab coat" model comes from ai-poet's [amadeus-system-new](https://github.com/ai-poet/amadeus-system-new) project. The "daily outfit" is an outfit skin drawn by this project on top of that model and still uses its mesh, physics, expressions and motions. The model's copyright remains with its original author. Kurisu Makise and the Steins;Gate characters and trademarks belong to their respective rights holders.
 
-The voice models were trained by the project maintainer on top of GPT-SoVITS. The character voice material used for training and the related voice rights belong to their original rights holders, so the model weights and reference audio are not covered by the MIT License and are provided only for use with AMADEUS.
+The voice models were trained by the project maintainer on top of GPT-SoVITS. The character voice material used for training and the related voice rights belong to their original rights holders, so the model weights and reference audio are not covered by the MIT License and are provided only for use with Amadeus.

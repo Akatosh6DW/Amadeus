@@ -56,7 +56,7 @@ function Test-ProcessBelongsToAmadeusInstallation {
   return $false
 }
 
-Write-Host "Stopping stale AMADEUS processes from this installation..."
+Write-Host "Stopping stale Amadeus processes from this installation..."
 $targets = @()
 try {
   $targets = @(
@@ -81,7 +81,7 @@ Start-Sleep -Milliseconds 600
 
 if ($TestMode) {
   # The previous test backend keeps its log handles open until process
-  # shutdown. Rebuild the isolated profile only after stale AMADEUS processes
+  # shutdown. Rebuild the isolated profile only after stale Amadeus processes
   # have stopped; otherwise a second -TestMode launch fails with file-in-use.
   # Keep only connection preferences; chat, memory and task state still reset.
   # Keys remain in the ignored local data directory, never in source defaults.
@@ -120,7 +120,7 @@ if ($TestMode) {
       $utf8NoBom
     )
   }
-  Write-Host "AMADEUS test mode: clean isolated data at $testDataDir"
+  Write-Host "Amadeus test mode: clean isolated data at $testDataDir"
 }
 
 $desktopPythonw = Join-Path $PSScriptRoot ".conda\amadeus-desktop\pythonw.exe"

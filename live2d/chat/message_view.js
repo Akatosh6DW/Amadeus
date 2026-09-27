@@ -50,7 +50,7 @@
     let bubbles = new WeakMap();
 
     function assistantMetaLabel(metaData = {}) {
-      const bits = ["AMADEUS"];
+      const bits = ["Amadeus"];
       const source = String(metaData.source || "");
       const internalRecoverySources = new Set([
         "pipeline-error",

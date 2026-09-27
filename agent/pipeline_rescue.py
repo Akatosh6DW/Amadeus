@@ -1,4 +1,4 @@
-"""Bounded model-assisted recovery for a failed AMADEUS turn.
+"""Bounded model-assisted recovery for a failed Amadeus turn.
 
 The normal dialogue/persona pipeline is intentionally absent here.  This
 module describes a control-plane decision: inspect a compact task snapshot,
@@ -23,7 +23,7 @@ RescueDecision = Literal[
 ContextRecoveryDecision = Literal["retry_normal", "ask_user", "abort"]
 
 
-ISOLATED_CONTEXT_RECOVERY_SYSTEM_PROMPT = """你是 AMADEUS 的上下文整理器，不是聊天角色，也不负责回答用户。
+ISOLATED_CONTEXT_RECOVERY_SYSTEM_PROMPT = """你是 Amadeus 的上下文整理器，不是聊天角色，也不负责回答用户。
 正常处理链路刚刚因为上下文冲突或协议错误而失败。请只根据本次提供的近期原始对话、当前用户输入、回复引用、待执行动作和真实动作回执，重建“用户这一轮真正要完成的任务”。
 这里没有人格、长期记忆和角色设定；不要补入这些信息，不要调用工具，不要写最终回答。
 
@@ -41,7 +41,7 @@ ISOLATED_CONTEXT_RECOVERY_SYSTEM_PROMPT = """你是 AMADEUS 的上下文整理�
 {"decision":"retry_normal|ask_user|abort","taskGoal":"明确的当前任务","missingContext":["缺失项"],"relevantMessageIds":["消息ID"],"excludedMessageIds":["会造成串话且与本任务无关的消息ID"],"pendingActionRelation":"continue|replace|cancel|pause|none","confidence":0到1,"diagnosis":"内部简短原因","clarificationZh":"仅 ask_user 时填写"}。"""
 
 
-PIPELINE_RESCUE_SYSTEM_PROMPT = """你是 AMADEUS 的故障恢复控制器，不是角色聊天模型。
+PIPELINE_RESCUE_SYSTEM_PROMPT = """你是 Amadeus 的故障恢复控制器，不是角色聊天模型。
 正常回答架构已经报错或互相矛盾。你只根据给出的当前用户输入、已解析任务、待处理动作、真实工具回执、可用工具和异常摘要，决定下一步。
 不要使用人格、长期记忆、角色口癖，也不要延续失败回答的猜测。
 orderedUserInputs 按时间排序；后一句可能是在补充、纠正或取消前一句。用户原文高于旧助手回复，真实 toolResults/actionReceipts 高于任何文字声明。
@@ -59,7 +59,7 @@ orderedUserInputs 按时间排序；后一句可能是在补充、纠正或取�
 execute_tools 时 replyZh/spokenJa 可留空。abort 必须留空 calls。"""
 
 
-PIPELINE_RESCUE_FINALIZE_PROMPT = """你是 AMADEUS 的故障恢复收尾器，不是角色聊天模型。
+PIPELINE_RESCUE_FINALIZE_PROMPT = """你是 Amadeus 的故障恢复收尾器，不是角色聊天模型。
 根据原始任务和刚执行的真实工具结果写一个简短、独立、如实的最终回答。成功只能来自 ok=true 或 accepted 回执；失败必须明确说没有完成，并保留可重试目标。不要再请求工具，不要解释内部架构。
 只输出 JSON：{"decision":"deliver|ask_user|abort","diagnosis":"一句内部原因","calls":[],"replyZh":"中文","spokenJa":"严格对应的日语或空字符串","requiresUserResponse":false,"expectedResponseType":"free_text|confirmation|browser_target|choice|"}。"""
 
