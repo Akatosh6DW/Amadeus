@@ -1,4 +1,4 @@
-# Amadeus
+# Amadeus System
 
 [中文](README.md)
 
@@ -50,8 +50,8 @@ An NVIDIA GPU with a compatible CUDA driver can accelerate processing. CPU mode 
 
 ## License
 
-The original Amadeus source code is released under the [MIT License](LICENSE). The license covers only the parts the maintainer has the right to license: Live2D characters and textures, voice model weights, reference audio, character settings and related trademarks are not covered and may be used only as part of Amadeus, not extracted and redistributed separately. Third-party components such as GPT-SoVITS, PixiJS, Live2D Cubism Core and Rhubarb remain under their own licenses.
+The original Amadeus System source code is released under the [MIT License](LICENSE). The license covers only the parts the maintainer has the right to license: Live2D characters and textures, voice model weights, reference audio, character settings and related trademarks are not covered and may be used only as part of Amadeus System, not extracted and redistributed separately. Third-party components such as GPT-SoVITS, PixiJS, Live2D Cubism Core and Rhubarb remain under their own licenses.
 
 Live2D model credit: the "lab coat" model comes from ai-poet's [amadeus-system-new](https://github.com/ai-poet/amadeus-system-new) project. The "daily outfit" is an outfit skin drawn by this project on top of that model and still uses its mesh, physics, expressions and motions. The model's copyright remains with its original author. Kurisu Makise and the Steins;Gate characters and trademarks belong to their respective rights holders.
 
-The voice models were trained by the project maintainer on top of GPT-SoVITS. The character voice material used for training and the related voice rights belong to their original rights holders, so the model weights and reference audio are not covered by the MIT License and are provided only for use with Amadeus.
+The voice models were trained by the project maintainer on top of GPT-SoVITS. The character voice material used for training and the related voice rights belong to their original rights holders, so the model weights and reference audio are not covered by the MIT License and are provided only for use with Amadeus System.

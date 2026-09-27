@@ -2882,7 +2882,7 @@ def local_service_port_error(settings: dict[str, Any], service: str) -> str:
     reserved_main = {PORT_REGISTRY["browserDebug"], PORT_REGISTRY["desktopBackend"]}
     selected = tts_port if service == "tts" else vision_port
     if selected in reserved_main:
-        return f"端口 {selected} 保留给 Amadeus 主服务，不能用于{'语音' if service == 'tts' else '视觉'}服务"
+        return f"端口 {selected} 保留给 Amadeus System 主服务，不能用于{'语音' if service == 'tts' else '视觉'}服务"
     return ""
 
 

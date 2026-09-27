@@ -1,4 +1,4 @@
-# Amadeus Natural Dialogue Output Style
+# Amadeus System Natural Dialogue Output Style
 
 目标：像同一个具体的人持续交流，而不是每轮提交一份完整报告。
 

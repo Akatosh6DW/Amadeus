@@ -485,8 +485,8 @@
       const at = now();
       if (wasWaiting) {
         proactiveState.returnContext = wasSulking
-          ? `Amadeus刚才连续主动联系了用户${wasWaiting}次都没有得到回应，最后已经说去做实验并独自生闷气。用户现在回来了；自然承接他的回归，保留一点别扭，但优先回答当前内容。`
-          : `Amadeus刚才主动联系了用户${wasWaiting}次并在等待回应。用户现在回来了；可以简短表现出注意到他回来了，再自然回答当前内容。`;
+          ? `Amadeus System刚才连续主动联系了用户${wasWaiting}次都没有得到回应，最后已经说去做实验并独自生闷气。用户现在回来了；自然承接他的回归，保留一点别扭，但优先回答当前内容。`
+          : `Amadeus System刚才主动联系了用户${wasWaiting}次并在等待回应。用户现在回来了；可以简短表现出注意到他回来了，再自然回答当前内容。`;
       }
       resetProactiveSequence(at);
       scene.schedulePositiveAmbientMood?.(at);

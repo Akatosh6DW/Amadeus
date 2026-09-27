@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="/live2d/local_api.js?v=20260910-local-session"></script>
-    <title>Amadeus Live2D</title>
+    <title>Amadeus System</title>
     <link rel="stylesheet" href="live2d.css?v=20260912-crop-frame">
   </head>
   <body>
@@ -82,7 +82,7 @@
           </svg>
         </button>
         <div class="titlebar-drag-region pywebview-drag-region" data-window-drag title="拖动窗口">
-          <strong>Amadeus</strong>
+          <strong>Amadeus System</strong>
           <span id="modelState">LIVE2D INITIALIZING</span>
         </div>
         <div class="window-actions">
@@ -146,7 +146,7 @@
           <div class="chat-history-search-filters" role="tablist" aria-label="消息发送者">
             <button class="active" type="button" data-history-role="all" role="tab" aria-selected="true">全部</button>
             <button type="button" data-history-role="user" role="tab" aria-selected="false">我</button>
-            <button type="button" data-history-role="assistant" role="tab" aria-selected="false">Amadeus</button>
+            <button type="button" data-history-role="assistant" role="tab" aria-selected="false">Amadeus System</button>
           </div>
           <div class="chat-history-search-status" id="chatHistorySearchStatus" aria-live="polite">输入关键词，或浏览最近记录</div>
           <div class="chat-history-search-results" id="chatHistorySearchResults"></div>
@@ -267,7 +267,7 @@
       </div>
       <div class="dev-block" data-dev-page="persona">
         <b>人格微调补丁</b>
-        <textarea id="devPersonaOverride" spellcheck="false" placeholder="写入高优先级人格补丁。例：她被称为普通助手时要轻微不满，并纠正为 Amadeus；技术讨论时优先严谨，不要卖萌。"></textarea>
+        <textarea id="devPersonaOverride" spellcheck="false" placeholder="写入高优先级人格补丁。例：她被称为普通助手时要轻微不满，并纠正为 Amadeus System；技术讨论时优先严谨，不要卖萌。"></textarea>
         <div class="button-row">
           <button id="reloadPersonaBtn" type="button">重载人格</button>
           <button id="savePersonaBtn" type="button">保存人格补丁</button>
@@ -281,7 +281,7 @@
         <b>调试开关</b>
         <label class="check-row">
           <input id="debugDirectSpeechInput" type="checkbox">
-          <span>纯调试直说：我输入什么，Amadeus 就显示并朗读什么</span>
+          <span>纯调试直说：我输入什么，Amadeus System 就显示并朗读什么</span>
         </label>
       </div>
       <div class="dev-block dev-emotion-control" data-dev-page="emotion">
@@ -842,7 +842,7 @@
             应用代理（可选）
             <input id="apiProxyUrlInput" spellcheck="false" placeholder="例如 http://127.0.0.1:7890">
           </label>
-          <div class="hint">设置只保存在 Amadeus 自己的配置中，不修改 Windows 环境变量。换电脑时默认自动探测；若浏览器可访问而直连不通，可在这里填写该电脑实际使用的代理地址。</div>
+          <div class="hint">设置只保存在 Amadeus System 自己的配置中，不修改 Windows 环境变量。换电脑时默认自动探测；若浏览器可访问而直连不通，可在这里填写该电脑实际使用的代理地址。</div>
           <label class="check-row">
             <input id="responseFormatInput" type="checkbox">
             <span>请求 JSON response_format</span>
@@ -870,7 +870,7 @@
             界面模式
             <select id="layoutModeInput">
               <option value="lite">Lite 悬浮版：当前桌面聊天样式</option>
-              <option value="full">Full 视频通话版：左侧 Amadeus，右侧聊天</option>
+              <option value="full">Full 视频通话版：左侧 Amadeus System，右侧聊天</option>
             </select>
           </label>
           <div class="two-col">
@@ -892,7 +892,7 @@
           <label class="field">
             背景
             <select id="backgroundPresetInput">
-              <option value="boot">Amadeus 实验网格</option>
+              <option value="boot">Amadeus System 实验网格</option>
               <option value="grid">深色研究网格</option>
               <option value="solid">纯色深黑</option>
               <option value="custom">自定义图片</option>
@@ -961,7 +961,7 @@
         <div class="tab-page" data-page="interaction">
           <label class="check-row">
             <input id="proactiveInteractionsEnabledInput" type="checkbox">
-            <span>允许 Amadeus 偶尔主动发起对话</span>
+            <span>允许 Amadeus System 偶尔主动发起对话</span>
           </label>
           <label class="field">
             主动找你聊天的频率
@@ -1033,7 +1033,7 @@
           </label>
           <label class="check-row">
             <input id="autoStartGptSovitsInput" type="checkbox">
-            <span>启动 Amadeus 时自动启动 GPT-SoVITS</span>
+            <span>启动 Amadeus System 时自动启动 GPT-SoVITS</span>
           </label>
           <label class="check-row">
             <input id="alignSpokenJaInput" type="checkbox">
@@ -1046,7 +1046,7 @@
           <div class="hint">当前默认关闭，便于与原始拼接方式对比；切换不更换模型、权重或参考音频。</div>
           <div class="two-col">
             <label class="field">
-              Amadeus 发声语言
+              Amadeus System 发声语言
               <select id="speechLanguageInput">
                 <option value="ja-JP">日语（当前生产方案）</option>
                 <option value="zh-CN">中文（工程实验版）</option>
@@ -1157,31 +1157,31 @@
         <div class="tab-page" data-page="permissions">
           <label class="check-row">
             <input id="permissionReadSystemTimeInput" type="checkbox">
-            <span>允许 Amadeus 读取系统时间</span>
+            <span>允许 Amadeus System 读取系统时间</span>
           </label>
           <label class="check-row">
             <input id="permissionReadScreenInput" type="checkbox">
-            <span>允许 Amadeus 读取屏幕截图</span>
+            <span>允许 Amadeus System 读取屏幕截图</span>
           </label>
           <label class="check-row">
             <input id="permissionReadCameraInput" type="checkbox">
-            <span>允许 Amadeus 按需读取摄像头单帧</span>
+            <span>允许 Amadeus System 按需读取摄像头单帧</span>
           </label>
           <label class="check-row">
             <input id="permissionWebSearchInput" type="checkbox">
-            <span>允许 Amadeus 在线搜索并读取网页正文</span>
+            <span>允许 Amadeus System 在线搜索并读取网页正文</span>
           </label>
           <label class="check-row">
             <input id="permissionFileReadInput" type="checkbox">
-            <span>允许 Amadeus 读取 Agent 工作区内的文件和目录</span>
+            <span>允许 Amadeus System 读取 Agent 工作区内的文件和目录</span>
           </label>
           <label class="check-row">
             <input id="permissionFileWriteInput" type="checkbox">
-            <span>允许 Amadeus 在 Agent 工作区内创建或修改文本文件</span>
+            <span>允许 Amadeus System 在 Agent 工作区内创建或修改文本文件</span>
           </label>
           <label class="check-row">
             <input id="permissionOpenBrowserInput" type="checkbox">
-            <span>允许 Amadeus 按明确要求打开默认浏览器</span>
+            <span>允许 Amadeus System 按明确要求打开默认浏览器</span>
           </label>
           <label class="field">
             Agent 文件工作区

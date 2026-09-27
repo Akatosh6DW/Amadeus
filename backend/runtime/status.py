@@ -55,7 +55,7 @@ class RuntimeStatus:
         return [
             {
                 "id": "main",
-                "label": "Amadeus 桌面后端" if main["port"] == 5174 else "Amadeus 本地后端",
+                "label": "Amadeus System 桌面后端" if main["port"] == 5174 else "Amadeus System 本地后端",
                 "host": main["host"],
                 "port": main["port"],
                 "endpoint": main["endpoint"],

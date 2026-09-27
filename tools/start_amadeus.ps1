@@ -22,7 +22,7 @@ if (Test-Path -LiteralPath $python -PathType Leaf) {
 }
 
 if (-not $ready) {
-    Write-Host "Preparing Amadeus for use. Missing components will download automatically."
+    Write-Host "Preparing Amadeus System for use. Missing components will download automatically."
     Write-Host "First launch needs Internet access and several GB of downloads. Keep this window open."
     $bootstrap = Join-Path $PSScriptRoot "bootstrap_deploy.ps1"
     $previousErrorAction = $ErrorActionPreference

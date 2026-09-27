@@ -50,7 +50,7 @@ def serve(services: StartupServices) -> None:
             runtimeMode=services.mode(),
             **storage_health,
         )
-        print(f"Amadeus local server: http://{services.host()}:{services.port()}")
+        print(f"Amadeus System local server: http://{services.host()}:{services.port()}")
         print(f"Model: {settings.get('apiModel') or 'local simulation'}")
         print(f"Memory: {services.memory_path(settings)}")
         if storage_health.get("recoveryRequired"):

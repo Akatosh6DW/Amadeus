@@ -16,10 +16,14 @@ from PIL import Image, ImageGrab, ImageStat
 
 
 def is_amadeus_window_title(title: str) -> bool:
-    """Return whether a native top-level window belongs to this assistant."""
+    """Recognize current and legacy Amadeus System native windows."""
 
     value = " ".join(str(title or "").split()).casefold()
-    return value == "amadeus live2d" or value.startswith("amadeus live2d ")
+    return (
+        value in {"amadeus system", "amadeus system dev", "amadeus system test"}
+        or value == "amadeus live2d"
+        or value.startswith("amadeus live2d ")
+    )
 
 
 def foreground_window_title() -> str:

@@ -74,7 +74,9 @@ def native_window_handle(window) -> int:
     exact = next((handle for handle, value in candidates if value == title), 0)
     if exact:
         return exact
-    return next((handle for handle, value in candidates if "amadeus live2d" in value.lower()), 0)
+    return next((handle for handle, value in candidates
+                 if value.casefold() in {"amadeus system", "amadeus system dev", "amadeus system test"}
+                 or "amadeus live2d" in value.casefold()), 0)
 
 
 def window_logical_position(window) -> tuple[int, int]:

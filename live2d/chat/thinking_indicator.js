@@ -109,11 +109,11 @@
       bubble.dataset.generation = String(generation || 0);
       bubble.setAttribute("role", "status");
       bubble.setAttribute("aria-live", "polite");
-      bubble.setAttribute("aria-label", "Amadeus 正在思考");
+      bubble.setAttribute("aria-label", "Amadeus System 正在思考");
 
       const meta = document.createElement("span");
       meta.className = "meta";
-      meta.textContent = isDeveloper() ? "Amadeus · PIPELINE" : "Amadeus · THINKING";
+      meta.textContent = isDeveloper() ? "Amadeus System · PIPELINE" : "Amadeus System · THINKING";
       const body = document.createElement("span");
       body.className = "message-body thinking-body";
       const label = document.createElement("span");
