@@ -279,7 +279,7 @@ def cognitive_prompt(packet: Mapping[str, Any], *, analysis_only: bool = False) 
 
 
 def normalize_brain_container(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Accept the document's mode names without changing the speech protocol."""
+    """Normalize one decision before state validation and stream dispatch agree on it."""
     try:
         result = realize_participant_speech(value)
     except ParticipantTemplateError as error:
@@ -302,6 +302,23 @@ def normalize_brain_container(value: Mapping[str, Any]) -> dict[str, Any]:
     cognitive = result.get("cognitive")
     if "outcome" not in result and isinstance(cognitive, Mapping) and isinstance(cognitive.get("outcome"), Mapping):
         result["outcome"] = deepcopy(cognitive["outcome"])
+    if (str(result.get("kind") or "").lower() in {
+            "", "turn", "final_answer", "answer", "final", "tool_use", "tool_request"}
+            and (result.get("calls") or result.get("toolRequests"))):
+        # A provider can return a chat-labelled container with executable calls.
+        # State validation already consumes those calls; stream dispatch must see
+        # the same decision. This only routes explicit calls through the existing
+        # validation/execution gates: task-plan patches alone never execute here.
+        result["kind"] = "tool_use"
+        if "mode" in result:
+            result["mode"] = "ACT"
+        # These words and outcome precede the tool receipt. Only the continuation
+        # may deliver a final answer after the actual operation has been checked.
+        for key in ("outcome", "speechUnits", "utterances", "reply", "textZh", "zh", "ja",
+                    "spokenTextJa", "speechText"):
+            result.pop(key, None)
+        if isinstance(cognitive, Mapping) and "outcome" in cognitive:
+            result["cognitive"] = {key: item for key, item in cognitive.items() if key != "outcome"}
     return synchronize_response_waiting(result)
 
 
