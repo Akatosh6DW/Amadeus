@@ -15,6 +15,7 @@ import urllib.parse
 from typing import Any, Callable, Mapping
 
 from agent.attachment_editing import ATTACHMENT_ACTION_RULE
+from backend.chat.image_context import read_selected_images
 from agent.action_identity import browser_retry_identity
 from agent.cognitive_answer_scope import has_current_search_evidence
 from agent.cognitive_brain import (
@@ -584,7 +585,7 @@ def resolve_cognitive_response(
                              identityFactsIncluded=True)
             return services.model.send_upstream_chat_payload(repair_settings, services.model.with_cognitive_transport_state(body, continued), timeout=repair_timeout,
                                               request_id=request_id, purpose=purpose)
-        if (purpose != "cognitive_repair_resume"
+        if (purpose not in {"cognitive_repair_resume", "cognitive_image_recall"}
                 and urllib.parse.urlsplit(str(settings.get("apiEndpoint") or "")).hostname == "api.deepseek.com"
                 and str(continued.get("model") or settings.get("apiModel") or "").strip()):
             continued["thinking"] = {"type": "enabled"}
@@ -625,12 +626,21 @@ def resolve_cognitive_response(
             services.runtime.write_log("cognitive_task_assessment_repaired", requestId=request_id,
                              supplied=bool(isinstance(assessment, Mapping) and "taskStatus" in assessment))
         return content
+    def read_images(query: Mapping[str, Any]) -> dict[str, Any]:
+        result = read_selected_images(body, query,
+            lambda: services.context.conversation_image_inputs(body, settings))
+        if (body.get("_cognitiveRepairRoute") or {}).get("phase") == "analysis":
+            # Pro analysis stays text-only. Reserve the actual pixels for the
+            # normal-model continuation; do not pretend Pro has seen them.
+            result["delivery"] = "deferred_to_normal_resume"
+        return result
+
     def route_candidate(value: Mapping[str, Any]) -> str | None:
         route = body.get("_cognitiveRepairRoute") or {}
         if route.get("phase") == "analysis":
             kind = str(value.get("kind") or "").lower()
-            if kind in {"request_trace", "request_adaptations"}:
-                allowed = {"kind", "traceQuery" if kind == "request_trace" else "adaptationQuery"}
+            if kind in {"request_trace", "request_adaptations", "request_images"}:
+                allowed = {"kind", {"request_trace": "traceQuery", "request_adaptations": "adaptationQuery", "request_images": "imageQuery"}[kind]}
                 if set(value) - allowed:
                     raise CognitiveProtocolError("repair_read_request_fields: internal read requests contain only kind and their query")
                 return None
@@ -997,6 +1007,9 @@ def resolve_cognitive_response(
         if diagnostic.get("repairs"):
             services.runtime.write_log("cognitive_json_syntax_recovered", requestId=request_id,
                              originalCharacters=len(text), repairs=diagnostic["repairs"], addedModelCalls=0)
+        if isinstance(value, dict) and value.get("kind") in {"request_images", "request_trace", "request_adaptations"}:
+            # Internal reads do not inherit a preceding tool decision or patches.
+            return value
         if (isinstance(value, dict) and not value.get("cognitive") and body.get("_cognitiveDecision")
                 and (body.get("_cognitiveRepairRoute") or {}).get("phase") != "analysis"):
             # 工具续写可复用本轮已接受含义；省略重复元数据不构成新状态修订。
@@ -1061,6 +1074,7 @@ def resolve_cognitive_response(
             validate_output=validate_output,
             refresh_context=refresh_context,
             read_adaptations=read_adaptations,
+            read_images=read_images,
             route_candidate=route_candidate,
             resume_after_repair=resume_after_repair,
             revision_budget_key=revision_budget_key,

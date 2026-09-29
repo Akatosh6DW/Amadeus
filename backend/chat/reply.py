@@ -10,7 +10,7 @@ from agent.dialogue_waiting import question_relation, synchronize_response_waiti
 from agent.participant_realization import realize_participant_speech
 from agent.proactive_control import PROACTIVE_DIRECTIVES
 from backend.common.values import clamp_float, clamp_int
-from backend.tts.contract import MAX_SPEECH_UNITS
+from backend.tts.contract import batch_model_speech_units
 
 from .parsing import (
     extract_complete_json_string_field,
@@ -112,10 +112,8 @@ def normalize_model_reply(
     if isinstance(raw_units_value, list):
         parsed_units = [dict(item) for item in raw_units_value if isinstance(item, dict)]
         raw_model_speech_units = (
-            parsed_units
-            if len(parsed_units) == len(raw_units_value)
-            and 1 <= len(parsed_units) <= MAX_SPEECH_UNITS
-            else []
+            batch_model_speech_units(parsed_units)
+            if len(parsed_units) == len(raw_units_value) else []
         )
         if raw_model_speech_units and not str(value.get("reply") or "").strip():
             joined_reply = "\n\n".join(
@@ -142,10 +140,8 @@ def normalize_model_reply(
             dict(item) for item in value["_modelSpeechUnits"] if isinstance(item, dict)
         ]
         raw_model_speech_units = (
-            parsed_units
-            if len(parsed_units) == len(value["_modelSpeechUnits"])
-            and 1 <= len(parsed_units) <= MAX_SPEECH_UNITS
-            else []
+            batch_model_speech_units(parsed_units)
+            if len(parsed_units) == len(value["_modelSpeechUnits"]) else []
         )
     requires_user_response_provided = (
         bool(value.get("requiresUserResponseProvided"))

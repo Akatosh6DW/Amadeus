@@ -5953,6 +5953,40 @@ def tool_bookmark_manage(
     )
 
 
+def execute_scheduled_task(reminder: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    """Resume an authorized instruction through the normal model/tool loop.
+
+    Tool receipts persist normally. The background turn's cognitive plan stays
+    private so it cannot replace an unrelated foreground conversation plan.
+    The existing reminder delivery path records the visible result.
+    """
+    task = reminder["task"]
+    request_id = "scheduled-" + str(reminder["reminderId"])
+    instruction = str(task["onDue"])
+    body = {"requestId": request_id, "userMessage": instruction, "messages": [], "_scheduledTaskExecution": True,
+            "proactiveContext": (
+                "这是用户已授权任务的到期执行，不是用户重新发言。现在执行保存的指令，按需组合已有工具；"
+                "不要再为同一指令设置一次延时，不要仅提醒用户自己做。原文、次数、指定语言要完整保留，"
+                "不省略重复内容；有精确次数要求时先拟完整文本，用 local_compute 的 count_substring/text_length 核对，"
+                "不符合要求就修正后核对，最终原样使用核对通过的文本，不再缩写或省略。口述稿也保留同样的次数。"
+                "精确算术同样复用 local_compute；其他任务按需要选择工具，不能完成时如实说明。"
+                "保持原等待/安静状态，不输出恢复闲聊的指令。"
+                "当前调度任务的完成状态由交付回执更新，不要自行把当前调度任务标完成。"
+                "当前任务ID：" + str(task["taskId"]))}
+    ensure_turn_context_snapshot(body, request_id=request_id, user_message=instruction)
+    body["_turnContextSnapshot"]["_contextState"].pop("pendingAction", None)
+    body["_preparedActionTurn"] = prepare_action_turn(instruction, request_id=request_id, pending_action={})
+    result = call_upstream(body)
+    bind_turn_context_to_result(body, result)
+    # Freeze public delivery units before the reminder cache drops private fields.
+    result = speech_unit_contract_for_result(result, request_id=request_id)
+    outcome = body.get("_cognitiveOutcome") or {}
+    result["scheduledExecutionStatus"] = reminder_application.scheduled_delivery_status(
+        result, str(outcome.get("status") or "unknown")
+        if (body.get("_cognitiveOutcomeVerification") or {}).get("valid") else "unknown")
+    return result
+
+
 REMINDER_SERVICE = reminder_application.ReminderService(
     reminder_application.StateOperations(
         state_database=lambda *args, **kwargs: state_database(*args, **kwargs),
@@ -5967,6 +6001,7 @@ REMINDER_SERVICE = reminder_application.ReminderService(
         normalize_model_reply=lambda *args, **kwargs: normalize_model_reply(*args, **kwargs),
         align_spoken_text_ja=lambda *args, **kwargs: align_spoken_text_ja(*args, **kwargs),
         read_proactive_persona_prompt=lambda *args, **kwargs: read_proactive_persona_prompt(*args, **kwargs),
+        execute_scheduled_task=lambda *args, **kwargs: execute_scheduled_task(*args, **kwargs),
     ),
     write_log=lambda *args, **kwargs: write_server_log(*args, **kwargs),
     dialogue_style=lambda: NATURAL_DIALOGUE_STYLE,

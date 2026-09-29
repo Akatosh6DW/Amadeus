@@ -55,6 +55,7 @@ def public_todo_candidate(value: Mapping[str, Any]) -> dict[str, Any]:
         "taskId": str(value.get("taskId") or "")[:100],
         "title": str(value.get("title") or "")[:240],
         "details": str(value.get("details") or "")[:500],
+        "onDue": str(value.get("onDue") or "")[:4000],
         "status": str(value.get("status") or "")[:40],
         "dueAt": str(value.get("dueAt") or "")[:80],
         "dueDate": str(value.get("dueDate") or "")[:10],
@@ -250,7 +251,7 @@ class TodoActionService:
                         }
                 if command.action == "create":
                     command = resolve_todo_command_time(command, anchor)
-                    expected_state = {"title": command.title, "details": command.details,
+                    expected_state = {"title": command.title, "details": command.details, "onDue": command.on_due,
                         "dueAt": command.due_at, "dueDate": command.due_date if not command.due_at else "",
                         "timezone": command.timezone_name, "remindBeforeMinutes": command.remind_before_minutes,
                         "priority": command.priority, "recurrenceRule": command.recurrence_rule, "status": "pending"}
@@ -258,6 +259,7 @@ class TodoActionService:
                         connection,
                         title=command.title,
                         details=command.details,
+                        on_due=command.on_due,
                         due_at=command.due_at,
                         due_date=command.due_date,
                         timezone_name=command.timezone_name,
@@ -293,6 +295,7 @@ class TodoActionService:
                         key_map = {
                             "title": ("title", command.title),
                             "details": ("details", command.details),
+                            "onDue": ("onDue", command.on_due),
                             "dueAt": ("dueAt", command.due_at),
                             "due_at": ("dueAt", command.due_at),
                             "dueDate": ("dueDate", command.due_date),

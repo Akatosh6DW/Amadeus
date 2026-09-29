@@ -258,7 +258,8 @@ function buildSpeechSegmentTtsRequest(segment, voiceStyle, meta) {
 }
 
 // 预计 endsAt 只用于口型和看门狗预算；分段交接必须等真实 Audio 结束事件。
-async function waitForSpeechSegmentEnd(generation, pipelineToken) {
+async function waitForSpeechSegmentEnd(generation, pipelineToken, requireComplete = false) {
+  const deliveryAudio = ttsAudioGeneration === generation ? ttsAudio : null;
   const waitStartedAt = clock.now();
   let audioBarrierReported = false;
   while (pipelineToken === speechPipelineGeneration && generation === speechGeneration) {
@@ -292,12 +293,14 @@ async function waitForSpeechSegmentEnd(generation, pipelineToken) {
         stopLocalTts(true);
         speechState.pending = false;
         speechState.active = false;
-        return true;
+        return !requireComplete;
       }
       await delay(60);
       continue;
     }
-    if (!speechState.pending && !isSpeaking(clock.now())) return true;
+    if (!speechState.pending && !isSpeaking(clock.now())) {
+      return !requireComplete || !deliveryAudio || Boolean(deliveryAudio.ended && !deliveryAudio.error);
+    }
     await delay(60);
   }
   return false;
@@ -380,7 +383,7 @@ async function continueSegmentedSpeech(segments, voiceStyle, meta, pipelineToken
       });
 
       const currentGeneration = speechState.generation;
-      if (!await waitForSpeechSegmentEnd(currentGeneration, pipelineToken)) return;
+      if (!await waitForSpeechSegmentEnd(currentGeneration, pipelineToken, meta.waitForCompletion)) return false;
       const previousBoundary = Array.isArray(meta.pipelineBoundaries)
         ? meta.pipelineBoundaries[index - 1]
         : "phrase_pause";
@@ -451,6 +454,9 @@ async function continueSegmentedSpeech(segments, voiceStyle, meta, pipelineToken
       );
       updateThinkingIndicatorStage("voice-prefetch", `正在播放第 ${index + 1}/${segments.length} 段`);
     }
+    return meta.waitForCompletion
+      ? await waitForSpeechSegmentEnd(speechState.generation, pipelineToken, true)
+      : true;
   } finally {
     if (pipelineToken === speechPipelineGeneration) {
       speechPipelineActive = false;
@@ -467,7 +473,14 @@ function startSegmentedSpeech(text, voiceStyle = "calm", meta = {}) {
   const segments = getSettings().voiceEnabled && provider === "gpt-sovits"
     ? (suppliedSegments.length ? suppliedSegments : [String(text || "").trim()])
     : [String(text || "").trim()];
-  if (segments.length <= 1) return startSpeech(text, voiceStyle, meta);
+  if (segments.length <= 1) {
+    const pipelineToken = speechPipelineGeneration;
+    const started = startSpeech(text, voiceStyle, meta);
+    return meta.waitForCompletion
+      ? started.then(ok => ok === true
+        && waitForSpeechSegmentEnd(speechState.generation, pipelineToken, true))
+      : started;
+  }
   const pipelineMeta = {
     ...meta,
     pipelineBoundaries: segments.map((_segment, index) => normalizeSpeechBoundary(
@@ -492,7 +505,7 @@ function startSegmentedSpeech(text, voiceStyle = "calm", meta = {}) {
     voiceStyle,
     speechSegmentMeta(pipelineMeta, segments[0], 0, segments.length, meta.preparedTts || null),
   );
-  firstStarted.then(started => {
+  const completed = firstStarted.then(started => {
     if (!started || pipelineToken !== speechPipelineGeneration) {
       if (started === false && pipelineToken === speechPipelineGeneration) {
         meta.onPipelineSegmentFailed?.(
@@ -512,12 +525,12 @@ function startSegmentedSpeech(text, voiceStyle = "calm", meta = {}) {
       segments.length,
     );
     updateThinkingIndicatorStage("voice-playing", `第 1/${segments.length} 段已开始播放`);
-    continueSegmentedSpeech(segments, voiceStyle, pipelineMeta, pipelineToken).catch(error => {
+    return continueSegmentedSpeech(segments, voiceStyle, pipelineMeta, pipelineToken).catch(error => {
       if (isSpeechCancellation(error) || pipelineToken !== speechPipelineGeneration) return;
       recordVoiceDiagnostic("pipeline-error", `分段语音流水线中止：${error.message}`, { pipelineToken });
     });
   });
-  return firstStarted;
+  return meta.waitForCompletion ? completed.then(ok => ok === true) : firstStarted;
 }
 
 function speechCancellationError() {

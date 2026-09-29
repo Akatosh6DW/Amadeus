@@ -6400,6 +6400,7 @@ async function applyAssistant(data, userMessage = "") {
     originalAudio: data.originalAudio || null,
     kind: messageMeta.kind,
     deliveryPriority: data.source === "todo-reminder" && data.reminderId ? "scheduled_reminder" : "",
+    waitForCompletion: Boolean(data.source === "todo-reminder" && data.scheduledExecutionStatus),
     requestStartedAt: Number(data.clientRequestStartedAt || 0),
     pipelineSpeechSegments: progressivePlan.speechSegments,
     pipelineDisplaySegments: progressivePlan.displaySegments,
@@ -6477,7 +6478,9 @@ async function applyAssistant(data, userMessage = "") {
     conversationWasInterrupted = false;
   }
   persist();
-  return true;
+  // Scheduled execution ACK must follow the whole narration, including its tail.
+  return data.source === "todo-reminder" && data.scheduledExecutionStatus && settings.voiceEnabled
+    ? startedVoice === true : true;
 }
 
 function updateInteractionCoordinator(now = performance.now()) {

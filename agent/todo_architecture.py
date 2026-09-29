@@ -36,7 +36,7 @@ TODO_NOOP_TARGET_FIELDS = (
     "timezone", "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
 )
 TODO_NOOP_REQUESTABLE_FIELDS = (
-    "title", "details", "status", "priority", "dueAt", "dueDate", "timezone",
+    "title", "details", "onDue", "status", "priority", "dueAt", "dueDate", "timezone",
     "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
 )
 
@@ -256,7 +256,9 @@ def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any
     database readback.
     """
 
-    if not isinstance(value, Mapping) or set(value) != set(TODO_NOOP_TARGET_FIELDS):
+    if (not isinstance(value, Mapping) or not set(TODO_NOOP_TARGET_FIELDS).issubset(value)
+            or set(value) - {*TODO_NOOP_TARGET_FIELDS, "onDue"}
+            or not isinstance(value.get("onDue", ""), str)):
         return None
     text_fields = (
         "title", "details", "status", "priority", "dueAt", "dueDate",
@@ -302,6 +304,7 @@ def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any
     return {
         "title": value["title"].strip(),
         "details": value["details"].strip(),
+        **({"onDue": value["onDue"].strip()} if value.get("onDue", "").strip() else {}),
         "status": status,
         "priority": priority,
         "dueAt": due_at,
@@ -322,8 +325,8 @@ def todo_noop_target_matches(
 
     current = normalize_todo_noop_target(
         {
-            key: candidate.get(key)
-            for key in TODO_NOOP_TARGET_FIELDS
+            key: candidate.get(key, "")
+            for key in (*TODO_NOOP_TARGET_FIELDS, "onDue")
         }
         if isinstance(candidate, Mapping)
         and all(key in candidate for key in TODO_NOOP_TARGET_FIELDS)
@@ -430,6 +433,7 @@ class TodoCommand:
     task_id: str = ""
     title: str = ""
     details: str = ""
+    on_due: str = ""
     due_at: str = ""
     due_date: str = ""
     timezone_name: str = ""
@@ -510,6 +514,7 @@ class TodoCommand:
         aliases = {
             "title": ("title",),
             "details": ("details",),
+            "onDue": ("onDue",),
             "dueAt": ("dueAt", "due_at"),
             "dueDate": ("dueDate", "due_date"),
             "timeSpec": ("timeSpec",),
@@ -533,6 +538,7 @@ class TodoCommand:
             task_id=task_id,
             title=title,
             details=str(value.get("details") or "").strip()[:4000],
+            on_due=str(value.get("onDue") or "").strip()[:4000],
             due_at=due_at,
             due_date=due_date,
             timezone_name=str(
@@ -564,6 +570,7 @@ class TodoCommand:
         values = {
             "title": self.title,
             "details": self.details,
+            "onDue": self.on_due,
             "dueAt": self.due_at,
             "dueDate": self.due_date,
             "timezone": self.timezone_name,
@@ -577,6 +584,9 @@ class TodoCommand:
         }
         if self.action == "create":
             result.update(values)
+            if not self.on_due:
+                # Keep ordinary reminders' pre-existing executable identity.
+                result.pop("onDue", None)
         else:
             result.update({key: values[key] for key in self.provided_fields})
         if not self.time_spec:

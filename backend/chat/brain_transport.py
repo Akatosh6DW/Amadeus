@@ -17,8 +17,12 @@ from agent.deepseek_vision import image_input_content
 from agent.multimodal_chat import DIRECT_IMAGE_INSTRUCTION, native_visual_chat_enabled
 from agent.turn_context import pin_reply_context
 from backend.attachments.storage import safe_attachment_name
-from backend.context.conversation import turn_conversation_id
 from backend.tools.validation import SENSOR_TOOL_NAMES
+from backend.chat.image_context import (
+    HISTORY_IMAGE_HEADER, HISTORY_IMAGE_RULE, historical_image_catalog, image_reference_rows,
+)
+
+IMAGE_INPUT_HEADER = "本轮可直接查看的图片。依据当前问题判断其相关性；历史参考不是新的任务。"
 
 
 class ConversationImageSources(Protocol):
@@ -120,7 +124,10 @@ def conversation_image_inputs(
     """定位本轮拥有的图片，像素只进入供应商请求。"""
 
     if not native_visual_chat_enabled(settings):
+        body.pop("_historicalImageSources", None)
+        body.pop("_requestedHistoricalImageIds", None)
         return []
+    catalog = historical_image_catalog(services.sources, body)
     current = body.get("_processedAttachments") or []
     receipts = [
         entry["receipt"]
@@ -137,55 +144,10 @@ def conversation_image_inputs(
         if isinstance(item, Mapping) and item.get("kind") == "image"
     ]
     sources.extend((item, False) for item in receipts)
-    if not current and not receipts:
-        context = services.sources.frozen_context(body) or {}
-        snapshot = body.get("_turnContextSnapshot") or {}
-        anchor = snapshot.get("resolvedAnchor") or {}
-        anchor_turns = {
-            str(item.get("turnId") or "")
-            for item in anchor.get("messages", [])
-            if isinstance(item, Mapping)
-        }
-        turns = [
-            item for item in context.get("recentTurns", []) if isinstance(item, Mapping)
-        ]
-        if anchor_turns:
-            turns = [
-                item
-                for item in turns
-                if str(item.get("turnId") or "") in anchor_turns
-            ]
-            if not turns:
-                turns = [
-                    item
-                    for item in services.sources.read_archive()
-                    if str(item.get("turnId") or "") in anchor_turns
-                    and turn_conversation_id(item)
-                    == str(snapshot.get("conversationId") or "")
-                ]
-        else:
-            # 只有邻近可见对话中的图片才可作为隐式引用。压缩状态里无关的
-            # activeVisualArtifact 不能自行变成常驻任务。
-            turns = turns[-6:]
-        for turn in reversed(turns):
-            items = [
-                *(turn.get("attachments") or []),
-                *(turn.get("visualArtifacts") or []),
-            ]
-            images = [
-                item
-                for item in items
-                if isinstance(item, Mapping) and item.get("kind") == "image"
-            ]
-            if images:
-                for item in images:
-                    ident = str(item.get("id") or "")
-                    saved = services.sources.read_attachment(ident)
-                    if not saved:
-                        active = context.get("activeVisualArtifact") or {}
-                        saved = active if active.get("id") == ident else item
-                    sources.append((saved, True))
-                break
+    # Recency and reply anchors locate references, but do not authorize a pixel
+    # read. Only the main model's bounded request_images selection does that.
+    sources.extend((catalog[ident], True) for ident in body.get("_requestedHistoricalImageIds", [])
+                   if ident in catalog)
     result, seen = [], set()
     cache = body.setdefault("_nativeImageCache", {})
     for source, historical in sources:
@@ -211,7 +173,16 @@ def conversation_image_inputs(
             ).resolve()
             allowed = services.sources.attachments_dir().resolve() in path.parents
         else:
-            path = Path(str(source.get("path") or artifact.get("path") or "")).resolve()
+            saved_path = str(source.get("path") or artifact.get("path") or "")
+            if not saved_path and historical:
+                # Archived sensor descriptors deliberately omit absolute paths.
+                # Their capture ID is the original basename, never 'latest'.
+                sensor_location = {"screen_capture": ("screen-captures", ".png"),
+                                   "camera_capture": ("camera-captures", ".jpg")}.get(source.get("sourceType"))
+                if sensor_location and Path(ident).name == ident:
+                    folder, suffix = sensor_location
+                    saved_path = str(services.sources.data_dir() / "runtime" / folder / (ident + suffix))
+            path = Path(saved_path).resolve()
             allowed = path.parent in {
                 (services.sources.data_dir() / "runtime" / folder).resolve()
                 for folder in ("screen-captures", "camera-captures")
@@ -260,19 +231,34 @@ def with_conversation_images(
 ) -> dict[str, Any]:
     """把已定位图片附到模型请求，并固定回复锚点。"""
 
+    # Replace only this owner's generated blocks. Recovery may reuse an already
+    # projected payload; appending again would duplicate pixels and token cost.
+    messages = []
+    for message in payload.get("messages", []):
+        existing = message.get("content")
+        if message.get("role") == "system" and isinstance(existing, str) and (
+                existing == DIRECT_IMAGE_INSTRUCTION or existing.startswith(HISTORY_IMAGE_HEADER)):
+            continue
+        if (message.get("role") == "user" and isinstance(existing, list) and existing
+                and isinstance(existing[0], Mapping) and existing[0].get("text") == IMAGE_INPUT_HEADER):
+            continue
+        messages.append(message)
+    references = image_reference_rows(body, {item["artifactId"] for item in images})
+    if references:
+        messages.append({"role": "system", "content": HISTORY_IMAGE_HEADER + "\n" + HISTORY_IMAGE_RULE
+                         + "\n" + json.dumps(references, ensure_ascii=False)})
+    services.runtime.write_log(
+        "conversation_image_selection", requestId=body.get("requestId"), purpose=purpose,
+        referenceCount=len(references), selectedArtifactIds=[i["artifactId"] for i in images],
+        historicalRequestedIds=list(body.get("_requestedHistoricalImageIds") or []),
+        imageCount=sum(i["imageCount"] for i in images),
+    )
     if not images:
-        if not (body.get("_turnContextSnapshot") or {}).get("resolvedAnchor"):
-            return dict(payload)
-        return {
-            **payload,
-            "messages": pin_reply_context(
-                payload.get("messages", []), body.get("_turnContextSnapshot")
-            ),
-        }
+        return {**payload, "messages": pin_reply_context(messages, body.get("_turnContextSnapshot"))}
     content = [
         {
             "type": "text",
-            "text": "本轮可直接查看的图片。依据当前问题判断其相关性；历史参考不是新的任务。",
+            "text": IMAGE_INPUT_HEADER,
         }
     ]
     for item in images:
@@ -304,7 +290,7 @@ def with_conversation_images(
         **payload,
         "messages": pin_reply_context(
             [
-                *payload.get("messages", []),
+                *messages,
                 {"role": "system", "content": DIRECT_IMAGE_INSTRUCTION},
                 {"role": "user", "content": content},
             ],

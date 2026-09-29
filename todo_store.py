@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS todo_items (
     task_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     details TEXT NOT NULL DEFAULT '',
+    on_due TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     priority TEXT NOT NULL DEFAULT 'normal',
     due_at TEXT NOT NULL DEFAULT '',
@@ -130,6 +131,8 @@ def ensure_todo_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE todo_items ADD COLUMN due_date TEXT NOT NULL DEFAULT ''"
         )
+    if "on_due" not in columns:
+        connection.execute("ALTER TABLE todo_items ADD COLUMN on_due TEXT NOT NULL DEFAULT ''")
 
 
 def _row_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any]:
@@ -140,6 +143,7 @@ def _row_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any]:
         "taskId": str(value.get("task_id") or ""),
         "title": str(value.get("title") or ""),
         "details": str(value.get("details") or ""),
+        "onDue": str(value.get("on_due") or ""),
         "status": str(value.get("status") or "pending"),
         "priority": str(value.get("priority") or "normal"),
         "dueAt": str(value.get("due_at") or ""),
@@ -462,6 +466,7 @@ def match_active_todos_to_dialogue(
             "taskId": str(item.get("taskId") or ""),
             "title": str(item.get("title") or ""),
             "details": str(item.get("details") or "")[:4000],
+            "onDue": str(item.get("onDue") or "")[:4000],
             "status": str(item.get("status") or "pending"),
             "priority": str(item.get("priority") or "normal"),
             "dueAt": str(item.get("dueAt") or ""),
@@ -631,6 +636,7 @@ def create_todo(
     *,
     title: str,
     details: str = "",
+    on_due: str = "",
     due_at: str = "",
     due_date: str = "",
     timezone_name: str = "",
@@ -646,15 +652,16 @@ def create_todo(
     connection.execute(
         """
         INSERT INTO todo_items(
-            task_id, title, details, status, priority, due_at, due_date, timezone_name,
+            task_id, title, details, on_due, status, priority, due_at, due_date, timezone_name,
             remind_before_minutes, recurrence_rule, snoozed_until, version, source_turn_id,
             created_at, updated_at, completed_at, deleted_at
-        ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', '')
+        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', '')
         """,
         (
             task_id,
             str(title).strip(),
             str(details or "").strip(),
+            str(on_due or "").strip(),
             priority,
             due_at,
             due_date if not due_at else "",
@@ -687,6 +694,7 @@ def update_todo(
     allowed = {
         "title": "title",
         "details": "details",
+        "onDue": "on_due",
         "priority": "priority",
         "dueAt": "due_at",
         "dueDate": "due_date",
@@ -1124,6 +1132,14 @@ def acknowledge_reminder(
         result["recurrenceAdvanced"] = True
         result["nextDueAt"] = recurring_task.get("dueAt")
         result["task"] = recurring_task
+    elif delivered and str(row["status"]) == "claimed" and str(row["reminder_kind"]) != "upcoming":
+        task = read_todo(connection, str(row["task_id"]))
+        execution_result = (json.loads(row["payload_json"] or "{}").get("execution") or {}).get("result") or {}
+        if (task.get("onDue") and not task.get("recurrenceRule")
+                and task.get("version") == int(row["task_version"])
+                and execution_result.get("scheduledExecutionStatus") == "completed"):
+            result["task"] = set_todo_status(connection, task["taskId"], "completed",
+                                            expected_version=task["version"], now=active_now)
     return result
 
 

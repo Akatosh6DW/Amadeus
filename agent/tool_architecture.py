@@ -356,7 +356,7 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
     ),
     ToolDef(
         "todo_manage", "local_productivity",
-        "创建、精细修改、完成、恢复、删除或推迟用户本机待办",
+        "创建、修改、完成或推迟本机任务；支持延迟触发，到点提醒或用 onDue 交给 Amadeus 执行",
         side_effect=True,
         aliases=("添加待办", "修改任务", "完成任务", "删除任务", "推迟提醒"),
         input_schema={
@@ -365,6 +365,7 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
             "targetRef": "Todo target selector returned through todo_search semantics",
             "title": "string",
             "details": "string",
+            "onDue": "optional instruction for Amadeus to execute at the scheduled time using normal conversation/tools; empty means only remind the user",
             "dueAt": "Legacy explicit ISO-8601 datetime; omit when using timeSpec; empty for all-day tasks",
             "timeSpec": {
                 "kind": "next_clock|calendar|after|existing_date; model chooses the intended occurrence, backend computes dueAt",

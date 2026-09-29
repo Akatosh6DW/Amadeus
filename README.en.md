@@ -9,6 +9,7 @@ A fan project that attempts to recreate Amadeus from *Steins;Gate* on the Window
 - Displays a Live2D character in a desktop window with basic interaction.
 - Supports text dialogue and stores local long-term memory for later conversations.
 - Manages Todos and schedules, with reminders when needed.
+- Runs saved tasks at their scheduled time, such as reading text aloud later; the application must remain running.
 - Provides optional screenshot, camera, file, and web tools.
 - Produces emotional Japanese speech and synchronizes the character's mouth to the audio.
 
@@ -42,6 +43,10 @@ Manage the API key, model, and tool permissions in the interface settings. Scree
 Settings, chats, memories, Todos, schedules, and generated files stay on the local machine. When network dialogue or another network feature is enabled, relevant content is sent to the model service or website you configure.
 
 An NVIDIA GPU with a compatible CUDA driver can accelerate processing. CPU mode is also supported, but voice processing is usually slower.
+
+## Known issues
+
+Dialogue may occasionally confirm that a task or memory was saved when it was not. Check the task or memory list; a schedule absent from the task list will not run.
 
 ## Requirements
 

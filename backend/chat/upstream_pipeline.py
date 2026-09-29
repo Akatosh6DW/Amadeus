@@ -474,7 +474,8 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
             pending["status"] = "paused"
             pending["updatedAt"] = services.runtime.now_iso()
             services.tool_execution.write_pending_action_record(pending)
-    state.pending_todo_before = services.task_planning.current_pending_action()
+    state.pending_todo_before = ({} if state.body.get("_scheduledTaskExecution")
+                                 else services.task_planning.current_pending_action())
     state.pending_todo_before = (
         state.pending_todo_before
         if state.pending_todo_before.get("type") == "todo_mutation" else {}
@@ -536,8 +537,10 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
     )
     state.utterance_interpretation = services.turn_planning.bind_resolved_task_interpretation(state.utterance_interpretation, state.body)
     state.pending_question_context = services.context_prompts.pending_assistant_question_prompt(state.messages, state.user_message)
-    state.todo_pending_context = services.context_prompts.pending_todo_action_prompt()
-    state.schedule_state_context = services.context_prompts.current_schedule_workflow_prompt()
+    state.todo_pending_context = ("" if state.body.get("_scheduledTaskExecution")
+                                  else services.context_prompts.pending_todo_action_prompt())
+    state.schedule_state_context = ("" if state.body.get("_scheduledTaskExecution")
+                                    else services.context_prompts.current_schedule_workflow_prompt())
     state.active_persona_snapshot = state.persona_snapshot or services.context.build_persona_context_snapshot(
         state.user_message,
         state.messages,
@@ -2851,7 +2854,7 @@ def project_upstream_result(services: UpstreamPipelineServices, state: UpstreamR
             **dict(state.body["_scheduleDecision"]),
             "workflow": finalized_schedule,
         }
-    if state.todo_continuation_transition:
+    if state.todo_continuation_transition and not state.body.get("_scheduledTaskExecution"):
         pending_after = services.task_planning.apply_todo_continuation_transition(
             state.todo_continuation_transition,
             request_id=state.request_id,

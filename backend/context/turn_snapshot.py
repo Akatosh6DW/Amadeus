@@ -100,6 +100,10 @@ def ensure_turn_context_snapshot(
         and existing
     ):
         return existing
+    # Image selections/cache belong to this server-owned turn. A fresh client
+    # request cannot replay private fields to bypass on-demand selection.
+    for key in ("_historicalImageSources", "_requestedHistoricalImageIds", "_nativeImageCache"):
+        body.pop(key, None)
     services.cognitive.recover_projections(services.sources.load_settings())
     context = services.sources.read_context()
     # 待处理外部动作以 SQLite 事务记录。会话 JSON 可能尚未看到刚完成的轮次，

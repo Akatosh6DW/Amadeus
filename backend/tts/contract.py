@@ -11,6 +11,29 @@ STRONG_SPEECH_BOUNDARIES = frozenset("。！？!?")
 SPEECH_BOUNDARY_CLOSERS = frozenset("”’\"'」』】）》〕〉)}]….")
 
 
+def batch_model_speech_units(units: Any, *, max_units: int = MAX_SPEECH_UNITS) -> list[dict[str, Any]]:
+    """Bound delivery batches without imposing a limit on model content.
+
+    Adjacent bilingual units are grouped together, never dropped or deduplicated.
+    A batch inherits its first unit's delivery style and its last unit's pause.
+    """
+    if not isinstance(units, list) or not units or any(not isinstance(u, dict) for u in units):
+        return []
+    limit = max(1, int(max_units))
+    if len(units) <= limit:
+        return [dict(unit) for unit in units]
+    grouped = []
+    for index in range(limit):
+        batch = units[index * len(units) // limit:(index + 1) * len(units) // limit]
+        zh = "\n\n".join(str(u.get("zh") or u.get("textZh") or u.get("reply") or "").strip() for u in batch)
+        ja = "\n\n".join(str(u.get("ja") or u.get("spokenTextJa") or "").strip() for u in batch)
+        grouped.append({**batch[0], "zh": zh, "textZh": zh, "reply": zh,
+                        "ja": ja, "spokenTextJa": ja,
+                        "boundaryAfter": batch[-1].get("boundaryAfter") or
+                            ("turn_pause" if index == limit - 1 else "phrase_pause")})
+    return grouped
+
+
 def semantic_unit_has_weak_boundary(text: Any) -> bool:
     """识别逗号或连接词等尚未收束的弱句尾，避免把半句话独立播报。"""
 
