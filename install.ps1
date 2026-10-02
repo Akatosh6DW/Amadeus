@@ -22,8 +22,18 @@ function Get-GitHubCredential {
     }
     $gh = Get-Command gh -ErrorAction SilentlyContinue
     if ($gh) {
-        $token = ((& $gh.Source auth token --hostname github.com 2>$null) -join "`n").Trim()
-        if ($LASTEXITCODE -eq 0 -and $token) { return $token }
+        $previousErrorAction = $ErrorActionPreference
+        try {
+            # An installed CLI may have no login. Inspect its exit status;
+            # Windows PowerShell otherwise treats native stderr as fatal.
+            $ErrorActionPreference = "Continue"
+            $token = ((& $gh.Source auth token --hostname github.com 2>$null) -join "`n").Trim()
+            $credentialExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+        if ($credentialExit -eq 0 -and $token) { return $token }
     }
     return ""
 }
