@@ -165,15 +165,20 @@ class PersonaContextService:
                 parts.append(env.system_prompt_path.read_text(encoding="utf-8"))
             except OSError:
                 pass
-        persona_override = ""
-        if not env.release_mode:
-            try:
-                persona_override = env.override_path.read_text(encoding="utf-8").strip()
-            except OSError:
-                persona_override = ""
+        persona_override = self.read_override_prompt()
         if persona_override:
-            parts.append("[Developer Persona Override]\n" + persona_override)
+            parts.append(persona_override)
         return "\n\n".join(parts)
+
+    def read_override_prompt(self) -> str:
+        env = self.environment()
+        if env.release_mode:
+            return ""
+        try:
+            text = env.override_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        return "[Developer Persona Override]\n" + text if text else ""
 
     def source_documents(self) -> dict[str, Any]:
         paths = self.environment()
@@ -307,6 +312,7 @@ class PersonaContextService:
                 legacy_system_prompt=legacy_system_prompt,
                 legacy_persona_prompt=legacy_prompt,
                 legacy_module_ids=legacy_ids,
+                system_prompt_suffix=self.read_override_prompt() if mode is PersonaContextMode.ON else "",
             )
         )
         self.diagnostics.log("persona_context_snapshot_built", **snapshot.safe_diagnostic())

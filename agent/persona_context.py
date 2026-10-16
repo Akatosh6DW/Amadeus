@@ -422,6 +422,7 @@ class PersonaContextRuntime:
         legacy_system_prompt: str,
         legacy_persona_prompt: str,
         legacy_module_ids: Sequence[str],
+        system_prompt_suffix: str = "",
     ) -> PersonaContextSnapshot:
         active_mode = mode if isinstance(mode, PersonaContextMode) else PersonaContextMode.parse(str(mode))
         query = build_retrieval_query(current_user_message, messages, resolution)
@@ -437,6 +438,8 @@ class PersonaContextRuntime:
         hybrid_prompt = _hybrid_prompt(retrieval.selected)
         if active_mode is PersonaContextMode.ON:
             system_prompt = self._kernel_body
+            if system_prompt_suffix.strip():
+                system_prompt += "\n\n" + system_prompt_suffix.strip()
             prompt_text = hybrid_prompt
         else:
             # Shadow is provider-payload identical to off by construction.
@@ -446,12 +449,16 @@ class PersonaContextRuntime:
             None if active_mode is PersonaContextMode.OFF else retrieval.fallback_reason
         )
         legacy_ids = tuple(str(item) for item in legacy_module_ids if str(item))
+        kernel_fingerprint = (
+            runtime_fingerprint(system_prompt, length=32)
+            if active_mode is PersonaContextMode.ON else self._kernel_fingerprint
+        )
         snapshot_id = _snapshot_id(
             registry_generation=registry_generation,
             relationship_generation=int(relationship_generation),
             query_hash=query_hash,
             mode=active_mode.value,
-            kernel_fingerprint=self._kernel_fingerprint,
+            kernel_fingerprint=kernel_fingerprint,
             selected=retrieval.selected,
             legacy_module_ids=legacy_ids,
             system_prompt=system_prompt,
@@ -469,7 +476,7 @@ class PersonaContextRuntime:
             system_prompt=system_prompt,
             prompt_text=prompt_text,
             hybrid_prompt_text=hybrid_prompt,
-            kernel_fingerprint=self._kernel_fingerprint,
+            kernel_fingerprint=kernel_fingerprint,
             fallback_reason=fallback_reason,
             legacy_module_ids=legacy_ids,
             retrieval_context_source=str((resolution or {}).get("_personaContextSource") or ""),

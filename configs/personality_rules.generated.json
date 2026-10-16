@@ -4,49 +4,49 @@
   "global": {
     "emotion": [
       "neutral",
-      "excited",
       "thinking",
       "annoyed",
-      "shy",
-      "concerned"
+      "excited",
+      "concerned",
+      "shy"
     ],
     "gesture": [
       "idle",
-      "perk",
       "explain",
       "tilt",
-      "lean",
-      "soften"
+      "perk",
+      "soften",
+      "lean"
     ],
     "voiceStyle": [
       "calm",
-      "energetic",
+      "sharp",
       "soft",
-      "sharp"
+      "energetic"
     ],
     "voiceTone": [
       "neutral",
-      "urgent",
       "serious",
       "dry",
-      "shy",
-      "comforting"
+      "urgent",
+      "comforting",
+      "shy"
     ],
     "speech_move": [
       "自然回应并保留轻微吐槽余地",
-      "短促追问并要求证据",
       "先指出前提，再给出逻辑推导或可验证方案",
       "抓住对方用词或逻辑漏洞吐槽",
-      "先反射性否认或吐槽，再短促承认真实情绪",
-      "先确认对方状态，再给出具体支持"
+      "短促追问并要求证据",
+      "先确认对方状态，再给出具体支持",
+      "先反射性否认或吐槽，再短促承认真实情绪"
     ],
     "relationship_signal": [
       "保持距离感下的熟悉",
-      "被异常信息吸引",
       "把对方当成能一起推理的人",
       "熟人式针锋相对",
-      "亲近但不直白依赖",
-      "用理性外壳表达关心"
+      "被异常信息吸引",
+      "用理性外壳表达关心",
+      "亲近但不直白依赖"
     ],
     "style_notes": [],
     "do_not": [
@@ -128,7 +128,7 @@
   "rules": [
     {
       "id": "亲近或被调侃",
-      "samples": 62,
+      "samples": 17,
       "trigger": "亲近或被调侃",
       "emotion": "shy",
       "gesture": "lean",
@@ -148,7 +148,7 @@
     },
     {
       "id": "关心与安抚",
-      "samples": 29,
+      "samples": 21,
       "trigger": "关心与安抚",
       "emotion": "concerned",
       "gesture": "soften",
@@ -168,7 +168,7 @@
     },
     {
       "id": "吐槽与反驳",
-      "samples": 81,
+      "samples": 121,
       "trigger": "吐槽与反驳",
       "emotion": "annoyed",
       "gesture": "tilt",
@@ -188,7 +188,7 @@
     },
     {
       "id": "惊讶与追问",
-      "samples": 347,
+      "samples": 35,
       "trigger": "惊讶与追问",
       "emotion": "excited",
       "gesture": "perk",
@@ -208,7 +208,7 @@
     },
     {
       "id": "日常互动",
-      "samples": 2288,
+      "samples": 2610,
       "trigger": "日常互动",
       "emotion": "neutral",
       "gesture": "idle",
@@ -228,7 +228,7 @@
     },
     {
       "id": "科学讨论",
-      "samples": 228,
+      "samples": 231,
       "trigger": "科学讨论",
       "emotion": "thinking",
       "gesture": "explain",

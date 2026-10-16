@@ -84,7 +84,7 @@
     "minMargin": 0.1,
     "minScore": 0.5
   },
-  "indexBuildId": "a4910f23211508dc6019cf92",
+  "indexBuildId": "7d775d8f6084aa79b605e406",
   "maxSelected": 3,
   "modelArtifactDigest": "e0212ab3d16d50b523d1606ab23b4c4d46ad991d62cc9296b11d514315143474",
   "modelId": "BAAI/bge-small-zh-v1.5",
@@ -103,7 +103,7 @@
     "runtimeDownloadAllowed": false
   },
   "schemaVersion": 1,
-  "sourceDigest": "92af78295bc6c02b6a17b098c9b7633cc6743df29d54c6cbac2fabb4f6a40135",
+  "sourceDigest": "490a130faa087703699fb7a638cf72b59906cfadc2fff5e3cb96a36205b9beb9",
   "tokenizerVersion": "nfkc-cjk-kana-unigram-bigram-latin-word-v1",
   "topK": 4
 }
