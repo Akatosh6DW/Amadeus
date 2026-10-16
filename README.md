@@ -16,7 +16,7 @@ Amadeus System 是一个《命运石之门》同人项目。桌面上的 Live2D 
 
 ## 安装
 
-1. 从 [v1.0.0 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.0) 下载 `AMADEUS-v1.0.0-setup.zip`。
+1. 从 [v1.0.1 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.1) 下载 `AMADEUS-v1.0.1-setup.zip`。
 2. 解压后双击 `install-release.cmd`，安装器会自动下载程序、运行环境和声音资源，默认装在 `%USERPROFILE%\Apps\Amadeus`。
 3. 运行 `AMADEUS.exe`，在“设置 → API”里填入你的 API Key。
 

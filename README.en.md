@@ -16,7 +16,7 @@ Amadeus System is a *Steins;Gate* fan project. A Live2D character modeled on Kur
 
 ## Install
 
-1. Download `AMADEUS-v1.0.0-setup.zip` from the [v1.0.0 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.0).
+1. Download `AMADEUS-v1.0.1-setup.zip` from the [v1.0.1 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.1).
 2. Extract it and double-click `install-release.cmd`. The installer downloads the program, runtimes and voice assets, and installs to `%USERPROFILE%\Apps\Amadeus` by default.
 3. Run `AMADEUS.exe` and enter your API key under Settings → API.
 
