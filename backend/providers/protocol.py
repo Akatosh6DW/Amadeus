@@ -62,6 +62,89 @@ def upstream_finish_reason(data: Any) -> str:
     return ""
 
 
+_NATIVE_WEB_TOOL_NAMES = {"web_search", "read_web_page"}
+
+
+def _native_web_tool_container(message: Mapping[str, Any]) -> str:
+    """Convert one native Chat Completions tool message to our call envelope.
+
+    The transport layer intentionally keeps returning text.  A native tool
+    response therefore becomes one complete semantic JSON value and continues
+    through the existing cognitive/tool validation path.  Only the two public
+    web tools are accepted here; arbitrary provider functions must not become
+    executable application calls by accident.
+    """
+
+    raw_calls = message.get("tool_calls")
+    if not isinstance(raw_calls, list) or not raw_calls:
+        raise UpstreamProtocolError("upstream tool_calls must be a non-empty list")
+
+    calls: list[dict[str, Any]] = []
+    for index, raw_call in enumerate(raw_calls):
+        if not isinstance(raw_call, Mapping):
+            raise UpstreamProtocolError(f"upstream tool_calls[{index}] must be an object")
+        call_type = raw_call.get("type")
+        if call_type is not None and str(call_type).strip() not in {"", "function"}:
+            raise UpstreamProtocolError(
+                f"unsupported upstream tool call type at index {index}"
+            )
+        function = raw_call.get("function")
+        if not isinstance(function, Mapping):
+            raise UpstreamProtocolError(
+                f"upstream tool_calls[{index}].function must be an object"
+            )
+        name = str(function.get("name") or "").strip()
+        if name not in _NATIVE_WEB_TOOL_NAMES:
+            raise UpstreamProtocolError(f"unsupported upstream tool function: {name[:80]}")
+
+        raw_arguments = function.get("arguments")
+        if isinstance(raw_arguments, Mapping):
+            arguments = dict(raw_arguments)
+        elif isinstance(raw_arguments, str) and raw_arguments.strip():
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as error:
+                raise UpstreamProtocolError(
+                    f"invalid JSON arguments for upstream tool {name}"
+                ) from error
+        else:
+            raise UpstreamProtocolError(
+                f"missing arguments for upstream tool {name}"
+            )
+        if not isinstance(arguments, dict):
+            raise UpstreamProtocolError(
+                f"arguments for upstream tool {name} must be a JSON object"
+            )
+
+        required_argument = "query" if name == "web_search" else "url"
+        required_value = arguments.get(required_argument)
+        if not isinstance(required_value, str) or not required_value.strip():
+            raise UpstreamProtocolError(
+                f"upstream tool {name} requires a non-empty {required_argument}"
+            )
+
+        call: dict[str, Any] = {"name": name, "args": arguments}
+        native_id = raw_call.get("id")
+        if native_id is not None and str(native_id).strip():
+            call["toolCallId"] = str(native_id)
+        calls.append(call)
+
+    result: dict[str, Any] = {
+        "kind": "tool_use",
+        "_nativeWebToolCalls": True,
+    }
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        try:
+            content_value = json.loads(content)
+        except json.JSONDecodeError:
+            content_value = None
+        if isinstance(content_value, Mapping) and isinstance(content_value.get("cognitive"), Mapping):
+            result["cognitive"] = dict(content_value["cognitive"])
+    result["calls"] = calls
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+
 def extract_upstream_chat_text(data: Any) -> str:
     """接受兼容的文本结构，并拒绝没有可用消息的 HTTP 200 响应。"""
 
@@ -74,6 +157,8 @@ def extract_upstream_chat_text(data: Any) -> str:
                 continue
             message = choice.get("message")
             if isinstance(message, dict):
+                if message.get("tool_calls"):
+                    return _native_web_tool_container(message)
                 content = message.get("content")
                 if isinstance(content, str) and content.strip():
                     return content

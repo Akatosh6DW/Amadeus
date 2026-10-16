@@ -277,10 +277,6 @@ class ModelSemanticStreamParser:
                     "ja": value.get("progressJa"),
                     "emotion": value.get("progressEmotion") or "focused",
                 }
-            names = {
-                str(item.get("name") or item.get("tool") or "")
-                for item in requests if isinstance(item, Mapping)
-            }
             payload = {
                 "reason": str(value.get("reason") or "model_discovered_missing_capability"),
                 "targetDomain": str(value.get("targetDomain") or "none"),
@@ -291,20 +287,6 @@ class ModelSemanticStreamParser:
                 "progress": dict(progress),
                 "scheduleIntent": dict(self._schedule_intent),
             }
-            if names and names.issubset({"web_search", "read_web_page"}):
-                queries = [
-                    str((item.get("args") or {}).get("query") or "").strip()
-                    for item in requests if isinstance(item, Mapping) and isinstance(item.get("args"), Mapping)
-                ]
-                research_payload = {
-                    "reason": payload["reason"],
-                    "queries": [item for item in queries if item],
-                    "unknownEntities": value.get("unknownEntities") if isinstance(value.get("unknownEntities"), list) else [],
-                    "verificationTargets": value.get("verificationTargets") if isinstance(value.get("verificationTargets"), list) else [],
-                    "confidence": payload["confidence"],
-                    "progress": dict(progress),
-                }
-                return [*self._ensure_header(value), self._emit("research_escalation", research_payload)]
             return [*self._ensure_header(value), self._emit("tool_escalation", payload)]
         if kind in {"turn_end", "semantic_end"}:
             self.protocol_version = "semantic-v3"

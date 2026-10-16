@@ -45,7 +45,7 @@ sourceType=tool 且 ok=true、body 有非空正文时，文件或其他工具正
 说明某网页读取成功/失败属于 source_status，附 fetchStatus 与回执一致（例如 fetch_error 或 not_fetched）；这只证明抓取状态，不证明网页内容。不要用 inference 引用空正文来表达抓取失败。
 sourceType=user_message/user_memory/user_adaptation 提供用户原话、经历与偏好，供你理解和回答；它们不证明工具已执行或记忆已保存。人格资料描述角色身份与设定。普通事实的可选注释不等于已核验知识，也不能替代状态补丁所需的来源和授权。
 每项 tool_completion 必须单独声明 resultStatus:success/failed 并引用真实回执。这个字段只描述该操作，与本轮回答 status、整个任务 taskStatus 相互独立；如实报告一次失败可以完成用户的报告请求，不能因此把失败操作标成成功。画面结论必须引用实际识图证据。
-本轮有实际工具回执且声明 completed 时，仍需记录执行或观察结果；普通事实注释不能替代工具结果。未读取的正文、未理解的截图、旧画面均不能冒充本次实际结果。
+联网后的普通事实回答可直接给出结论和来源，无需另写搜索或读页完成声明。本轮执行了其他工具且声明 completed 时，仍需记录执行或观察结果；普通事实注释不能替代实际操作结果。未读取的正文、未理解的截图、旧画面均不能冒充本次实际结果。
 若工具失败，仍必须输出 cognitive 和 outcome，可 status=failed，解释失败用 inference 或空 claims。
 最终结构以本轮收尾合同为准，按证据填写各状态；本次补丁新建或恢复任务时，也必须评估该任务的 taskStatus。
 网页资料可跨轮复用，来源时间由后端回执提供；若命题要求当前新核验，声明 freshness:'current'。历史观察不能证明现在；重述旧观察或旧动作结果须声明 freshness:'historical'。
@@ -579,6 +579,7 @@ def verify_outcome(
         for claim in claims
     ) and any(
         isinstance(entry, Mapping) and not evidence_contracts[ref]["historical"] and evidence_contracts[ref]["receiptPresent"]
+        and str(entry.get("name") or "") not in {"web_search", "read_web_page"}
         for ref, entry in evidence.items()
     ):
         reject("outcome_tool_conclusions_missing")

@@ -13,7 +13,7 @@ from agent.todo_architecture import (
     recent_todo_action_context, recent_todo_task_ids, todo_request_targets_recent_receipt,
     todo_mutation_prohibited,
 )
-from agent.cognitive_runtime import task_tool_violations, readable_evidence_urls, evidence_url_key
+from agent.cognitive_runtime import task_tool_violations
 from agent.cognitive_tools import canonical_tool_arguments, tool_step_binding
 from agent.tool_arguments import file_tool_argument_error
 from agent.action_identity import browser_retry_identity
@@ -103,10 +103,10 @@ class ModelToolRequestConstraints:
         cognitive_state: Mapping[str, Any] | None = None,
         evidence: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Bind model-selected network arguments to the current user message.
+        """Apply the current task's restrictions to model-selected operations.
 
-        This prevents a model or prompt injection from using a tool URL/query as
-        an outbound channel for system context.
+        Query validation stays here; permission and public-URL validation also
+        run in the actual network executor before any page is fetched.
         """
 
         constrained: list[dict[str, Any]] = []
@@ -114,17 +114,6 @@ class ModelToolRequestConstraints:
         user_url = extract_public_web_url(user_message)
         used_page_tool = False
         web_query_count = 0
-        observed_urls = readable_evidence_urls(evidence or {})
-        if user_url:
-            observed_urls.add(evidence_url_key(user_url))
-        for entry in (evidence or {}).values():
-            receipt_result = entry.get("receipt") if isinstance(entry, Mapping) else None
-            receipt = receipt_result.get("actionReceipt") if isinstance(receipt_result, Mapping) else None
-            if isinstance(receipt, Mapping) and receipt.get("tool") == "open_browser":
-                for field in ("resolvedTarget", "requestedTarget"):
-                    target = str(receipt.get(field) or "")
-                    if urllib.parse.urlsplit(target).scheme in {"https", "http"}:
-                        observed_urls.add(evidence_url_key(target))
         semantic_schedule = (
             schedule_decision
             if isinstance(schedule_decision, Mapping)
@@ -230,9 +219,12 @@ class ModelToolRequestConstraints:
                     if query and web_query_count < 3:
                         constrained.append({**request, "args": {**args, "query": query}})
                         web_query_count += 1
-                elif evidence_url_key(args.get("url")) in observed_urls:
-                    # A search result is sufficient provenance to read its URL.
-                    # It is not yet evidence sufficient to verify its claims.
+                elif str(args.get("url") or "").strip():
+                    # An authorized research plan may try a known document URL
+                    # directly, including when search has returned no results.
+                    # Fetching is what establishes evidence; prior discovery is
+                    # not an additional permission. The executor still checks
+                    # web permission, public addresses, DNS and every redirect.
                     constrained.append(dict(request))
                 continue
             if name in {"web_search", "read_web_page"} and web_research_explicitly_disabled(user_message):

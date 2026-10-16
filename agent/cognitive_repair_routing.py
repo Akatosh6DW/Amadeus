@@ -74,6 +74,15 @@ def repair_reason(body: Mapping[str, Any], candidate: Mapping[str, Any] | None =
         if isinstance(reason, str) and reason in SEMANTIC_REPAIR_REASONS:
             return "model_semantic:" + reason
         act = directive.get("interactionAct")
+        if act == "EPISTEMIC_CHALLENGE":
+            observations = [entry for entry in (body.get("_cognitiveEvidence") or {}).values()
+                            if isinstance(entry, Mapping) and entry.get("sourceType") == "tool"
+                            and not entry.get("historical")]
+            if observations and all(entry.get("name") in {"web_search", "read_web_page"}
+                                    for entry in observations):
+                # Comparing web results is part of the ordinary tool loop,
+                # not a separate analysis/resume workflow.
+                return ""
         if isinstance(act, str) and act in REPAIR_ACTS:
             return "model_interaction:" + act
     return ""

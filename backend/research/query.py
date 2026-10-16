@@ -94,6 +94,56 @@ def web_search_freshness(text: str) -> str:
     return ""
 
 
+def web_search_temporal_intent(text: str) -> bool:
+    """判断用户是否把时间新旧作为答案目标，而不是只选择搜索过滤器。
+
+    ``web_search_freshness`` 只决定供应商的日期过滤参数；很多自然表达（如
+    “最近正式发布”）需要核对最新目标，却不适合被强行压成某个固定窗口。
+    个人叙述中的“最近我在研究……”不属于外部事实的时间目标。
+    """
+
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return False
+    normalized = value.lower()
+    current_year = datetime.now().astimezone().year
+    mentioned_years = {
+        int(item)
+        for item in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", normalized)
+    }
+    if mentioned_years and max(mentioned_years) < current_year and not re.search(
+        r"以来|至今|到现在|截至(?:现在|当前|今天)|since|to(?:the)?present",
+        normalized,
+        re.I,
+    ):
+        # “2024 年最新进展” is latest within a historical window, not a
+        # request to prove what is current today.
+        return False
+    personal_recent = bool(re.search(
+        r"(?:^|[，,。；;])\s*(?:我|我们|本人).{0,10}(?:最近|近期)|"
+        r"(?:最近|近期).{0,10}(?:我|我们).{0,10}(?:在|想|要|一直|开始)",
+        value,
+        re.I,
+    ))
+    explicit_target = bool(re.search(
+        r"最新|当前|现在|目前|此刻|实时|latest|newest|rightnow|realtime|"
+        r"recent(?:ly)?\s+(?:publish(?:ed)?|release(?:d)?|report|version|"
+        r"progress|development|news|update|result)",
+        value,
+        re.I,
+    ))
+    if personal_recent and not explicit_target:
+        return False
+    if explicit_target:
+        return True
+    return bool(re.search(
+        r"(?:最近|近期).{0,14}(?:发布|公布|推出|更新|上线|发生|进展|消息|"
+        r"报告|版本|数据|政策|公告|论文|研究|事件|比赛|会议|结果|价格|排名|型号|产品)",
+        value,
+        re.I,
+    ))
+
+
 SEARCH_DIRECT_ADDRESS_PATTERN = re.compile(
     r"^\s*(?:(?:嗨|喂|那个)\s*[，,、]?\s*)?"
     r"(?:助手|AMADEUS|阿玛迪乌斯|红莉栖|克里斯蒂娜)\s*[，,：:]?\s*"

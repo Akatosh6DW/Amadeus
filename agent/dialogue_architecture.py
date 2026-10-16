@@ -202,13 +202,37 @@ _ACK_ONLY = re.compile(
 )
 _TASK_ACTION_PATTERN = (
     r"修复|修改|实现|新增|删除|重构|优化|检查|审查|评审|审阅|审核|评价|点评|"
-    r"分析|解释|比较|对比|总结|导出|写|创建|生成|阅读|查找|搜索|打开|运行|测试"
+    r"分析|解释|比较|对比|总结|导出|写|创建|生成|阅读|查看|看看|"
+    r"查(?:一下|下|查|阅|询)?|检索|核实|验证|确认|了解|查找|搜索|打开|运行|测试"
+)
+_REQUEST_PREFIX = (
+    r"^(?:请|麻烦|拜托)?(?:你)?(?:可以|能否|能不能)?"
+    r"(?:帮我|给我|替我|去|快|赶紧|立刻|马上)?"
 )
 _REQUEST_LANGUAGE = re.compile(
-    r"^(?:请|麻烦|拜托)?(?:你)?(?:帮我|给我|替我|去|快|赶紧|立刻|马上)?"
-    r"(?:" + _TASK_ACTION_PATTERN + r"|告诉我|"
+    _REQUEST_PREFIX + r"(?:" + _TASK_ACTION_PATTERN + r"|告诉我|"
     r"说一下|看一下|做一下|弄一下)"
 )
+_FACT_LOOKUP_REQUEST = re.compile(
+    _REQUEST_PREFIX
+    + r"(?:联网|上网|在线)?(?:查(?:一下|下|查|阅|询)?|搜(?:一下|下|搜)?|搜索|检索|查询|核实|验证)",
+    re.I,
+)
+_FACT_VIEW_REQUEST = re.compile(
+    _REQUEST_PREFIX + r"(?:看一下|看看|查看|了解一下|确认一下)",
+    re.I,
+)
+_EXTERNAL_FACT_HINT = re.compile(
+    r"最新|最近|近期|当前|目前|现在|今天|本周|本月|今年|截至|"
+    r"新闻|消息|动态|公告|发布|更新|版本|价格|股价|市值|汇率|"
+    r"天气|气温|降雨|比分|赛程|航班|列车|政策|法规|现任|在任|营业时间|开放时间",
+    re.I,
+)
+_LOCAL_LOOKUP_TARGET = re.compile(
+    r"这张图|这幅图|图片|截图|屏幕|附件|文件|目录|代码|\bbug\b|错误|日志|仓库|本地|电脑|项目",
+    re.I,
+)
+_EXPLICIT_WEB_LOOKUP = re.compile(r"联网|上网|在线", re.I)
 _EXTERNAL_ACTION_LANGUAGE = re.compile(
     r"打开|访问|进入|跳转|启动|唤起|搜索|查找|搜一下"
 )
@@ -240,6 +264,21 @@ def is_explicit_correction_language(value: Any) -> bool:
 
     compact = re.sub(r"\s+", "", str(value or "")).strip()
     return bool(compact and _EXPLICIT_CORRECTION_LANGUAGE.search(compact))
+
+
+def is_external_fact_lookup_request(value: Any) -> bool:
+    """Recognize imperative fact lookups even when they omit question punctuation."""
+
+    compact = re.sub(r"\s+", "", str(value or "")).strip()
+    if not compact:
+        return False
+    has_external_hint = bool(_EXTERNAL_FACT_HINT.search(compact))
+    if _LOCAL_LOOKUP_TARGET.search(compact):
+        return bool(_EXPLICIT_WEB_LOOKUP.search(compact) and _FACT_LOOKUP_REQUEST.search(compact))
+    return bool(
+        _FACT_LOOKUP_REQUEST.search(compact)
+        or (has_external_hint and _FACT_VIEW_REQUEST.search(compact))
+    )
 
 
 def _vocative_view(value: Any) -> Vocative | None:
@@ -319,6 +358,10 @@ def interpret_utterance(
         primary = "factual_question"
         requires_answer = True
         answer_target = "当前问题"
+    elif is_external_fact_lookup_request(compact):
+        primary = "factual_question"
+        requires_answer = True
+        answer_target = "要查询的外部事实"
     elif _REQUEST_LANGUAGE.search(compact):
         primary = (
             "external_action"

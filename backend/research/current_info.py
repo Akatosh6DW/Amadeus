@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from backend.common.text import unique_strings
-from backend.research.query import web_search_freshness
+from backend.research.query import web_search_freshness, web_search_temporal_intent
 from backend.research.sources import source_has_readable_evidence
 
 
@@ -74,14 +74,9 @@ def web_research_temporal_contract(
         if value in {"pd", "pw", "pm", "py"}:
             requested_freshness = value
             break
-    latest_intent = bool(
-        requested_freshness
-        and re.search(
-            r"最新|近期|最近进展|latest|newest|recent(?:\s+)?(?:progress|development|news|update)",
-            temporal_text,
-            re.I,
-        )
-    )
+    # Search freshness is a provider filter; the answer may still have an
+    # explicit current-time target when no fixed window is appropriate.
+    latest_intent = web_search_temporal_intent(temporal_text)
     return {
         "currentTime": datetime.now().astimezone().isoformat(timespec="seconds"),
         "originalQuestion": str(user_message or "")[:1200],

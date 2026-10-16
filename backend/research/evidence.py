@@ -8,25 +8,26 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 from typing import Any, Sequence
 
-from agent.fingerprints import runtime_fingerprint
 from backend.common.text import unique_strings
 from backend.research.query import (
     comparison_entity_search_terms,
     comparison_query_entities,
     research_source_policy_id,
-    web_query_overlap_tokens,
     web_query_subject_core,
 )
 from backend.research.sources import (
     classify_web_source,
     source_has_readable_evidence,
+    source_fetch_state,
     source_satisfies_policy,
     stable_source_uid,
 )
 from backend.research.current_info import web_research_temporal_status
-from tools.safe_web import canonicalize_public_url
+from tools.safe_web import SafeWebError, canonicalize_public_url
+from tools.web_text import extract_query_evidence_chunks, project_web_text
 
 
 def extract_relevant_evidence_chunks(
@@ -35,49 +36,62 @@ def extract_relevant_evidence_chunks(
     *,
     limit: int = 4,
 ) -> list[dict[str, Any]]:
-    """选择有界正文片段，并排除可能嵌入的指令内容。"""
+    """选择查询有正向覆盖的有界正文片段，并排除嵌入式指令。"""
 
-    body = re.sub(r"\r\n?", "\n", str(source.get("body") or "")).strip()
-    if not body:
-        return []
-    terms = [
-        term for term in web_query_overlap_tokens(query)
-        if len(term) >= 2
-    ][:24]
-    candidates = [
-        re.sub(r"\s+", " ", paragraph).strip()
-        for paragraph in re.split(r"\n{2,}|(?<=[。！？.!?])\s+", body)
-        if len(re.sub(r"\s+", " ", paragraph).strip()) >= 45
-    ]
-    ranked: list[tuple[int, int, str]] = []
-    injection_pattern = re.compile(
-        r"ignore (?:all |previous )?instructions|system prompt|developer message|"
-        r"忽略(?:以上|之前|此前)(?:指令|要求)|系统提示词|开发者消息|"
-        r"输出(?:密钥|密码)|调用工具",
-        re.I,
+    return extract_query_evidence_chunks(
+        source,
+        query,
+        limit=limit,
+        max_chunk_chars=1200,
     )
-    for index, passage in enumerate(candidates):
-        if injection_pattern.search(passage):
+
+
+def _body_covers_query_terms(body: Any, query_terms: Sequence[str]) -> bool:
+    """Require query overlap in fetched prose, with weak-token safeguards."""
+
+    body_lower = re.sub(r"\s+", " ", str(body or "")).casefold()
+    if not body_lower or not query_terms:
+        return False
+    # Search names and identifiers in a separator-insensitive form as well.
+    # Search results commonly render ``learncomputerscience`` as
+    # ``Learn Computer Science`` (or ``new-york`` as ``New York``).  This
+    # normalization is deliberately confined to the fetched body; metadata
+    # alone still cannot satisfy the substantive-evidence gate below.
+    compact_body = re.sub(r"[\W_]+", "", body_lower, flags=re.UNICODE)
+    matches: set[str] = set()
+    for term in query_terms:
+        term_lower = str(term or "").casefold()
+        if not term_lower:
             continue
-        lower = passage.casefold()
-        score = sum(1 for term in terms if term.casefold() in lower)
-        ranked.append((score, -index, passage[:1200]))
-    ranked.sort(reverse=True)
-    chunks: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for score, _, passage in ranked:
-        signature = runtime_fingerprint(passage, length=16)
-        if signature in seen:
+        if term_lower in body_lower:
+            matches.add(term_lower)
             continue
-        seen.add(signature)
-        chunks.append({
-            "chunkId": f"{source.get('id') or 'S'}-C{len(chunks) + 1}",
-            "text": passage,
-            "relevanceScore": score,
-        })
-        if len(chunks) >= limit:
-            break
-    return chunks
+        compact_term = re.sub(r"[\W_]+", "", term_lower, flags=re.UNICODE)
+        # Do not turn a short weak token such as ``api`` into an arbitrary
+        # substring match after punctuation removal.  Chinese terms remain
+        # eligible at two characters because the query builder uses Chinese
+        # n-grams as meaningful anchors.
+        if (
+            compact_term
+            and (len(compact_term) >= 3 or re.search(r"[\u3400-\u9fff]", compact_term))
+            and compact_term in compact_body
+        ):
+            matches.add(term_lower)
+    if not matches:
+        return False
+    # Short Latin tokens such as ``rfc`` or ``api`` are useful only when the
+    # query has no stronger anchor.  Otherwise a generic site heading can make
+    # metadata-only or unrelated pages look like read evidence.
+    strong_query_terms = {
+        term.casefold()
+        for term in query_terms
+        if len(term) >= 4 or any(character.isdigit() for character in term)
+        or re.search(r"[\u3400-\u9fff]", term)
+    }
+    strong_matches = matches & strong_query_terms
+    if strong_matches:
+        return True
+    return len(matches) >= min(2, len(set(query_terms)))
 
 
 def generic_web_evidence_status(result: dict[str, Any], query: str) -> dict[str, Any]:
@@ -97,17 +111,18 @@ def generic_web_evidence_status(result: dict[str, Any], query: str) -> dict[str,
     )
     query_terms: list[str] = [
         token.lower()
-        for token in re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{2,}", cleaned_query)
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.+-]{2,}", cleaned_query)
     ]
     for segment in re.findall(r"[\u4e00-\u9fff]{2,}", cleaned_query):
         if len(segment) <= 10:
             query_terms.append(segment)
-        for size in range(min(6, len(segment)), 2, -1):
+        for size in range(min(6, len(segment)), 1, -1):
             query_terms.extend(segment[index:index + size] for index in range(len(segment) - size + 1))
     query_terms = unique_strings(query_terms)[:48]
     substantive_ids: list[str] = []
     relevant_ids: list[str] = []
     relevant_substantive_ids: list[str] = []
+    body_relevant_ids: set[str] = set()
     matched_terms: dict[str, list[str]] = {}
     for index, source in enumerate(sources, 1):
         source_id = str(source.get("id") or f"S{index}")
@@ -123,8 +138,14 @@ def generic_web_evidence_status(result: dict[str, Any], query: str) -> dict[str,
         if matches:
             relevant_ids.append(source_id)
             matched_terms[source_id] = matches[:8]
+        if (
+            source_has_readable_evidence(source)
+            and _body_covers_query_terms(source.get("body"), query_terms)
+        ):
+            body_relevant_ids.add(source_id)
     relevant_substantive_ids = [
-        source_id for source_id in relevant_ids if source_id in set(substantive_ids)
+        source_id for source_id in relevant_ids
+        if source_id in set(substantive_ids) and source_id in body_relevant_ids
     ]
     comparison_entities = comparison_query_entities(query)
     comparison_requested = bool(comparison_entities or re.search(
@@ -139,14 +160,11 @@ def generic_web_evidence_status(result: dict[str, Any], query: str) -> dict[str,
         source_ids: list[str] = []
         for index, source in enumerate(sources, 1):
             source_id = str(source.get("id") or f"S{index}")
-            source_text = " ".join(
-                str(source.get(key) or "")
-                for key in ("title", "domain", "url", "snippet", "excerpt", "body")
-            ).lower()
+            source_text = str(source.get("body") or "").lower()
             matched_entity_terms = [
                 term for term in entity_terms if term.lower() in source_text
             ]
-            if not matched_entity_terms or source_id not in set(substantive_ids):
+            if not matched_entity_terms or source_id not in body_relevant_ids:
                 continue
             # Very short CJK names can also be ordinary words. Treat a source
             # as comparison evidence only when it co-occurs with the other
@@ -228,31 +246,36 @@ def merge_web_search_results(primary: dict[str, Any], supplemental: dict[str, An
             if not isinstance(source, dict):
                 continue
             canonical_url = canonicalize_public_url(str(source.get("url") or "").strip())
-            identity = str(
-                source.get("sourceUid")
-                or canonical_url
-                or source.get("title")
-                or ""
-            ).strip()
-            if not identity:
+            # A fetched page may have redirected and acquired a different UID.
+            # Match its requested URL to the discovered row as well as its
+            # final URL, retaining the existing stable citation identity.
+            aliases = [
+                f"url:{canonicalize_public_url(str(source[key]))}"
+                for key in ("requestedUrl", "url", "canonicalUrl", "finalUrl")
+                if source.get(key)
+            ]
+            if source.get("sourceUid"):
+                aliases.append(f"uid:{source['sourceUid']}")
+            if not aliases and source.get("title"):
+                aliases.append(f"title:{source['title']}")
+            if not aliases:
                 continue
-            if identity in positions:
-                existing = sources[positions[identity]]
-                for key, value in source.items():
-                    if key == "researchQueryIndexes" and isinstance(value, list):
-                        existing[key] = sorted({
-                            *(
-                                int(item) for item in existing.get(key, [])
-                                if isinstance(item, int) or str(item).isdigit()
-                            ),
-                            *(
-                                int(item) for item in value
-                                if isinstance(item, int) or str(item).isdigit()
-                            ),
-                        })
-                        continue
-                    if value and (not existing.get(key) or key in {"body", "snippet", "accessedAt"}):
-                        existing[key] = value
+            matches = sorted({positions[key] for key in aliases if key in positions})
+            if matches:
+                position = matches[0]
+                existing = sources[position]
+                # Discovery can contain both sides of a redirect. Once the
+                # read proves their identity, collapse both rows as well.
+                for duplicate in reversed(matches[1:]):
+                    _merge_web_source(existing, sources[duplicate])
+                    sources.pop(duplicate)
+                    positions = {
+                        key: position if index == duplicate else index - (index > duplicate)
+                        for key, index in positions.items()
+                    }
+                _merge_web_source(existing, source)
+                for key in aliases:
+                    positions[key] = position
                 continue
             item = dict(source)
             if canonical_url:
@@ -263,8 +286,11 @@ def merge_web_search_results(primary: dict[str, Any], supplemental: dict[str, An
                 or stable_source_uid(str(item.get("url") or ""))
             )
             item["id"] = f"S{len(sources) + 1}"
-            positions[identity] = len(sources)
+            for key in [*aliases, f"uid:{item['sourceUid']}"]:
+                positions[key] = len(sources)
             sources.append(item)
+    for index, source in enumerate(sources, start=1):
+        source["id"] = f"S{index}"
     merged["sources"] = sources
     merged["supplementalSearch"] = True
     if date_filter_outcomes:
@@ -272,6 +298,172 @@ def merge_web_search_results(primary: dict[str, Any], supplemental: dict[str, An
     if "cacheHit" in primary or "cacheHit" in supplemental:
         merged["cacheHit"] = bool(primary.get("cacheHit") and supplemental.get("cacheHit"))
     return merged
+
+
+_SOURCE_CLASSIFICATION_KEYS = (
+    "sourceTier", "sourceType", "sourcePolicyId", "entityMatch", "qualityFlags",
+)
+_FETCH_BUNDLE_KEYS = (
+    "body", "fetchStatus", "bodyError", "bodyChunks", "evidenceChunks",
+    "truncated", "promptInjectionMarkers", "mimeType", "accessedAt",
+    "requestedUrl", "finalUrl",
+)
+
+
+def _merge_web_source(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """Merge one source, selecting one coherent fetch result as a bundle."""
+    for key, value in incoming.items():
+        if key in {
+            "researchQueryIndexes", *_FETCH_BUNDLE_KEYS, *_SOURCE_CLASSIFICATION_KEYS,
+        }:
+            continue
+        if value and (not existing.get(key) or key == "snippet"):
+            existing[key] = value
+    if isinstance(incoming.get("researchQueryIndexes"), list):
+        existing["researchQueryIndexes"] = sorted({
+            *(
+                int(item) for item in existing.get("researchQueryIndexes", [])
+                if isinstance(item, int) or str(item).isdigit()
+            ),
+            *(
+                int(item) for item in incoming["researchQueryIndexes"]
+                if isinstance(item, int) or str(item).isdigit()
+            ),
+        })
+    winner_is_incoming = _incoming_fetch_result_wins(existing, incoming)
+    if not winner_is_incoming:
+        if source_has_readable_evidence(existing):
+            existing.pop("bodyError", None)
+        return
+    winner = dict(incoming)
+    _replace_fetch_bundle(existing, winner)
+    if winner.get("url"):
+        existing["url"] = canonicalize_public_url(str(winner["url"]))
+        existing["canonicalUrl"] = existing["url"]
+        existing["domain"] = urllib.parse.urlsplit(existing["url"]).hostname or ""
+    _merge_source_classification(existing, winner)
+
+
+def _fetch_result_rank(source: dict[str, Any]) -> int:
+    """Rank a complete read above failures and incomplete read attempts."""
+    state = source_fetch_state(source)
+    if state == "success":
+        # A status-only success is not evidence.  Keep a concrete failure
+        # above it so that a malformed/empty retry cannot erase its error;
+        # either one still loses to a later readable body.
+        return 2 if source_has_readable_evidence(source) else -1
+    if state == "failed":
+        return 0
+    if state == "pending":
+        return -2
+    return -3
+
+
+def _incoming_fetch_result_wins(
+    existing: dict[str, Any], incoming: dict[str, Any],
+) -> bool:
+    existing_rank = _fetch_result_rank(existing)
+    incoming_rank = _fetch_result_rank(incoming)
+    if incoming_rank > existing_rank:
+        return True
+    if incoming_rank < existing_rank:
+        return False
+    incoming_state = source_fetch_state(incoming)
+    # Later readable/successful or failed attempts refresh same-state metadata;
+    # pending search rows never erase a known failed/read result.
+    return incoming_state in {"success", "failed"}
+
+
+def _replace_fetch_bundle(target: dict[str, Any], winner: dict[str, Any]) -> None:
+    """Replace body and all metadata that describes that body together."""
+    winner_state = source_fetch_state(winner)
+    winner_is_readable = source_has_readable_evidence(winner)
+    for key in _FETCH_BUNDLE_KEYS:
+        target.pop(key, None)
+    for key in _FETCH_BUNDLE_KEYS:
+        if key not in winner:
+            continue
+        if key in {"bodyChunks", "evidenceChunks", "promptInjectionMarkers"}:
+            value = winner[key]
+            target[key] = list(value) if isinstance(value, list) else value
+        elif key == "bodyError" and winner_is_readable:
+            continue
+        else:
+            target[key] = winner[key]
+    if winner_state == "success" and not target.get("fetchStatus"):
+        target["fetchStatus"] = "success"
+
+
+def _merge_source_classification(
+    target: dict[str, Any], winner: dict[str, Any],
+) -> None:
+    """Refresh classification with the shared classifier when context exists."""
+    winner_query = str(winner.get("researchQuery") or "").strip()
+    query = winner_query or str(target.get("researchQuery") or "").strip()
+    policy_id = str(
+        winner.get("sourcePolicyId")
+        or target.get("sourcePolicyId")
+        or ""
+    )
+    entity_terms = winner.get("entityTerms") or target.get("entityTerms") or []
+    candidate = dict(winner)
+    has_valid_classification = bool(
+        str(candidate.get("sourceTier") or "") in {"A", "B", "C"}
+        and str(candidate.get("sourceType") or "").strip()
+    )
+    target_has_valid_classification = bool(
+        str(target.get("sourceTier") or "") in {"A", "B", "C"}
+        and str(target.get("sourceType") or "").strip()
+    )
+    winner_state = source_fetch_state(winner)
+    if not winner_query and winner_state != "failed" and has_valid_classification:
+        # The upstream result already has a valid class, but still let the
+        # shared classifier derive current quality flags from the winning
+        # fetch metadata when that field was omitted.
+        if "qualityFlags" not in candidate:
+            try:
+                classified_candidate = classify_web_source(
+                    candidate,
+                    query,
+                    source_policy_id=policy_id,
+                    entity_terms=entity_terms if isinstance(entity_terms, list) else (),
+                )
+            except (SafeWebError, TypeError, ValueError):
+                classified_candidate = {}
+            candidate["qualityFlags"] = list(
+                classified_candidate.get("qualityFlags") or []
+            )
+        classified = candidate
+    elif not winner_query and winner_state != "failed" and target_has_valid_classification:
+        # No query is available to recompute a heuristic class. Preserve the
+        # valid class, but refresh fetch-derived quality flags so a prior
+        # failed attempt cannot survive a successful retry.
+        try:
+            classified = classify_web_source(
+                candidate,
+                query,
+                source_policy_id=policy_id,
+                entity_terms=entity_terms if isinstance(entity_terms, list) else (),
+            )
+        except (SafeWebError, TypeError, ValueError):
+            classified = {}
+        target["qualityFlags"] = list(classified.get("qualityFlags") or [])
+        return
+    else:
+        try:
+            classified = classify_web_source(
+                candidate,
+                query,
+                source_policy_id=policy_id,
+                entity_terms=entity_terms if isinstance(entity_terms, list) else (),
+            )
+        except (SafeWebError, TypeError, ValueError):
+            classified = candidate
+    for key in _SOURCE_CLASSIFICATION_KEYS:
+        if key not in classified:
+            continue
+        value = classified[key]
+        target[key] = list(value) if key == "qualityFlags" and isinstance(value, list) else value
 
 
 def planned_web_evidence_status(
@@ -536,6 +728,7 @@ def research_loop_sources(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 __all__ = [
     "extract_relevant_evidence_chunks",
+    "project_web_text",
     "generic_web_evidence_status",
     "merge_web_search_results",
     "planned_web_evidence_status",

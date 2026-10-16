@@ -12,6 +12,8 @@ from agent.visual_grounding import build_visual_evidence_packet
 from agent.cognitive_tools import tool_plan_violations
 from agent.cognitive_outcome import claim_contract_for_evidence, success_criteria_catalog
 from agent.cognitive_state import belief_evidence_problem
+from tools.web_links import compact_web_links
+from tools.web_text import project_web_text
 
 
 def evidence_url_key(value: Any) -> str:
@@ -26,8 +28,13 @@ def readable_evidence_urls(evidence: Mapping[str, Any]) -> set[str]:
         if not isinstance(item, Mapping) or (not item.get("ok") and item.get("sourceType") != "web"):
             continue
         candidates = [ref, item.get("url"), item.get("canonicalUrl")]
-        for link in item.get("links") or []:
-            candidates.append(link.get("url") or link.get("href") if isinstance(link, Mapping) else link)
+        candidates.extend(
+            link["url"]
+            for link in compact_web_links(
+                item.get("links"),
+                base_url=str(item.get("url") or item.get("canonicalUrl") or ""),
+            )
+        )
         for candidate in candidates:
             value = str(candidate or "")
             parsed = urlsplit(value)
@@ -49,6 +56,45 @@ _STRUCTURED_TOOL_FACT_FIELDS = {
     "list_directory": ("path", "entries", "truncated"),
     "read_text_file": ("path", "size"),
 }
+
+
+# Web bodies are the only evidence payloads that can grow with fetched page
+# size.  Keep the per-page target high enough for ordinary release pages while
+# bounding the complete packet independently of the number of search hits.
+WEB_EVIDENCE_BODY_BUDGET = 32_000
+WEB_EVIDENCE_SOURCE_CAP = 8_000
+WEB_EVIDENCE_MIN_SOURCE_CHARS = 600
+
+
+def deduplicate_evidence_chunks(
+    body_excerpt: Any,
+    chunks: Any,
+) -> list[dict[str, Any]]:
+    """Keep chunk identity while avoiding text already present in the body.
+
+    ``project_web_text`` deliberately returns both a coverage projection and
+    query-ranked chunks.  When the coverage projection contains a chunk in
+    full, serializing both copies makes each model packet pay for the same
+    passage twice.  The body remains the readable text authority; the chunk
+    keeps its id and ranking metadata and points back to that body.  Chunks
+    that are not contained in the body are left lossless.
+    """
+
+    body_text = " ".join(str(body_excerpt or "").split())
+    if not isinstance(chunks, Sequence) or isinstance(chunks, (str, bytes)):
+        return []
+    result: list[dict[str, Any]] = []
+    for raw in chunks:
+        if not isinstance(raw, Mapping):
+            continue
+        item = deepcopy(dict(raw))
+        text = str(item.get("text") or "")
+        normalized = " ".join(text.split())
+        if normalized and normalized in body_text:
+            item["text"] = ""
+            item["textRef"] = "bodyExcerpt"
+        result.append(item)
+    return result
 
 
 def tool_result_body(result: Mapping[str, Any]) -> str:
@@ -76,7 +122,26 @@ def collect_evidence(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str
             if not ref:
                 continue
             entry = {**deepcopy(dict(source)), "ok": bool(result.get("ok")), "sourceType": "web"}
+            # Reading a search candidate supplies its body, but does not return
+            # the publication metadata supplied by the search engine. Keep that
+            # metadata attached to the same URL, separately from retrieval time.
+            previous = evidence.get(ref) or {}
+            for field in ("publishedAt", "publishedTimestamp", "dateEvidence", "snippet"):
+                if not entry.get(field) and previous.get(field):
+                    entry[field] = deepcopy(previous[field])
             entry["body"] = str(source.get("body") or "")
+            if not str(entry.get("researchQuery") or "").strip():
+                source_query = str(
+                    source.get("query")
+                    or result.get("researchQuery")
+                    or result.get("query")
+                    or ""
+                ).strip()
+                if source_query:
+                    # Keep the retrieval hint with the source so a model-owned
+                    # projection can still rank the body when its reference
+                    # resolution deliberately omits resolvedQuestion.
+                    entry["researchQuery"] = source_query[:500]
             evidence[ref] = entry
             # Qualified IDs remain stable when a later search reuses S1/S2.
             short_id = str(source.get("id") or "")
@@ -98,7 +163,7 @@ def collect_evidence(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str
         if result.get("name") == "web_search":
             evidence[receipt_id]["searchDiagnostics"] = {
                 key: deepcopy(result[key]) for key in
-                ("query", "provider", "requestedProvider", "providerAttempts", "providerErrors") if key in result
+                ("query", "provider", "requestedProvider", "providerAttempts", "providerErrors", "dateFilter") if key in result
             }
         if result.get("name") in {"capture_screen", "capture_camera", "read_image"}:
             packet = build_visual_evidence_packet([result])
@@ -115,6 +180,118 @@ def collect_evidence(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str
             if artifact_id:
                 evidence["image:" + artifact_id] = evidence[receipt_id]
     return evidence
+
+
+def _web_evidence_identity(ref: str, item: Mapping[str, Any]) -> str:
+    """Return a stable page identity for deduplicating search/read aliases."""
+    return evidence_url_key(
+        item.get("canonicalUrl")
+        or item.get("url")
+        or item.get("sourceUid")
+        or ref
+    )
+
+
+def _web_evidence_quality(item: Mapping[str, Any]) -> tuple[int, int, int]:
+    """Prefer a readable fetched body over search metadata for one page."""
+    status = str(item.get("fetchStatus") or "").strip().lower()
+    readable_status = status in {"", "success", "partial"}
+    body = str(item.get("body") or "").strip()
+    readable = bool(body) and readable_status
+    return (
+        1 if readable else 0,
+        len(body) if readable else 0,
+        1 if status == "success" else 0,
+    )
+
+
+def _allocate_web_projection_budgets(
+    targets: Mapping[str, int],
+    *,
+    total_budget: int = WEB_EVIDENCE_BODY_BUDGET,
+    source_cap: int = WEB_EVIDENCE_SOURCE_CAP,
+    minimum_chars: int = WEB_EVIDENCE_MIN_SOURCE_CHARS,
+) -> dict[str, int]:
+    """Allocate a bounded body budget while keeping every page represented.
+
+    ``targets`` contains the length of each page's full capped projection. A
+    short page therefore releases its unused share to longer pages. When the
+    total target exceeds the packet budget, every page first receives a small
+    floor and the remainder is water-filled in stable input order. The
+    function is pure so the allocation contract can be tested without a
+    server, provider, or filesystem.
+    """
+    normalized = {
+        str(ref): min(max(0, int(length)), max(0, int(source_cap)))
+        for ref, length in targets.items()
+    }
+    if not normalized:
+        return {}
+    budget = max(0, int(total_budget))
+    if sum(normalized.values()) <= budget:
+        return normalized
+    refs = list(normalized)
+    floor = min(max(0, int(minimum_chars)), budget // len(refs))
+    allocations = {ref: min(normalized[ref], floor) for ref in refs}
+    remaining = budget - sum(allocations.values())
+    while remaining > 0:
+        candidates = [ref for ref in refs if allocations[ref] < normalized[ref]]
+        if not candidates:
+            break
+        share = max(1, remaining // len(candidates))
+        progressed = False
+        for ref in candidates:
+            if remaining <= 0:
+                break
+            addition = min(normalized[ref] - allocations[ref], share, remaining)
+            if addition <= 0:
+                continue
+            allocations[ref] += addition
+            remaining -= addition
+            progressed = True
+        if not progressed:
+            break
+    return allocations
+
+
+def _bounded_evidence_window(
+    entries: Sequence[tuple[str, Mapping[str, Any], list[str]]],
+    *,
+    limit: int = 12,
+) -> list[tuple[str, Mapping[str, Any], list[str]]]:
+    """Keep readable web bodies visible while retaining recent tool receipts.
+
+    Aliases are merged before this function is called. The window therefore
+    counts distinct evidence objects, not S1/S2 aliases. Readable web bodies
+    receive priority, recent non-web receipts retain a small reserved slice,
+    and empty web metadata fills the remainder. The final list is returned in
+    original order so source chronology and stable IDs remain observable.
+    """
+    if limit <= 0 or len(entries) <= limit:
+        return list(entries)
+
+    readable_web = [
+        entry for entry in entries
+        if entry[1].get("sourceType") == "web" and _web_evidence_quality(entry[1])[0]
+    ]
+    other_web = [
+        entry for entry in entries
+        if entry[1].get("sourceType") == "web" and not _web_evidence_quality(entry[1])[0]
+    ]
+    non_web = [entry for entry in entries if entry[1].get("sourceType") != "web"]
+
+    # Keep a few latest receipts when a large batch of readable pages exists;
+    # these carry action identity for writes/attachments but must not evict all
+    # bodies from the prompt.
+    reserved_receipts = min(len(non_web), 4, limit)
+    body_budget = min(len(readable_web), max(0, limit - reserved_receipts))
+    receipt_budget = min(len(non_web), limit - body_budget)
+    selected_readable = readable_web[-body_budget:] if body_budget else []
+    selected_receipts = non_web[-receipt_budget:] if receipt_budget else []
+    remaining = max(0, limit - len(selected_readable) - len(selected_receipts))
+    selected_metadata = other_web[-remaining:] if remaining else []
+    selected_ids = {id(entry) for entry in (*selected_readable, *selected_receipts, *selected_metadata)}
+    return [entry for entry in entries if id(entry) in selected_ids]
 
 
 def adaptation_evidence_ref(preferences: Mapping[str, Any], record: Mapping[str, Any]) -> str:
@@ -161,6 +338,7 @@ def compact_packet(
     state: Mapping[str, Any], snapshot: Mapping[str, Any], *,
     evidence: Mapping[str, Any] | None = None,
     selected_adaptation_ids: Sequence[str] | None = None,
+    evidence_query: str | None = None,
 ) -> dict[str, Any]:
     """Keep current corrections visible while bounding ordinary-turn overhead."""
     beliefs = state.get("beliefs") or {}
@@ -255,9 +433,11 @@ def compact_packet(
     # Inline short records are fully readable too. Their citations must remain
     # visible to the same evidence projection used by correction diagnostics.
     visible_adaptation_ids.update(item["adaptationId"] for item in catalog if item.get("detailsComplete"))
-    # Aliases refer to the same evidence, not additional sources. Without this
-    # projection a few S1/URL aliases consume the entire evidence window.
+    # Aliases refer to the same evidence, not additional sources. Keep one
+    # preferred object per page identity so a later full read can replace an
+    # earlier search-only record without consuming another evidence slot.
     unique_evidence: list[tuple[str, Mapping[str, Any], list[str]]] = []
+    web_indexes: dict[str, int] = {}
     for ref, item in (evidence or {}).items():
         if not isinstance(item, Mapping):
             continue
@@ -265,11 +445,40 @@ def compact_packet(
             # Do not bypass the full-record retrieval contract through the
             # general evidence window (which may truncate an exception).
             continue
-        matching = next((entry for entry in unique_evidence if entry[1] == item), None)
-        if matching is not None:
-            matching[2].append(ref)
+        if item.get("sourceType") == "web":
+            identity = _web_evidence_identity(str(ref), item)
+            matching_index = web_indexes.get(identity) if identity else None
+            if matching_index is not None:
+                primary_ref, primary_item, aliases = unique_evidence[matching_index]
+                merged_aliases = list(dict.fromkeys([
+                    *aliases,
+                    *(ref for ref in (str(primary_ref), str(ref)) if ref),
+                ]))
+                if _web_evidence_quality(item) > _web_evidence_quality(primary_item):
+                    unique_evidence[matching_index] = (
+                        str(ref), item, [alias for alias in merged_aliases if alias != str(ref)]
+                    )
+                else:
+                    unique_evidence[matching_index] = (
+                        primary_ref, primary_item,
+                        [alias for alias in merged_aliases if alias != str(primary_ref)],
+                    )
+                continue
+            if identity:
+                web_indexes[identity] = len(unique_evidence)
+
+        matching_index = next(
+            (index for index, entry in enumerate(unique_evidence) if entry[1] == item),
+            None,
+        )
+        if matching_index is not None:
+            primary_ref, primary_item, aliases = unique_evidence[matching_index]
+            unique_evidence[matching_index] = (
+                primary_ref, primary_item,
+                list(dict.fromkeys([*aliases, str(ref)])),
+            )
         else:
-            unique_evidence.append((ref, item, []))
+            unique_evidence.append((str(ref), item, []))
     for index, (ref, item, aliases) in enumerate(unique_evidence):
         stable = str(item.get("sourceUid") or item.get("canonicalUrl") or item.get("url") or "")
         if item.get("sourceType") == "web" and stable in aliases:
@@ -282,10 +491,79 @@ def compact_packet(
             current_receipts.append({"id": ref, "name": item.get("name") or (item.get("receipt") or {}).get("name"),
                                      "resultStatus": contract["claimRequirements"]["tool_completion"]["required"]["resultStatus"]})
 
+    snapshot_message = snapshot.get("currentUserMessage") or {}
+    snapshot_query = (
+        str(snapshot_message.get("text") or "")
+        if isinstance(snapshot_message, Mapping)
+        else ""
+    )
+    projection_query = str(evidence_query or snapshot_query).strip()
+
+    def source_projection_query(item: Mapping[str, Any]) -> str:
+        # A source-level research query is more focused than a broad user
+        # question, but retain both so model-owned and ordinary turns share
+        # the same deterministic ranking behavior.
+        source_query = str(item.get("researchQuery") or item.get("query") or "").strip()
+        return " ".join(item for item in (source_query, projection_query) if item)[:1_200]
+
+    selected_evidence = _bounded_evidence_window(unique_evidence)
+    # First build each page's full capped projection. This lets short pages
+    # use their actual size rather than an arbitrary fixed slice and makes the
+    # packet budget account for the normalized text returned to the model.
+    web_full_projections: dict[str, dict[str, Any]] = {}
+    web_target_lengths: dict[str, int] = {}
+    for ref, item, _aliases in selected_evidence:
+        if item.get("sourceType") != "web":
+            continue
+        full_projection = project_web_text(
+            item,
+            source_projection_query(item),
+            max_chars=WEB_EVIDENCE_SOURCE_CAP,
+            chunk_limit=4,
+        )
+        body_excerpt = str(full_projection.get("bodyExcerpt") or "")
+        if not body_excerpt:
+            continue
+        web_full_projections[ref] = full_projection
+        web_target_lengths[ref] = len(body_excerpt)
+    web_budgets = _allocate_web_projection_budgets(web_target_lengths)
+    web_projections: dict[str, dict[str, Any]] = {}
+    for ref, item, _aliases in selected_evidence:
+        if item.get("sourceType") != "web":
+            continue
+        full_projection = web_full_projections.get(ref)
+        target = web_target_lengths.get(ref, 0)
+        budget = web_budgets.get(ref, 0)
+        if not full_projection or budget <= 0:
+            web_projections[ref] = {
+                "bodyExcerpt": "",
+                "evidenceChunks": [],
+                "bodyTruncated": False,
+                "projectionMode": "empty",
+            }
+        elif budget >= target:
+            web_projections[ref] = full_projection
+        else:
+            projection = project_web_text(
+                item,
+                source_projection_query(item),
+                max_chars=budget,
+                chunk_limit=4,
+            )
+            # ``project_web_text`` has a defensive 120-character minimum for
+            # callers with tiny custom budgets. The production budget gives
+            # every readable page a larger floor, but keep the packet contract
+            # true even if a unit test exercises a smaller allocation.
+            if len(str(projection.get("bodyExcerpt") or "")) > budget:
+                projection["bodyExcerpt"] = str(projection.get("bodyExcerpt") or "")[:budget]
+                projection["bodyTruncated"] = True
+            web_projections[ref] = projection
+
     def project_evidence(ref: str, item: Mapping[str, Any], aliases: list[str]) -> dict[str, Any]:
         claim_contract = claim_contract_for_evidence(item, evidence_ref=ref, compact=True)
         belief_problem = belief_evidence_problem(item)
-        return {
+        web_projection = web_projections.get(ref, {}) if item.get("sourceType") == "web" else {}
+        projection = {
             "id": ref, "ok": bool(item.get("ok")), "sourceType": item.get("sourceType"),
             "aliases": aliases,
             "authority": item.get("authority"),
@@ -301,12 +579,25 @@ def compact_packet(
             "searchDiagnostics": deepcopy(item.get("searchDiagnostics")),
             "title": str(item.get("title") or item.get("name") or "")[:160],
             "url": str(item.get("url") or item.get("canonicalUrl") or "")[:4096],
+            "links": compact_web_links(
+                item.get("links"),
+                base_url=str(item.get("url") or item.get("canonicalUrl") or ""),
+                max_links=16,
+            ),
             "historical": bool(item.get("historical")),
             "freshness": claim_contract["freshness"],
             "observedAt": item.get("observedAt"),
+            "publishedAt": item.get("publishedAt"),
+            "publishedTimestamp": item.get("publishedTimestamp"),
+            "dateEvidence": item.get("dateEvidence"),
+            "accessedAt": item.get("accessedAt"),
             "sourceTurnId": item.get("sourceTurnId"),
             "answerCommitted": item.get("answerCommitted"),
-            "bodyExcerpt": str(item.get("body") or "")[:1200],
+            "bodyExcerpt": (
+                web_projection.get("bodyExcerpt", "")
+                if item.get("sourceType") == "web"
+                else str(item.get("body") or "")[:1200]
+            ),
             "fetchStatus": item.get("fetchStatus"),
             "snippet": str(item.get("snippet") or "")[:500],
             "bodyError": str(item.get("bodyError") or "")[:240],
@@ -314,6 +605,16 @@ def compact_packet(
             "beliefUpdateEligibility": {"allowed": belief_problem is None,
                                         "reason": belief_problem[0] if belief_problem else "readable_evidence"},
         }
+        if item.get("sourceType") == "web":
+            projection.update({
+                "evidenceChunks": deduplicate_evidence_chunks(
+                    web_projection.get("bodyExcerpt"),
+                    web_projection.get("evidenceChunks") or [],
+                ),
+                "bodyTruncated": bool(web_projection.get("bodyTruncated")),
+                "projectionMode": str(web_projection.get("projectionMode") or "empty"),
+            })
+        return projection
     return {
         "conversationId": state.get("conversationId"),
         "rootSnapshotId": snapshot.get("rootSnapshotId"),
@@ -332,7 +633,10 @@ def compact_packet(
         "context": deepcopy(state.get("context") or {}),
         "preferences": preferences,
         "experiences": deepcopy(active_experiences[-5:]),
-        "evidence": [project_evidence(ref, item, aliases) for ref, item, aliases in unique_evidence[-12:]],
+        "evidence": [
+            project_evidence(ref, item, aliases)
+            for ref, item, aliases in selected_evidence
+        ],
         "currentToolReceipts": current_receipts,
     }
 

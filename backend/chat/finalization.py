@@ -24,13 +24,14 @@ from agent.visual_grounding import has_current_visual_evidence as has_typed_visu
 from backend.chat.completion import visual_grounding_text_fingerprint
 from backend.chat.errors import GroundingGateError
 from backend.chat.grounding import (
-    hard_fact_gate_requires_terminal_boundary, soft_fact_gate_can_degrade,
+    soft_fact_gate_can_degrade,
     soft_grounding_boundary_reply, terminal_grounding_boundary_reply,
 )
 from backend.chat.presentation import SPEECH_PACE_SPEED, requested_speech_pace
 from backend.chat.reply_fields import normalize_proactive_directive, resolve_proactive_directive
 from backend.common.text import unique_strings
 from backend.providers.errors import UpstreamProtocolError
+from backend.research.citations import readable_public_source_uids
 from backend.visual.grounding import current_visual_grounding_verified, native_visual_input_delivered
 
 @dataclass(frozen=True)
@@ -196,6 +197,9 @@ class ReplyFinalizer:
             request_id,
             conversation_tool_results,
         )
+        citation_source_uids = readable_public_source_uids(
+            conversation_tool_results
+        )
         epistemic_plan = (
             EpistemicPlan.from_dict(prepared_for_contract.epistemic_plan)
             if isinstance(prepared_for_contract.epistemic_plan, dict)
@@ -242,15 +246,10 @@ class ReplyFinalizer:
             and not result.get("webEvidenceLimited")
             else "forbidden"
         )
+        # Web confidence and source coverage guide generation. They must not
+        # replace the model's answer with a fixed uncertainty sentence.
+        gate_decision = None
         if not cognitive_final:
-            if hard_fact_gate_requires_terminal_boundary(epistemic_state, receipt):
-                result = terminal_grounding_boundary_reply(result)
-                self.write_log(
-                    "grounded_claim_gate_hard_terminal_boundary_applied",
-                    requestId=request_id,
-                    planId=epistemic_plan.plan_id,
-                    planRevision=epistemic_plan.revision,
-                )
             # Field repair in call_upstream may have changed Japanese after the first
             # visual audit. Renew that receipt BEFORE the generic gate consumes it.
             result = self.evidence.refresh_visual_grounding_for_current_text(
@@ -265,6 +264,8 @@ class ReplyFinalizer:
                 research_policy=effective_research_policy,
                 visual_evidence_verified=(current_visual_grounding_verified(result, conversation_tool_results)
                                           or native_visual_input_delivered(result, conversation_tool_results)),
+                citation_source_uids=citation_source_uids,
+                enforce_web_claims=False,
             )
             self.write_log(
                 "grounded_claim_gate_decision",
@@ -303,6 +304,8 @@ class ReplyFinalizer:
                     research_policy=effective_research_policy,
                     visual_evidence_verified=(current_visual_grounding_verified(result, conversation_tool_results)
                                               or native_visual_input_delivered(result, conversation_tool_results)),
+                    citation_source_uids=citation_source_uids,
+                    enforce_web_claims=False,
                 )
                 self.write_log(
                     "grounded_claim_gate_rewrite_decision",
@@ -341,6 +344,8 @@ class ReplyFinalizer:
                             receipt,
                             research_policy=effective_research_policy,
                             visual_evidence_verified=False,
+                            citation_source_uids=citation_source_uids,
+                            enforce_web_claims=False,
                         )
                         if gate_decision.status == "PASS":
                             break
@@ -354,6 +359,8 @@ class ReplyFinalizer:
                         receipt,
                         research_policy=effective_research_policy,
                         visual_evidence_verified=False,
+                        citation_source_uids=citation_source_uids,
+                        enforce_web_claims=False,
                     )
                 self.write_log(
                     "grounded_claim_gate_terminal_boundary_decision",
@@ -387,8 +394,14 @@ class ReplyFinalizer:
             )
         result["epistemicState"] = epistemic_state.to_dict()
         result["epistemicPlan"] = epistemic_plan.to_dict()
-        result["groundingGate"] = ({"status": "PASS", "authority": "main_model_outcome", "checks": "references_and_receipts"}
-                                   if cognitive_final else gate_decision.to_dict())
+        if gate_decision is not None:
+            result["groundingGate"] = gate_decision.to_dict()
+        else:
+            result["groundingGate"] = {
+                "status": "PASS",
+                "authority": "main_model_outcome",
+                "checks": "references_and_receipts",
+            }
         postprocess_text_mutations: list[dict[str, Any]] = []
 
         def apply_validating_transform(

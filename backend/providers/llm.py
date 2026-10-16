@@ -76,7 +76,7 @@ def send_uncoordinated(
     deadline = time.monotonic() + request_timeout
     # The socket's connection timeout is not an inference/body timeout.
     # The cognitive phase owns this budget regardless of model tier or proxy.
-    response_body_read_enabled = purpose in policy.bounded_body_purposes
+    response_body_read_enabled = purpose in policy.bounded_body_purposes or bool(active_payload.get("tools"))
     last_error: Exception | None = None
     protocol_failure_count = 0
     for attempt in range(1, attempts + 1):

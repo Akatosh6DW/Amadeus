@@ -25,6 +25,106 @@ from backend.research.query import (
 )
 
 
+SUPPORTED_RESEARCH_PROVIDERS = frozenset({
+    "duckduckgo", "bing", "yahoo", "brave", "wikipedia",
+})
+_QUERY_STRATEGY_FIELDS = ("provider", "locale", "region", "freshness")
+
+# A search phrase may be long, contain punctuation, or mention evidence and
+# sources as part of the user's actual subject.  Reject only the shape that
+# proves a model copied a retrieval report into the query field: a round/result
+# marker together with a diagnostic conclusion.  The rationale belongs in the
+# structured ``reason``/legacy ``purpose`` field and never leaves the process.
+_QUERY_REPORT_MARKER = re.compile(
+    r"(?:本轮|上一轮|前一轮|现有\s*\d+\s*(?:个)?\s*来源|"
+    r"检索(?:结果|线路|诊断)|搜索(?:结果|线路)|"
+    r"retrieval\s+(?:result|diagnostic|path)|search\s+(?:result|results|route)|"
+    r"\b(?:sources?|results?)\s*[:#]?\s*\d+|"
+    r"\b(?:all|five|several|multiple|\d+)\s+sources?\b|"
+    r"\bS\d+(?:\s*[/,]\s*S\d+)+\b|来源\s*S?\d+)",
+    flags=re.I,
+)
+_QUERY_DIAGNOSTIC_CONCLUSION = re.compile(
+    r"(?:完全?无关|不相关|检索线路.*(?:失效|失败)|线路.*(?:失效|失败)|"
+    r"无法回答|不能回答|未提供.{0,24}(?:证据|实体|时间)|"
+    r"(?:没有|缺少|不足).{0,24}(?:证据|实体|时间)|"
+    r"\b(?:irrelevant|unrelated|cannot\s+answer|not\s+enough\s+evidence|"
+    r"no\s+(?:relevant\s+)?evidence|retrieval\s+failed)\b)",
+    flags=re.I,
+)
+
+
+def _normalized_query_strategy(item: dict[str, Any]) -> tuple[str, ...]:
+    """Keep same-text queries distinct when the model changes retrieval route."""
+
+    return tuple(
+        re.sub(r"\s+", " ", str(item.get(field) or "")).strip().casefold()
+        for field in _QUERY_STRATEGY_FIELDS
+    )
+
+
+def normalize_research_query_strategy(item: Any) -> dict[str, str]:
+    if not isinstance(item, dict):
+        return {}
+    options: dict[str, str] = {}
+    provider = str(item.get("provider") or "").strip().lower()
+    if provider in SUPPORTED_RESEARCH_PROVIDERS:
+        options["provider"] = provider
+    for field, limit in (("locale", 40), ("region", 40)):
+        value = re.sub(r"\s+", " ", str(item.get(field) or "")).strip()
+        if value:
+            options[field] = value[:limit]
+    freshness = str(item.get("freshness") or "").strip().lower()
+    if freshness in {"pd", "pw", "pm", "py"}:
+        options["freshness"] = freshness
+    return options
+
+
+def is_retrieval_diagnostic_query(value: Any) -> bool:
+    """Return whether *value* is a copied retrieval report, not a query.
+
+    This intentionally requires two independent signals.  Words such as
+    ``来源``/``source`` or ``证据``/``evidence`` alone are valid in many user
+    searches and therefore remain allowed.
+    """
+
+    query = re.sub(r"\s+", " ", str(value or "")).strip()
+    return bool(
+        query
+        and _QUERY_REPORT_MARKER.search(query)
+        and _QUERY_DIAGNOSTIC_CONCLUSION.search(query)
+    )
+
+
+def safe_outbound_web_query(value: Any, *, max_length: int = 240) -> str:
+    """Apply the outbound safety boundary shared by every research caller."""
+
+    query = outbound_web_query(value)
+    if not query or len(query) > max_length or is_retrieval_diagnostic_query(query):
+        return ""
+    if re.search(
+        r"system[_\s-]*prompt|developer[_\s-]*message|系统提示词|开发者消息|"
+        r"authorization\s*:|bearer\s+[A-Za-z0-9._-]+|"
+        r"\b(?:sk|api)[-_][A-Za-z0-9_-]{12,}\b|忽略(?:此前|之前|以上)(?:指令|要求)",
+        query,
+        flags=re.I,
+    ):
+        return ""
+    if re.search(r"\b[0-9a-f]{48,}\b|[A-Za-z0-9+/]{80,}={0,2}", query):
+        return ""
+    return query[:max_length]
+
+
+def query_reason_field(item: Any, default: str = "补足证据缺口") -> tuple[str, str]:
+    """Read the structured reason while accepting pre-protocol ``purpose``."""
+
+    if not isinstance(item, dict):
+        return "reason", default
+    field = "reason" if "reason" in item else "purpose"
+    reason = re.sub(r"\s+", " ", str(item.get(field) or "")).strip()[:160]
+    return field, reason or default
+
+
 # 从显式传入的对话提取上一条具体主题；不访问持久会话。
 def previous_substantive_web_query(
     messages: list[dict[str, Any]] | None,
@@ -180,18 +280,8 @@ def safe_planned_web_query(
         re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n，。！？；,:;!?"),
         user_message,
     )
-    query = outbound_web_query(query)
-    if not query or len(query) > 240:
-        return ""
-    if re.search(
-        r"system[_\s-]*prompt|developer[_\s-]*message|系统提示词|开发者消息|"
-        r"authorization\s*:|bearer\s+[A-Za-z0-9._-]+|"
-        r"\b(?:sk|api)[-_][A-Za-z0-9_-]{12,}\b|忽略(?:此前|之前|以上)(?:指令|要求)",
-        query,
-        flags=re.I,
-    ):
-        return ""
-    if re.search(r"\b[0-9a-f]{48,}\b|[A-Za-z0-9+/]{80,}={0,2}", query):
+    query = safe_outbound_web_query(query)
+    if not query:
         return ""
     planned_url = extract_public_web_url(query)
     if planned_url and planned_url != extract_public_web_url(user_message):
@@ -200,9 +290,9 @@ def safe_planned_web_query(
     overlaps = web_query_overlap_tokens(query) & web_query_overlap_tokens(grounding)
     if require_overlap and not overlaps:
         return ""
-    anchor = web_research_anchor(user_message, resolved_question)
-    if not overlaps and anchor and anchor not in query:
-        query = f"{anchor} {query}"
+    # The question remains in the research plan. Appending it to a translated
+    # or narrower query changes the search terms and can turn useful keywords
+    # into a no-results request.
     return re.sub(r"\s+", " ", query).strip()[:240]
 
 
@@ -226,11 +316,7 @@ def fallback_web_research_plan(
         "_originalResolvedQuestion": resolved[:500],
         "plannerResolvedQuestion": "",
         "userAnchor": web_research_anchor(user_message),
-        "strictAnchorMatch": bool(re.search(
-            r"两代|两位|两者|两个|双方|前者|后者|第[一二三四五六七八九十\d]+(?:位|个|代)",
-            user_message,
-            flags=re.I,
-        )),
+        "strictAnchorMatch": False,
         "queries": [query_item] if query else [],
         "answerRequirements": ["基于查阅到的证据分析后直接回答用户问题"],
         "ambiguities": [],
@@ -321,43 +407,23 @@ def normalize_web_research_plan(
     requested_freshness = web_search_freshness(f"{resolved} {user_message}")
     for index, item in enumerate(raw_queries if isinstance(raw_queries, list) else []):
         raw_query = item.get("query") if isinstance(item, dict) else item
+        # Repair spelling/separators of names already present in the query,
+        # without appending the full question or a missing subject.
+        raw_query = str(raw_query or "")
+        for phrase in [analysis_subject, *protected_terms]:
+            if phrase:
+                raw_query = preserve_planned_phrase(raw_query, phrase)
         query = safe_planned_web_query(
             raw_query,
             user_message,
             resolved,
             require_overlap=index == 0,
         )
-        if (
-            query
-            and analysis_subject
-        ):
-            if compact_search_phrase(analysis_subject) in compact_search_phrase(query):
-                query = preserve_planned_phrase(query, analysis_subject)
-            else:
-                query = safe_planned_web_query(
-                    f"{analysis_subject} {query}",
-                    user_message,
-                    resolved,
-                    require_overlap=index == 0,
-                )
-        for protected_term in protected_terms:
-            query = preserve_planned_phrase(query, protected_term)
-        if (
-            index == 0
-            and user_anchor
-            and compact_search_phrase(user_anchor) not in compact_search_phrase(query)
-        ):
-            query = safe_planned_web_query(
-                f"{user_anchor} {query}",
-                user_message,
-                resolved,
-                require_overlap=True,
-            )
         if not query or any(existing["query"].casefold() == query.casefold() for existing in queries):
             continue
-        purpose = str(item.get("purpose") or "") if isinstance(item, dict) else ""
-        purpose = re.sub(r"\s+", " ", purpose).strip()[:160]
-        query_item = {"query": query, "purpose": purpose or "补充公开证据"}
+        reason_field, reason = query_reason_field(item, "补充公开证据")
+        query_item = {"query": query, reason_field: reason}
+        query_item.update(normalize_research_query_strategy(item))
         planned_freshness = (
             str(item.get("freshness") or "").strip().lower()
             if isinstance(item, dict)
@@ -375,39 +441,6 @@ def normalize_web_research_plan(
             break
     if not queries:
         return fallback_web_research_plan(user_message, resolution, messages)
-    ambiguous_group_reference = bool(re.search(
-        r"两代|两位|两者|两个|双方|前者|后者|第[一二三四五六七八九十\d]+(?:位|个|代)",
-        user_message,
-        flags=re.I,
-    ))
-    if ambiguous_group_reference and user_anchor:
-        discovery_query = safe_planned_web_query(
-            f"{user_anchor} 指谁 出处 作品 称号",
-            user_message,
-            resolved,
-            require_overlap=True,
-        )
-        if discovery_query:
-            # Before retrieval there is no evidence for planner-invented names.
-            # Search only the user's umbrella term first; the reviewer may add
-            # specific entities after a source actually identifies them.
-            comparison_query = safe_planned_web_query(
-                f"{user_anchor} 第一代 第二代 能力 战绩 对比",
-                user_message,
-                resolved,
-                require_overlap=True,
-            )
-            queries = [{
-                "query": discovery_query,
-                "purpose": "先确认用户原始统称实际指向的对象与出处",
-                **({"freshness": requested_freshness} if requested_freshness else {}),
-            }]
-            if comparison_query and comparison_query.casefold() != discovery_query.casefold():
-                queries.append({
-                    "query": comparison_query,
-                    "purpose": "不猜具体姓名，先查统称下两方的公开比较材料",
-                    **({"freshness": requested_freshness} if requested_freshness else {}),
-                })
     requirements = [
         re.sub(r"\s+", " ", str(item)).strip()[:180]
         for item in (parsed.get("answerRequirements") if isinstance(parsed.get("answerRequirements"), list) else [])
@@ -424,7 +457,9 @@ def normalize_web_research_plan(
         "_originalResolvedQuestion": original_resolved,
         "plannerResolvedQuestion": planner_resolved,
         "userAnchor": user_anchor,
-        "strictAnchorMatch": ambiguous_group_reference,
+        # A strict umbrella match is a planner decision, not a side effect of
+        # broad words such as "两个" or "前者" in the user's question.
+        "strictAnchorMatch": parsed.get("strictAnchorMatch") is True,
         "queries": queries,
         "answerRequirements": requirements or ["综合查阅证据后直接回答，不罗列搜索过程"],
         "ambiguities": ambiguities,
@@ -454,23 +489,31 @@ def merge_research_plan_queries(
         if isinstance(item, dict) and str(item.get("query") or "").strip()
     ]
     seen = {
-        normalized_query_hash(str(item.get("query") or ""))
+        (
+            normalized_query_hash(str(item.get("query") or "")),
+            *_normalized_query_strategy(item),
+        )
         for item in existing
     }
     additions: list[dict[str, Any]] = []
     for item in queries:
-        query = str(item.get("query") or "").strip()
-        query_hash = normalized_query_hash(query)
-        if not query_hash or query_hash in seen:
+        if not isinstance(item, dict):
             continue
-        seen.add(query_hash)
-        additions.append({
+        query = safe_outbound_web_query(item.get("query"), max_length=500)
+        if not query:
+            continue
+        query_hash = normalized_query_hash(query)
+        normalized_item = {
             "query": query[:500],
-            "purpose": re.sub(
-                r"\s+",
-                " ",
-                str(item.get("purpose") or "补足证据缺口"),
-            ).strip()[:160],
-        })
+            **normalize_research_query_strategy(item),
+        }
+        strategy_key = (query_hash, *_normalized_query_strategy(normalized_item))
+        if not query_hash or strategy_key in seen:
+            continue
+        seen.add(strategy_key)
+        reason_field, reason = query_reason_field(item)
+        addition = {"query": query, reason_field: reason}
+        addition.update(normalize_research_query_strategy(item))
+        additions.append(addition)
     offset = len(existing)
     return {**plan, "queries": [*existing, *additions][:8]}, additions, offset

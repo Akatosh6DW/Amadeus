@@ -36,6 +36,65 @@ from backend.tools.validation import (
 )
 
 
+_TERMINAL_OUTCOME_STATUSES = frozenset(
+    {"completed", "partial", "needs_input", "failed"}
+)
+_TERMINAL_FORMAT_REPAIR_LIMIT = 1
+
+
+def _terminal_tool_response_issue(
+    content: Any,
+    *,
+    require_outcome: bool,
+    allow_legacy_reply: bool = False,
+) -> str | None:
+    """Return a structural terminal-contract issue without changing content.
+
+    The cognitive transport remains the authority for semantic/state validation.
+    This small check only prevents a tool-loop terminal path from handing a
+    second tool decision (or an outcome-less cognitive response) back to the
+    upstream pipeline after the loop has been closed.
+    """
+
+    value = parse_json_object(content) if isinstance(content, str) else None
+    if not isinstance(value, Mapping):
+        return "terminal_response_not_json_object"
+    kind = str(value.get("kind") or "").strip().lower()
+    if require_outcome and kind != "turn":
+        return "terminal_response_kind_must_be_turn"
+    if not require_outcome and kind in {"tool_use", "tool_request"}:
+        return "terminal_response_contains_tool_requests"
+    requests = value.get("calls") or value.get("toolRequests") or []
+    if not isinstance(requests, list):
+        return "terminal_response_tool_requests_must_be_list"
+    if requests:
+        return "terminal_response_contains_tool_requests"
+    if require_outcome:
+        outcome = value.get("outcome")
+        if not isinstance(outcome, Mapping):
+            return "terminal_response_outcome_missing"
+        if str(outcome.get("status") or "").strip().lower() not in _TERMINAL_OUTCOME_STATUSES:
+            return "terminal_response_outcome_status_invalid"
+    elif kind != "turn":
+        legacy_visible = any(
+            isinstance(value.get(field), str) and value[field].strip()
+            for field in ("reply", "spokenTextJa", "speechText")
+        )
+        speech_units = value.get("speechUnits") or value.get("utterances")
+        if isinstance(speech_units, list):
+            legacy_visible = legacy_visible or any(
+                isinstance(item, Mapping)
+                and any(
+                    isinstance(item.get(field), str) and item[field].strip()
+                    for field in ("zh", "textZh", "reply", "ja", "spokenTextJa")
+                )
+                for item in speech_units
+            )
+        if not allow_legacy_reply or kind or not legacy_visible:
+            return "terminal_response_kind_must_be_turn"
+    return None
+
+
 class ModelPort(Protocol):
     """模型传输及模型输入装配所需入口。"""
 
@@ -409,7 +468,9 @@ def finalize_preexecuted_tool_result(
         {"role": "system", "content": (
             "你刚请求的工具已经在本轮执行，禁止重复输出 tool_use。"
             "请依据已返回的真实结果，按照 semantic-v3 输出 kind='turn'；"
-            "成功时直接回答，失败或权限不足时明确说明具体失败原因和可行下一步。"
+            "成功时直接回答；失败或权限不足时简短说明影响当前答案的具体缺口。"
+            "只有完成当前操作确实需要用户补充输入或处理权限时，才给一个必要下一步；"
+            "联网取证失败时不要展开检索流程、建议用户自行查找或追问是否继续搜索。"
             "不得把工具请求 JSON 当作面向用户的回复，也不得编造成功。"
         )},
         {"role": "system", "content": core_dialogue_turn_contract_prompt(
@@ -684,6 +745,7 @@ def run_model_tool_loop(
     )
     if (
         continuation is None
+        and not cognitive_turn_state(body)
         and
         not pre_tool_results
         and research_decision.policy != "forbidden"
@@ -887,6 +949,152 @@ def run_model_tool_loop(
         )
     executed_tool_results = list(pre_tool_results)
     second_llm_ms = 0
+
+    def request_terminal_tool_synthesis(
+        previous_content: str,
+        *,
+        reason: str,
+    ) -> tuple[str, int]:
+        """Close a cognitive tool turn after no further tool call is legal."""
+
+        terminal_payload: dict[str, Any] = {
+            "model": settings["apiModel"],
+            "temperature": 0.5,
+            "max_tokens": 6000 if file_output_expected else min(
+                6_000,
+                fast_stream_token_budget(turn_policy) + 240,
+            ),
+            "messages": [
+                *base_messages,
+                {"role": "assistant", "content": previous_content},
+                {"role": "system", "content": tool_context_prompt(
+                    executed_tool_results,
+                    context_resolution,
+                    max_chars=turn_policy.tool_evidence_max_chars,
+                 model_owned=bool(cognitive_turn_state(body)))},
+                *([{"role": "system", "content": visual_evidence_prompt(
+                    executed_tool_results,
+                    user_question=semantic_task_request,
+                )}] if visual_evidence_prompt(
+                    executed_tool_results,
+                    user_question=semantic_task_request,
+                ) else []),
+                *(
+                    [{"role": "system", "content": tool_grounding_instruction(
+                        executed_tool_results
+                    )}]
+                    if tool_grounding_instruction(executed_tool_results)
+                    else []
+                ),
+                {"role": "system", "content": (
+                    "工具循环现在必须结束，原因是 " + reason + "。"
+                    "不得再输出 tool_use、calls 或 toolRequests。请依据所有已返回证据按照 semantic-v3 输出 kind='turn'；"
+                    "证据足够就直接回答；证据不足时仍须输出 kind='turn'，并在 outcome.status 使用 partial 或 failed，"
+                    "自然说明具体不确定处或当前缺口。"
+                    "不要编造工具结果，也不要复述调度过程。"
+                )},
+                {"role": "system", "content": core_dialogue_turn_contract_prompt(
+                    utterance_interpretation,
+                    turn_contract,
+                    model_owned=bool(cognitive_turn_state(body)),
+                )},
+            ],
+        }
+        if settings.get("useResponseFormat"):
+            terminal_payload["response_format"] = {"type": "json_object"}
+        if "deepseek.com" in settings["apiEndpoint"]:
+            terminal_payload["thinking"] = {"type": "disabled"}
+        terminal_payload["messages"], _ = pressure_managed_prompt(
+            terminal_payload["messages"],
+            settings,
+            reserved_output_tokens=int(terminal_payload["max_tokens"]),
+            request_id=request_id,
+            stage=f"chat_tool_finalize_{reason}",
+        )
+        terminal_started = time.perf_counter()
+        body["_cognitiveEvidence"] = {**(body.get("_cognitiveEvidence") or {}), **collect_evidence(executed_tool_results)}
+        body["_cognitiveToolLoopTerminal"] = True
+        cognitive_terminal = bool(cognitive_turn_state(body))
+        terminal_repair_attempts = 0
+        terminal_issue: str | None = None
+        try:
+            while True:
+                try:
+                    terminal_content = send_conversation_brain_payload(
+                        body,
+                        settings,
+                        terminal_payload,
+                        timeout=90,
+                        request_id=request_id,
+                        purpose=f"chat_tool_query_loop_finalize_{reason}",
+                    )
+                except CognitiveProtocolError as error:
+                    terminal_issue = "terminal_model_validation_failed"
+                    if terminal_repair_attempts >= _TERMINAL_FORMAT_REPAIR_LIMIT:
+                        raise CognitiveProtocolError(
+                            "tool_loop_terminal_synthesis_aborted: "
+                            + str(error)[:1200]
+                        ) from error
+                else:
+                    terminal_issue = _terminal_tool_response_issue(
+                        terminal_content,
+                        require_outcome=cognitive_terminal,
+                        allow_legacy_reply=not cognitive_terminal,
+                    )
+                    if terminal_issue is None:
+                        break
+                    if terminal_repair_attempts >= _TERMINAL_FORMAT_REPAIR_LIMIT:
+                        raise CognitiveProtocolError(
+                            "tool_loop_terminal_synthesis_aborted: "
+                            + terminal_issue
+                        )
+                terminal_repair_attempts += 1
+                write_server_log(
+                    "tool_query_loop_terminal_format_repair",
+                    requestId=request_id,
+                    reason=reason,
+                    attempt=terminal_repair_attempts,
+                    issue=terminal_issue,
+                )
+                terminal_payload["messages"] = [
+                    *terminal_payload["messages"],
+                    {"role": "system", "content": (
+                        "[终止格式修复] 上一个终止候选没有通过收尾合同。"
+                        "工具预算已经耗尽，本次只允许输出一个最终 JSON 对象；不得输出 kind='tool_use'，"
+                        "不得给出 calls 或 toolRequests，也不得要求后端再执行工具。"
+                        "必须输出 kind='turn'。若当前证据不足，outcome.status 必须是 partial 或 failed，"
+                        "并如实保留已知部分和未决缺口；不要编造证据或把未执行操作写成完成。"
+                    )},
+                ]
+                terminal_payload["messages"], _ = pressure_managed_prompt(
+                    terminal_payload["messages"],
+                    settings,
+                    reserved_output_tokens=int(terminal_payload["max_tokens"]),
+                    request_id=request_id,
+                    stage=f"chat_tool_finalize_repair_{reason}",
+                )
+        finally:
+            body.pop("_cognitiveToolLoopTerminal", None)
+        return (
+            terminal_content,
+            round((time.perf_counter() - terminal_started) * 1000),
+        )
+
+    initial_tool_use_rejected = (
+        bool(cognitive_turn_state(body))
+        and str(parsed.get("kind") or "").strip().lower() == "tool_use"
+        and not requested_tools
+        and not duplicate_preexecuted_requests
+    )
+    if initial_tool_use_rejected:
+        content, terminal_ms = request_terminal_tool_synthesis(
+            content,
+            reason="requested_tools_rejected",
+        )
+        second_llm_ms += terminal_ms
+        answer_finish_reason = services.model.finish_reason()
+        tool_loop_stop_reason = "requested_tools_rejected"
+
     if duplicate_preexecuted_requests and not requested_tools:
         tool_loop_stop_reason = "preexecuted_duplicate_finalized"
         content, answer_finish_reason, second_llm_ms = _finalize_preexecuted_tool_result(
@@ -1265,7 +1473,8 @@ def run_model_tool_loop(
                     "不要重复输出 reply/spokenTextJa 或运行状态。"
                     "若仍缺少一项确实必要的不同工具证据，可以输出 kind='tool_use' 和 calls，"
                     "但不得重复完全相同的工具与参数，也不得无依据地改写参数碰运气。"
-                    "工具失败或权限不足时，要明确告诉用户需要开启对应权限，不要猜测。"
+                    "工具失败或权限不足时要如实说明；只有完成当前操作确实依赖用户处理权限时，"
+                    "才提出一个必要动作。联网取证失败不应变成长篇流程说明、让用户自行搜索或询问是否继续。"
                 )},
                 {"role": "system", "content": policy_prompt(turn_policy)},
                 {"role": "system", "content": core_dialogue_turn_contract_prompt(
@@ -1309,83 +1518,11 @@ def run_model_tool_loop(
         )
         tool_rounds = prior_tool_rounds + 1
         maximum_tool_rounds = 3 if cognitive_turn_state(body) else max(1, min(3, int(capability.max_tool_rounds or 1)))
+        if cognitive_turn_state(body) and executed_tool_results and all(
+            item.get("name") in {"web_search", "read_web_page"} for item in executed_tool_results
+        ):
+            maximum_tool_rounds = 4  # Search/read, with room for one alternative search/read.
         body["_cognitiveToolRoundsUsed"] = tool_rounds
-
-        def request_terminal_tool_synthesis(
-            previous_content: str,
-            *,
-            reason: str,
-        ) -> tuple[str, int]:
-            terminal_payload: dict[str, Any] = {
-                "model": settings["apiModel"],
-                "temperature": 0.5,
-                "max_tokens": 6000 if file_output_expected else min(
-                    6_000,
-                    fast_stream_token_budget(turn_policy) + 240,
-                ),
-                "messages": [
-                    *base_messages,
-                    {"role": "assistant", "content": previous_content},
-                    {"role": "system", "content": tool_context_prompt(
-                        executed_tool_results,
-                        context_resolution,
-                        max_chars=turn_policy.tool_evidence_max_chars,
-                     model_owned=bool(cognitive_turn_state(body)))},
-                    *([{"role": "system", "content": visual_evidence_prompt(
-                        executed_tool_results,
-                        user_question=semantic_task_request,
-                    )}] if visual_evidence_prompt(
-                        executed_tool_results,
-                        user_question=semantic_task_request,
-                    ) else []),
-                    *(
-                        [{"role": "system", "content": tool_grounding_instruction(
-                            executed_tool_results
-                        )}]
-                        if tool_grounding_instruction(executed_tool_results)
-                        else []
-                    ),
-                    {"role": "system", "content": (
-                        "工具循环现在必须结束，原因是 " + reason + "。"
-                        "不得再输出 tool_use。请依据所有已返回证据按照 semantic-v3 输出 kind='turn'；"
-                        "证据足够就直接回答，证据不足就自然说明具体不确定处或提出完成当前任务所必需的澄清。"
-                        "不要编造工具结果，也不要复述调度过程。"
-                    )},
-                    {"role": "system", "content": core_dialogue_turn_contract_prompt(
-                        utterance_interpretation,
-                        turn_contract,
-                        model_owned=bool(cognitive_turn_state(body)),
-                    )},
-                ],
-            }
-            if settings.get("useResponseFormat"):
-                terminal_payload["response_format"] = {"type": "json_object"}
-            if "deepseek.com" in settings["apiEndpoint"]:
-                terminal_payload["thinking"] = {"type": "disabled"}
-            terminal_payload["messages"], _ = pressure_managed_prompt(
-                terminal_payload["messages"],
-                settings,
-                reserved_output_tokens=int(terminal_payload["max_tokens"]),
-                request_id=request_id,
-                stage=f"chat_tool_finalize_{reason}",
-            )
-            terminal_started = time.perf_counter()
-            body["_cognitiveEvidence"] = {**(body.get("_cognitiveEvidence") or {}), **collect_evidence(executed_tool_results)}
-            body["_cognitiveToolLoopTerminal"] = True
-            try:
-                terminal_content = send_conversation_brain_payload(
-                    body, settings,
-                    terminal_payload,
-                    timeout=90,
-                    request_id=request_id,
-                    purpose=f"chat_tool_query_loop_finalize_{reason}",
-                )
-            finally:
-                body.pop("_cognitiveToolLoopTerminal", None)
-            return (
-                terminal_content,
-                round((time.perf_counter() - terminal_started) * 1000),
-            )
 
         tool_loop_stop_reason = "model_returned_final"
         while True:

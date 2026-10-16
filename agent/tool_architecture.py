@@ -282,14 +282,15 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
         "检索可能变化、未知或需要来源核验的公网信息",
         "permissionWebSearch", aliases=("联网", "搜索", "核实", "最新", "来源"),
         input_schema={"query": "string", "provider": "optional: duckduckgo|yahoo|brave|wikipedia; omitted uses configured provider",
-                      "locale": "optional language code, e.g. zh-CN|ja|en; wikipedia selects this language edition"}, concurrency_safe=True,
+                      "locale": "optional language code, e.g. zh-CN|ja|en; wikipedia selects this language edition",
+                      "freshness": "optional: pd (day), pw (week), pm (month), py (year); dateFilter in the result reports whether the provider applied it"}, concurrency_safe=True,
         estimated_latency_ms=2800, freshness_semantics="provider_result_time",
     ),
     ToolDef(
         "read_web_page", "public_research",
         "读取指定公网网页的正文并形成可引用证据",
         "permissionWebSearch", aliases=("网页正文", "链接内容", "读取网站"),
-        input_schema={"url": "public_https_url"}, concurrency_safe=True,
+        input_schema={"url": "public_https_url", "researchQuery": "optional: the question or section to locate in a long document"}, concurrency_safe=True,
         estimated_latency_ms=2200, freshness_semantics="retrieved_at",
     ),
     ToolDef(

@@ -90,7 +90,7 @@ packet.failedRequests 是此前未交付回答的用户原话，不是已接受�
 只允许理解和状态由你提交，后端不会从回答文字猜出任务约束；不要遗漏这些字段。
 interactionAct 可为 CHAT、CORRECTION、STANCE_DISAGREEMENT、EPISTEMIC_CHALLENGE、
 TASK_REVISION、EXECUTION_FEEDBACK、RECALL_REQUEST、PERSONA_FEEDBACK、GENERAL_NEGATIVE。
-CORRECTION 用于用户纠正已有理解，EPISTEMIC_CHALLENGE 用于认识或证据受到质疑，它们会进入 Pro 重分析。
+CORRECTION 用于用户纠正已有理解，EPISTEMIC_CHALLENGE 用于认识或证据受到质疑。普通联网查询用 CHAT；搜索结果之间的分歧在当前工具循环中查证，不需要另开重分析或手工重建任务计划。
 普通任务变更、表达调整、工具成功/失败反馈、缺字段或重复调用由你在正常链路处理，不要仅因后端报错标成 CORRECTION。
 确实需要重新理解上下文、用户意图或解决证据冲突时，可额外给 cognitive.repairReason 为 context_misunderstanding、intent_misunderstanding 或 evidence_conflict；其他情况省略。repairReason 不用于处理参数格式或任务状态手续；普通聊天的 understoodGoal 也不必写成重新核对对象。
 观点分歧不是事实纠正；用户否定你的推断应撤回；用户自己的意图和偏好以当前原话为准；
@@ -114,7 +114,12 @@ task.goal 表达要达成的结果，操作限制放在 constraints。用户改�
 """ + COGNITIVE_PATCH_PROTOCOL + """容器必须完整。工具调用示例：
 {"kind":"tool_use","cognitive":{"interactionAct":"CHAT","understoodGoal":"核实用户询问的资料","patches":[]},"calls":[{"name":"web_search","args":{"query":"实际需要查证的内容"}}]}
 工具轮不能只留下 kind/calls 而遗漏 cognitive。工具结果返回后先阅读证据；正文为空时可继续请求 read_web_page 或换一个检索词，不必先征求已获授权的查证许可。
-web_search 可用 provider 选择 duckduckgo/yahoo/brave/wikipedia；省略则沿用配置。百科类查证可选择 wikipedia，并用 locale 指定 zh/ja/en 等语言版本；它不适合替代实时新闻搜索。主模型判断结果相关性，遇到验证码、线路失败或无关结果可更换来源/语言/查询，不能把这些情况当成知识不存在。搜索摘要只供选页，读到正文后才更新外部知识。
+联网调用用 calls 表达下一步，后端自动登记进度，无需手工 START_TASK 或 REPLACE_TOOL_PLAN。还要搜索或读页就输出 kind=tool_use；kind=turn 会结束本轮，应给出实际答案，不用“还得查一下”等进度话代替答案。
+联网时沿用“调用工具—阅读结果—继续调用或回答”的循环：
+用户明确要求查、检索、核实或查看来源，就实际调用 web_search/read_web_page，即使你已经熟悉答案。查询当前、最新状态时也先取新资料。
+搜索词表达待查问题，不把记忆中的年份、版本或猜测的答案写成搜索限定。当前日期来自本轮时间快照；查询最新发布时优先核对发布列表或当前版本页，再读具体公告。某篇旧公告存在不等于它仍是最新，搜索排序和抓取日期也不是发布日期。
+web_search 的 provider 省略则沿用配置；百科可选 wikipedia 和 locale。可用 freshness 缩小检索时间，实际是否生效看 dateFilter。已知原文 URL 可直接 read_web_page，用 researchQuery 指定要找的问项或章节。网页只有目录或介绍时，继续读其中的原文链接；失败或无关时换来源或查询。
+根据用户问项核对正文里的数值、时间、适用对象和条件。多个对象的规则分别查清；用户要求官方原文时读官方原文。然后直接回答并附实际来源链接，缺口简短说明；检索过程和自我辩解不写进答案。
 最终回答同时包含 cognitive、outcome、emotion、proactiveDirective 和 speechUnits；情绪标签首轮填写，说话方式用独立的 voiceStyle/voiceTone/voiceIntensity 表达，遵守最终合同的 presentationContract。普通回答无需依据编号，执行/观察声明按 packet 中的真实结果填写。旧模板的“只输出 toolRequests”“不要声明完成状态”和 memoryAction=save 不适用于此认知容器。
 packet.proactiveControl 是当前有效的主动联系状态及其用户来源。由你结合整句语义和上下文输出 pause（保持安静）、resume（恢复主动联系）或 unchanged（保留当前状态）；用户再次发言不等于恢复，不得按单个关键词判断。已经安排的提醒优先于普通静默，提醒响起不代表静默结束；取消/推迟提醒使用待办操作。当前用户主动提问仍可正常回答。
 """
@@ -212,8 +217,8 @@ def cognitive_generation_guidance(packet: Mapping[str, Any], *, analysis_only: b
     }
     receipts = list(packet.get("currentToolReceipts") or [])
     local_contract["toolResultReporting"] = {
-        "requiredWhenCompleted": bool(receipts), "receipts": receipts,
-        "rule": "仅最终回答声明 outcome.status=completed 且本轮有工具回执时，至少记录一项真实执行/观察声明。可用 kind=tool_completion、claim=实际做了什么、evidenceRefs=下列回执ID、resultStatus=对应真实状态；成功和失败不能混为同一状态。普通 external_fact/inference 注释不能替代执行记录。无工具回执时不要求，不为填字段新建任务或调用工具。分析阶段不输出 outcome。",
+        "requiredWhenCompleted": any(item.get("name") not in {"web_search", "read_web_page"} for item in receipts), "receipts": receipts,
+        "rule": "搜索、读网页后的普通事实回答无需另写工具完成声明。执行其他工具且 outcome.status=completed 时，记录真实执行/观察声明，可用 kind=tool_completion、evidenceRefs=下列回执ID、resultStatus=真实状态。显式声明的成功或失败必须符合回执。不为填字段新建任务或调用工具。分析阶段不输出 outcome。",
     }
     return local_contract
 

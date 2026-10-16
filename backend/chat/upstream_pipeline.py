@@ -49,6 +49,7 @@ from backend.chat.parsing import extract_complete_json_string_field, looks_like_
 from backend.common.text import unique_strings
 from backend.common.values import clamp_float, safe_nonnegative_int as _safe_nonnegative_int
 from backend.context.reference import _reference_evidence, contextual_reference_prompt, visual_relevant_context_prompt
+from backend.research.citations import readable_public_source_uids
 from backend.research.query import web_search_freshness, web_search_query_from_message
 from backend.tools.outcomes import effective_tool_results
 
@@ -948,6 +949,7 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
         ]
     elif (
         state.continuation is None
+        and not services.task_planning.cognitive_turn_state(state.body)
         and execution_plan.research_policy == "required"
         and not any(
         str(item.get("name") or "") in {"web_search", "read_web_page"}
@@ -1111,7 +1113,22 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
         del active_plan
         return
 
-    if inferred_web_searches and state.settings.get("permissionWebSearch"):
+    if inferred_web_searches and services.task_planning.cognitive_turn_state(state.body):
+        # The conversation model owns search/read/answer, just like other tools.
+        # Return observations to its existing tool loop without a second planner
+        # or reviewer deciding whether it may continue.
+        services.runtime.update_progress(state.request_id, "tool-executing", "正在搜索相关网页")
+        planned_web_results = services.tool_execution.execute_agent_tools(
+            inferred_web_searches,
+            state.settings,
+            state.user_message,
+            preflight=state.tool_preflight,
+            request_id=state.request_id,
+            cognitive_state=services.task_planning.cognitive_execution_state(state.body),
+            schedule_decision=state.body.get("_scheduleDecision"),
+            time_context=services.task_planning.turn_time_context(state.body, state.settings),
+        )
+    elif inferred_web_searches and state.settings.get("permissionWebSearch"):
         services.runtime.update_progress(
             state.request_id,
             "research-planning",
@@ -1217,9 +1234,14 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
         if state.research_decision.source_policy_id:
             state.research_plan["sourcePolicyId"] = state.research_decision.source_policy_id
         state.research_plan["researchPolicy"] = state.research_decision.policy
-        state.research_plan["verificationTargets"] = list(
-            state.research_decision.verification_targets
-        )
+        state.research_plan["verificationTargets"] = unique_strings([
+            *(
+                state.research_plan.get("verificationTargets")
+                if isinstance(state.research_plan.get("verificationTargets"), list)
+                else []
+            ),
+            *state.research_decision.verification_targets,
+        ])
         state.research_plan["entityTerms"] = unique_strings([
             *state.research_decision.unknown_entities,
             *(
@@ -2028,6 +2050,9 @@ def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: Up
         # 在此早期阶段，本地捕获成功只授权进行视觉合成；下方独立的逐主张审计再决定
         # 实际文案能否交付。
         visual_evidence_verified=has_typed_visual_evidence(state.grounding_tool_results),
+        citation_source_uids=readable_public_source_uids(
+            state.executed_tool_results
+        ),
     )
     evidence_gate_triggered = bool(
         pre_gate_decision.status == "RESEARCH_ESCALATION"
@@ -2246,7 +2271,6 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
     state.result = services.model.normalize_model_reply(state.content, settings=state.settings)
     state.result = services.research.ensure_verified_web_citation(state.result, state.executed_tool_results)
     if state.semantic_research_audit_failed:
-        state.result = services.model.terminal_grounding_boundary_reply(state.result)
         state.result["webEvidenceLimited"] = True
         state.result["semanticResearchAuditFailed"] = True
     if state.has_web_grounding:
@@ -2262,9 +2286,16 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
         )
         if not context_contract_satisfied:
             state.result["contextGroundingUnverified"] = True
-    if not state.cognitive_accepted and (state.non_visual_grounding_tool_results and services.validation.tool_grounding_violation(
-        state.result, state.non_visual_grounding_tool_results, state.user_message, state.relationship_state
-    )):
+    tool_grounding_rejected = bool(
+        state.non_visual_grounding_tool_results
+        and services.validation.tool_grounding_violation(
+            state.result,
+            state.non_visual_grounding_tool_results,
+            state.user_message,
+            state.relationship_state,
+        )
+    )
+    if not state.cognitive_accepted and tool_grounding_rejected:
         if state.has_web_grounding:
             state.result, research_contract_satisfied = services.research.select_best_research_candidate(
                 [*state.research_candidates, state.result], state.grounding_tool_results
@@ -2387,96 +2418,16 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
     )
     state.evidence_limited_synthesis_ms = 0
     state.evidence_limited_precision_audit_ms = 0
-    if not state.cognitive_accepted and (web_evidence_limited):
-        limited_started = time.perf_counter()
-        original_limited_candidate = dict(state.result)
-        try:
-            limited_content = services.research.synthesize_evidence_limited_reply(
-                state.settings,
-                state.user_message,
-                original_limited_candidate,
-                state.executed_tool_results,
-                state.context_resolution,
-                state.relationship_state,
-                request_id=state.request_id,
-                persona_snapshot=state.active_persona_snapshot,
-            )
-            limited_result = services.model.normalize_model_reply(limited_content, settings=state.settings)
-            if limited_result.get("emptyReply") or reply_integrity_issues(limited_result):
-                raise services.policy.protocol_error("evidence-limited synthesis returned no complete answer")
-            limited_appended_prior = services.research.evidence_synthesis_appends_prior_answer(
-                limited_result,
-                original_limited_candidate,
-            )
-            if limited_appended_prior:
-                services.runtime.write_log(
-                    "evidence_limited_synthesis_repeated_prior_answer",
-                    requestId=state.request_id,
-                    previousCharacters=len(services.model.model_reply_text(original_limited_candidate)),
-                    candidateCharacters=len(services.model.model_reply_text(limited_result)),
-                )
-            state.result = limited_result
-            state.content = limited_content
-            state.result["evidenceLimitedSynthesis"] = True
-            audit_started = time.perf_counter()
-            try:
-                audited_content = services.research.audit_evidence_limited_reply(
-                    state.settings,
-                    state.user_message,
-                    state.result,
-                    state.executed_tool_results,
-                    request_id=state.request_id,
-                    persona_snapshot=state.active_persona_snapshot,
-                )
-                audited_result = services.model.normalize_model_reply(audited_content, settings=state.settings)
-                if audited_result.get("emptyReply") or reply_integrity_issues(audited_result):
-                    raise services.policy.protocol_error("evidence-limited precision audit returned no complete answer")
-                if services.research.evidence_synthesis_appends_prior_answer(
-                    audited_result,
-                    original_limited_candidate,
-                ):
-                    raise services.policy.protocol_error(
-                        "evidence-limited precision audit retained a duplicated prior answer"
-                    )
-                state.result = audited_result
-                state.content = audited_content
-                state.result["evidenceLimitedSynthesis"] = True
-                state.result["evidenceLimitedPrecisionAudited"] = True
-            except Exception as audit_error:
-                services.runtime.write_log(
-                    "evidence_limited_precision_audit_failed",
-                    requestId=state.request_id,
-                    errorType=type(audit_error).__name__,
-                    error=str(audit_error)[:500],
-                )
-                # 此候选尚未通过证据审计；审计失败时，它和原始草稿都不能转为有效结果。
-                raise services.policy.protocol_error(
-                    "evidence-limited answer could not complete its precision audit"
-                ) from audit_error
-            finally:
-                state.evidence_limited_precision_audit_ms = round(
-                    (time.perf_counter() - audit_started) * 1000
-                )
-        except Exception as error:
-            state.result = services.model.terminal_grounding_boundary_reply(
-                original_limited_candidate, failure_stage="evidence_limited_answer",
-            )
-            state.content = json.dumps(state.result, ensure_ascii=False)
-            state.result["evidenceLimitedSynthesisFailed"] = True
-            services.runtime.write_log(
-                "evidence_limited_synthesis_failed",
-                requestId=state.request_id,
-                errorType=type(error).__name__,
-                error=str(error)[:500],
-                finishReason=services.runtime.last_finish_reason.get(),
-            )
+    if web_evidence_limited:
+        # Retrieval coverage is context for the model, not a veto over its answer.
+        # Keep the original speech and record the retrieval outcome for diagnosis.
         state.result["webEvidenceLimited"] = True
         state.result["webSearchFailed"] = web_retrieval_failed
-        state.evidence_limited_synthesis_ms = round((time.perf_counter() - limited_started) * 1000)
-        state.result = services.research.sanitize_secondary_only_precision(
-            state.result,
-            state.executed_tool_results,
-            state.user_message,
+        services.runtime.write_log(
+            "web_evidence_limitation_recorded",
+            requestId=state.request_id,
+            retrievalFailed=web_retrieval_failed,
+            answerPreserved=True,
         )
     if state.cognitive_accepted:
         # 主模型已经报告核验后的结果；保留回执元数据，不用旧版重试问题替换其答案。

@@ -37,6 +37,83 @@ def web_research_explicitly_disabled(text: str) -> bool:
     ))
 
 
+_PUBLIC_LOOKUP_VERB = re.compile(
+    r"查(?:询|阅|找)?|查找|找|寻找|检索|搜索|搜寻|核实|查证|核对|验证|确认|"
+    r"阅读|查看|看(?:一下|一看|下|看)|读(?:一下|一看)|"
+    r"look\s*up|search|find|check|verify|consult|read",
+    re.I,
+)
+_PUBLIC_SOURCE_MARKER = re.compile(
+    r"标准|规范|协议|文档|手册|原文|论文|资料|出处|来源|引用|证据|链接|定义|说明|"
+    r"公开(?:资料|文档|信息)?|官方(?:资料|文档|说明|规范)?|"
+    r"standard|specification|protocol|documentation|docs?|manual|paper|schema|"
+    r"source|citation|reference|link",
+    re.I,
+)
+_PUBLIC_SOURCE_REQUEST = re.compile(
+    r"(?:给出|提供|附上|需要|要).{0,32}(?:来源|出处|引用|证据|链接|资料)",
+    re.I,
+)
+_VERSIONED_PUBLIC_IDENTIFIER = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:"
+    r"[A-Za-z]{2,}[A-Za-z]*v?\d+(?:[-_./]\d+)*"
+    r"|"
+    r"[A-Za-z]{2,}(?:[ \t._/-]+[A-Za-z0-9]+){0,2}[ \t._/-]+v?\d+"
+    r"(?:[._/-]\d+)*"
+    r")"
+    r"(?![A-Za-z0-9])",
+    re.I,
+)
+_LOCAL_OR_ATTACHMENT_REFERENCE = re.compile(
+    r"附件|上传(?:的)?|本地|工作区|文件系统|文件夹|目录|路径|日志|截图|屏幕|"
+    r"(?:本地|当前|我的|工作区|仓库|repo|repository|workspace)(?:的)?(?:代码|项目|仓库|文件|文档|附件|目录|路径)|"
+    r"(?:代码|项目|仓库|repo|repository|workspace)(?:里|中|内容|路径)|"
+    r"(?:本机|电脑|桌面)(?:上|里|中的?)|"
+    r"(?:这个|那个|该|这份|那份|当前|我的|上面|下面)(?:文件|文档|附件|pdf|docx|txt|markdown|md\b)|"
+    r"(?:文件|文档|附件)(?:里|中|内容|正文|路径)",
+    re.I,
+)
+
+
+def user_explicitly_requests_public_web_research(text: str) -> bool:
+    """识别要求查公开标准、文档或来源的语义请求。
+
+    这是 ``user_explicitly_requests_web_research`` 的严格子集：普通的“搜一下
+    某人/某项目”仍交给模型在研究循环中决定，不因搜索动词本身直接强制工具。
+    只有用户同时指向公开资料，或明确写出联网查询，才向中央执行计划投影联网义务。
+    本函数不读取附件、工作区或配置，也不执行网络请求。
+    """
+
+    raw = str(text or "")
+    normalized = re.sub(r"\s+", "", raw.lower())
+    if (
+        not normalized
+        or extract_public_web_url(raw)
+        or web_research_explicitly_disabled(raw)
+        or _LOCAL_OR_ATTACHMENT_REFERENCE.search(normalized)
+    ):
+        return False
+    direct_public_lookup = re.search(
+        r"(?:联网|上网|在线|网络|网页|网上|internet|online|web).{0,10}(?:查|搜|搜索|查询|检索|找|search|find)|"
+        r"(?:查|搜|搜索|查询|检索|找|search|find).{0,10}(?:联网|上网|在线|网络|网页|网上|internet|online|web)",
+        normalized,
+        re.I,
+    )
+    if direct_public_lookup:
+        return True
+    return bool(
+        _PUBLIC_SOURCE_REQUEST.search(normalized)
+        or (
+            _PUBLIC_LOOKUP_VERB.search(normalized)
+            and (
+                _PUBLIC_SOURCE_MARKER.search(normalized)
+                or _VERSIONED_PUBLIC_IDENTIFIER.search(raw)
+            )
+        )
+    )
+
+
 def user_explicitly_requests_web_research(text: str) -> bool:
     """识别用户主动查询、核实和索要出处的请求。"""
 
@@ -45,6 +122,7 @@ def user_explicitly_requests_web_research(text: str) -> bool:
         not normalized
         or extract_public_web_url(text)
         or web_research_explicitly_disabled(text)
+        or _LOCAL_OR_ATTACHMENT_REFERENCE.search(normalized)
     ):
         return False
     explicit = re.search(
@@ -56,7 +134,7 @@ def user_explicitly_requests_web_research(text: str) -> bool:
         r"websearch|searchonline|lookuponline",
         normalized,
     )
-    return bool(explicit)
+    return bool(explicit or user_explicitly_requests_public_web_research(text))
 
 
 def is_web_search_query(text: str) -> bool:

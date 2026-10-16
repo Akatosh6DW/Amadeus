@@ -16,7 +16,6 @@ from agent.epistemic_architecture import grounded_claim_gate_decision, knowledge
 from agent.research_architecture import EpistemicPlan, ResearchDecision, create_epistemic_plan
 from agent.turn_execution_plan import TurnExecutionPlan
 from backend.chat.errors import GroundingGateError
-from backend.chat.grounding import terminal_grounding_boundary_reply
 from backend.common.values import safe_nonnegative_int
 from backend.research.review import needs_post_answer_research_audit
 from backend.providers.errors import UpstreamProtocolError
@@ -176,11 +175,6 @@ class FastCandidateFinalizer:
                 )
                 recovered["researchEscalatedFromKnowledgeConfidence"] = True
                 return recovered, "research_loop"
-            if confidence_gate.status == "REWRITE_WITH_UNCERTAINTY":
-                combined_candidate = terminal_grounding_boundary_reply(
-                    combined_candidate
-                )
-                combined_candidate["knowledgeConfidenceBoundaryApplied"] = True
             draft_gate = grounded_claim_gate_decision(
                 str(combined_candidate.get("reply") or ""),
                 active_plan.epistemic_state(),
@@ -247,9 +241,6 @@ class FastCandidateFinalizer:
                         route="fast_stream",
                         errorType=type(audit_error).__name__,
                         error=str(audit_error)[:500],
-                    )
-                    combined_candidate = terminal_grounding_boundary_reply(
-                        combined_candidate
                     )
                     combined_candidate["webEvidenceLimited"] = True
                     combined_candidate["semanticResearchAuditFailed"] = True

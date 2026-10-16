@@ -17,6 +17,12 @@ from backend.context.reference import SPORT_CONTEXT_PATTERN
 
 def extract_scheduled_event_datetime(text: str) -> datetime | None:
     value = re.sub(r"\s+", " ", str(text or ""))
+    value = re.sub(
+        r"\b(?:GMT|UTC)\s+(?=on\b)",
+        "UTC +0 ",
+        value,
+        flags=re.I,
+    )
     match = re.search(
         r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)"
         r"(?:\s*(?:GMT|UTC)\s*([+-]\d{1,2})(?::?(\d{2}))?)?"
@@ -141,6 +147,42 @@ def web_result_evidence_text(result: dict[str, Any]) -> str:
     )
 
 
+_WEB_PROCESS_ONLY_CLAUSE = re.compile(
+    r"^(?:好|好的|可以|没问题|稍等|等一下|等等|先等一下)$|"
+    r"^(?:我)?(?:现在|马上|这就|先|去)?(?:联网|上网|在线)?"
+    r"(?:查(?:一下|下|查)|搜(?:一下|下|搜)|搜索一下|检索一下|查询一下|查找一下).*$|"
+    r"^(?:我)?(?:已经|已)?(?:查到|搜到)(?:了|的)?"
+    r"(?:相关|一些|若干|可用|新的|最新的)?(?:资料|来源|结果|信息|内容|网页|页面|链接|公告)(?:了)?$|"
+    r"^(?:联网|上网|在线)?(?:搜索|检索|查询)(?:已经|已)?"
+    r"(?:完成|结束|成功|失败|取得(?:了)?(?:相关|一些|若干)?(?:资料|来源|结果|信息|内容)?)$|"
+    r"^(?:证据综合|检索结果)(?:没有|未能|尚未|已经|已)?(?:完成|失败|结束)?$|"
+    r"^(?:最相关|最接近|首个)(?:的)?来源(?:是|为)?$",
+    re.I,
+)
+
+
+def web_answer_has_substantive_statement(reply: str, source_titles: list[str]) -> bool:
+    """Return whether a Web answer contains something beyond retrieval metadata."""
+
+    compact = re.sub(r"\s+", "", str(reply or ""))
+    compact = re.sub(r"https?://[^\s，,。；;！？!?]+", "", compact, flags=re.I)
+    compact = re.sub(r"\[(?:S\d+)\]", "", compact, flags=re.I)
+    for title in source_titles:
+        normalized_title = re.sub(r"\s+", "", str(title or ""))
+        if normalized_title:
+            compact = compact.replace(normalized_title, "")
+    clauses = [
+        re.sub(r"^(?:但|不过|然而|另外|以及|并且)", "", item).strip()
+        for item in re.split(r"[，,。；;！？!?：:\n]+", compact)
+        if item.strip()
+    ]
+    return any(
+        re.search(r"[A-Za-z0-9\u4e00-\u9fff]", clause)
+        and not _WEB_PROCESS_ONLY_CLAUSE.fullmatch(clause)
+        for clause in clauses
+    )
+
+
 @dataclass(frozen=True)
 class ToolGroundingValidationPorts:
     """工具 grounding 只借用视觉证据摘要，不拥有视觉状态。"""
@@ -202,25 +244,36 @@ class ToolGroundingValidationService:
             ),
             {},
         )
-        planned_queries = (
-            research_plan.get("queries")
-            if isinstance(research_plan.get("queries"), list)
-            else []
-        )
-        comparison_or_multi_source_task = bool(
-            len(planned_queries) > 1
-            or re.search(
-                r"哪个|哪一个|谁|孰|相比|比较|对比|区别|差异|强弱|优劣|"
-                r"\b(?:vs\.?|versus|compare|comparison)\b",
-                str(research_plan.get("resolvedQuestion") or ""),
-                flags=re.I,
-            )
-        )
+        comparison_task = bool(re.search(
+            r"相比|比较|对比|区别|差异|强弱|优劣|(?:哪个|哪一个|谁|孰).{0,6}更|"
+            r"\b(?:vs\.?|versus|compare|comparison)\b",
+            str(research_plan.get("resolvedQuestion") or ""),
+            flags=re.I,
+        ))
+        source_identity_by_id = {
+            str(source.get("id") or "").upper(): str(
+                source.get("sourceUid")
+                or source.get("canonicalUrl")
+                or source.get("url")
+                or source.get("id")
+                or ""
+            ).strip().casefold()
+            for source in web_sources
+            if source.get("id")
+        }
+        distinct_source_identities = {
+            identity for identity in source_identity_by_id.values() if identity
+        }
+        cited_source_identities = {
+            source_identity_by_id[source_id]
+            for source_id in valid_ids & cited_ids
+            if source_identity_by_id.get(source_id)
+        }
         if (
             citations_required
-            and comparison_or_multi_source_task
-            and len(valid_ids) >= 2
-            and len(valid_ids & cited_ids) < 2
+            and comparison_task
+            and len(distinct_source_identities) >= 2
+            and len(cited_source_identities) < 2
         ):
             diagnostics.append("insufficient_cross_source_citations")
 
@@ -242,21 +295,12 @@ class ToolGroundingValidationService:
         ))
         titles = [re.sub(r"\s+", "", str(source.get("title") or "")) for source in web_sources]
         copied_title_chars = sum(len(title) for title in titles if len(title) >= 6 and title in compact)
-        content_without_metadata = re.sub(r"\[(?:S\d+)\]", "", compact, flags=re.I)
-        for title in titles:
-            if title:
-                content_without_metadata = content_without_metadata.replace(title, "")
-        content_without_metadata = re.sub(
-            r"(?:联网|搜索|检索|查询|来源|标题|摘要|链接|最相关|结果|已经|取得|显示|如下|是|为)",
-            "",
-            content_without_metadata,
-            flags=re.I,
-        )
-        if retrieval_status and len(content_without_metadata) < 90:
+        has_substantive_statement = web_answer_has_substantive_statement(reply, titles)
+        if retrieval_status and not has_substantive_statement:
             diagnostics.append("retrieval_status_instead_of_answer")
-        if progress_only and len(content_without_metadata) < 120:
+        if progress_only and not has_substantive_statement:
             diagnostics.append("search_progress_instead_of_answer")
-        if copied_title_chars >= 12 and copied_title_chars * 2 >= max(1, len(compact)):
+        if copied_title_chars >= 12 and not has_substantive_statement:
             diagnostics.append("source_inventory_instead_of_synthesis")
         return list(dict.fromkeys(diagnostics))
 
@@ -287,19 +331,6 @@ class ToolGroundingValidationService:
             return True
         if sports_temporal_grounding_violation(reply, results):
             return True
-        evidence_statuses = [
-            item.get("evidenceStatus")
-            for item in results
-            if item.get("ok") and isinstance(item.get("evidenceStatus"), dict)
-        ]
-        if evidence_statuses and not any(item.get("sufficient") for item in evidence_statuses):
-            admits_insufficient_evidence = bool(re.search(
-                r"尚未找到|没有找到|没找到|无法确认|不能确认|证据不足|资料不足|"
-                r"来源不足|没有可靠来源|只有.{0,8}(?:预告|赛程|标题|摘要)|尚无赛后|不能据此|无法据此",
-                reply,
-            ))
-            if not admits_insufficient_evidence:
-                return True
         if "capture_camera" in successful_names:
             camera_denial = re.search(
                 r"(?:没有|不具备|无法|不能|没法|并无).{0,18}(?:摄像头|相机|镜头|物理接口)|"

@@ -254,7 +254,7 @@ def normalize_settings(
         workspace_path = Path(defaults["agentFileWorkspace"]).resolve()
     settings["agentFileWorkspace"] = str(workspace_path)
     web_provider = str(settings.get("webSearchProvider") or "duckduckgo").strip().lower()
-    settings["webSearchProvider"] = web_provider if web_provider in {"duckduckgo", "brave"} else "duckduckgo"
+    settings["webSearchProvider"] = web_provider if web_provider in {"duckduckgo", "bing", "brave"} else "duckduckgo"
     settings["webSearchApiKey"] = str(settings.get("webSearchApiKey") or "").strip()
     settings["webSearchMaxResults"] = clamp_int(settings.get("webSearchMaxResults"), 1, 8, 5)
     settings["webReadTopPages"] = clamp_int(settings.get("webReadTopPages"), 0, 3, 2)

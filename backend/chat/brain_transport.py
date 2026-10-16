@@ -21,6 +21,9 @@ from backend.tools.validation import SENSOR_TOOL_NAMES
 from backend.chat.image_context import (
     HISTORY_IMAGE_HEADER, HISTORY_IMAGE_RULE, historical_image_catalog, image_reference_rows,
 )
+from backend.chat.native_web_tools import (
+    native_web_enabled, prepare_native_web_payload, bind_native_web_context,
+)
 
 IMAGE_INPUT_HEADER = "本轮可直接查看的图片。依据当前问题判断其相关性；历史参考不是新的任务。"
 
@@ -350,6 +353,9 @@ def send_conversation_brain_payload(
         active["messages"].append(
             {"role": "system", "content": policy.participant_realization_rule}
         )
+    native_web = bool(prompt) and native_web_enabled(settings, body, purpose)
+    if native_web:
+        active = prepare_native_web_payload(active, body)
     outgoing = with_cognitive_transport_state(
         body,
         services.vision.attach(body, active, images, purpose=purpose),
@@ -363,6 +369,8 @@ def send_conversation_brain_payload(
         purpose=purpose,
     )
     body["_nativeVisualInputIds"] = [item["artifactId"] for item in images]
+    if native_web:
+        content = bind_native_web_context(content, body)
     return services.cognitive.resolve(
         body, settings, active, content, request_id=request_id
     )
@@ -380,6 +388,16 @@ def iter_conversation_brain_stream(
     purpose: str,
 ):
     """收集原子认知容器流，在任何内容可见前解析并校验。"""
+
+    if services.cognitive.turn_state(body) and native_web_enabled(settings, body, purpose):
+        # This path already buffers the full semantic container. Start with one
+        # complete request so native argument deltas cannot be lost by the text
+        # SSE parser or trigger a second fallback request.
+        yield send_conversation_brain_payload(
+            services, policy, body, settings, payload, timeout=timeout,
+            request_id=request_id, purpose=purpose,
+        )
+        return
 
     # semantic-v3 本身是原子 JSON 容器，可见台词会一直保留到校验完成。
     # 先解析认知控制，再让既有解析器分派工具或公开容器里的台词。

@@ -11,6 +11,7 @@ from typing import Any, Callable, Sequence
 
 from backend.common.values import clamp_int
 from backend.research.evidence import merge_web_search_results, research_loop_sources
+from backend.research.planning import query_reason_field, safe_outbound_web_query
 from backend.research.query import web_search_freshness
 from tools.safe_web import SafeWebError, canonicalize_public_url
 
@@ -31,10 +32,18 @@ def execute_web_research_plan(
     """执行最多三个计划查询，统一来源索引并保留每条失败信息。"""
 
     resolution = resolution or {}
-    queries = [
-        item for item in (plan.get("queries") if isinstance(plan.get("queries"), list) else [])
-        if isinstance(item, dict) and str(item.get("query") or "").strip()
-    ][:3]
+    queries: list[dict[str, Any]] = []
+    for item in (
+        plan.get("queries") if isinstance(plan.get("queries"), list) else []
+    ):
+        if not isinstance(item, dict):
+            continue
+        query = safe_outbound_web_query(item.get("query"), max_length=500)
+        if not query:
+            continue
+        queries.append({**item, "query": query})
+        if len(queries) >= 3:
+            break
     if not queries:
         return {"name": "web_search", "ok": False, "error": "research_plan_has_no_query"}
     successful: list[dict[str, Any]] = []
@@ -50,7 +59,7 @@ def execute_web_research_plan(
                 f"{query} {plan.get('_originalResolvedQuestion') or plan.get('resolvedQuestion') or ''}"
             )
         )
-        result = execute_tool("web_search", settings, {
+        search_args: dict[str, Any] = {
             "query": query,
             "freshness": requested_freshness,
             "plannedResearch": True,
@@ -61,7 +70,18 @@ def execute_web_research_plan(
             "requestId": request_id,
             "sourcePolicyId": str(plan.get("sourcePolicyId") or ""),
             "entityTerms": list(plan.get("entityTerms") or []),
-        }, cognitive_body=cognitive_body, request_id=request_id)
+        }
+        # A stagnation review may deliberately change the retrieval route. Keep
+        # those model-selected options attached to the concrete search call;
+        # the default provider remains unchanged when they are absent.
+        for field in ("provider", "locale", "region"):
+            value = str(item.get(field) or "").strip()
+            if value:
+                search_args[field] = value[:80]
+        result = execute_tool(
+            "web_search", settings, search_args,
+            cognitive_body=cognitive_body, request_id=request_id,
+        )
         if not result.get("ok"):
             errors.append({"query": query[:240], "error": str(result.get("error") or "search_failed")[:500]})
             continue
@@ -71,7 +91,7 @@ def execute_web_research_plan(
                 **source,
                 "researchQueryIndexes": [query_index_offset + index],
                 "researchQuery": query[:240],
-                "researchPurpose": str(item.get("purpose") or "")[:160],
+                "researchPurpose": query_reason_field(item, "")[1],
                 "researchFreshness": requested_freshness,
             }
             for source in (result.get("sources") if isinstance(result.get("sources"), list) else [])
@@ -170,9 +190,9 @@ def execute_research_read_round(
                     or plan.get("resolvedQuestion")
                     or ""
                 )[:240],
-                "researchPurpose": str(
-                    item.get("purpose") or "读取高价值来源正文"
-                )[:160],
+                "researchPurpose": query_reason_field(
+                    item, "读取高价值来源正文"
+                )[1],
             })
         result = {**result, "sources": annotated_sources}
         merged = (

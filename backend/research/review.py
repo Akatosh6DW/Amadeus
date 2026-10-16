@@ -8,20 +8,76 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 from typing import Any, Mapping
 
 from agent.research_architecture import EpistemicPlan
 from backend.chat.parsing import parse_json_object
 from backend.common.text import unique_strings
-from backend.research.current_info import web_research_temporal_status
+from backend.research.current_info import (
+    web_research_temporal_contract,
+    web_research_temporal_status,
+)
 from backend.research.intent import is_external_fact_correction_followup
 from backend.research.planning import (
+    is_retrieval_diagnostic_query,
+    normalize_research_query_strategy,
+    query_reason_field,
     safe_planned_web_query,
     web_research_anchor,
 )
-from backend.research.query import web_search_freshness
 from backend.research.sources import source_has_readable_evidence
 from tools.safe_web import SafeWebError, canonicalize_public_url
+from tools.web_links import compact_web_links
+
+
+def _source_available_urls(source: Mapping[str, Any]) -> set[str]:
+    """Return base and extracted detail URLs allowed by the review contract."""
+
+    candidates = [source.get("url")]
+    candidates.extend(
+        link.get("url")
+        for link in compact_web_links(
+            source.get("links"), base_url=str(source.get("url") or ""), max_links=24,
+        )
+    )
+    available: set[str] = set()
+    for candidate in candidates:
+        try:
+            parsed = urllib.parse.urlsplit(str(candidate or "").strip())
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+                continue
+            canonical = canonicalize_public_url(str(candidate or "").strip())
+        except (SafeWebError, ValueError, TypeError):
+            continue
+        if canonical:
+            available.add(canonical)
+    return available
+
+
+def _structured_research_obligations(plan: Mapping[str, Any]) -> list[str]:
+    """Collect explicit answer obligations without inventing a new gate."""
+
+    fact_values: list[str] = []
+    for key in ("verificationTargets", "factsToVerify"):
+        raw = plan.get(key)
+        if isinstance(raw, list):
+            fact_values.extend(str(item).strip() for item in raw if str(item).strip())
+    analysis = plan.get("questionAnalysis")
+    if isinstance(analysis, Mapping):
+        raw = analysis.get("factsToVerify")
+        if isinstance(raw, list):
+            fact_values.extend(str(item).strip() for item in raw if str(item).strip())
+    if fact_values:
+        # answerRequirements often describes the same fact in presentation
+        # language; count the explicit fact fields once to avoid turning a
+        # stable one-fact plan into a multi-obligation review.
+        return unique_strings(fact_values)
+    requirements = plan.get("answerRequirements")
+    raw_requirements = requirements if isinstance(requirements, list) else []
+    return unique_strings(
+        str(item).strip() for item in raw_requirements if str(item).strip()
+    )
 
 
 def web_research_needs_review(
@@ -33,13 +89,31 @@ def web_research_needs_review(
     """判断查询复杂度和证据缺口是否需要模型复核。"""
     queries = plan.get("queries") if isinstance(plan.get("queries"), list) else []
     status = result.get("evidenceStatus") if isinstance(result.get("evidenceStatus"), dict) else {}
+    temporal_contract = web_research_temporal_contract(user_message, plan)
+    obligations = _structured_research_obligations(plan)
+    review_was_applied = any(
+        key in plan for key in ("planIssues", "entityFindings", "evidenceInterpretation")
+    )
+    # The main model can request one search before it has emitted a structured
+    # fact plan. A relevant first page is not enough to infer that all of the
+    # user's requested fields were covered, so give the reviewer one bounded
+    # opportunity to select detail links or queue a missing query. This marker
+    # is limited to the shortcut path; normal single-concept plans keep their
+    # existing fast path.
+    unstructured_model_shortcut = bool(
+        str(plan.get("plannedBy") or "") == "query_loop_main_model"
+        and not obligations
+        and queries
+        and not review_was_applied
+    )
+    multiple_explicit_obligations = len(obligations) > 1 and not review_was_applied
     return bool(
         len(queries) > 1
         or plan.get("ambiguities")
         or (bool(status) and not status.get("sufficient"))
-        or bool(web_search_freshness(
-            f"{plan.get('_originalResolvedQuestion') or plan.get('resolvedQuestion') or ''} {user_message}"
-        ))
+        or bool(temporal_contract.get("requiresFreshnessEvidence"))
+        or multiple_explicit_obligations
+        or unstructured_model_shortcut
         or is_external_fact_correction_followup(user_message, messages)
         or re.search(
             r"哪个|哪一个|谁|孰|相比|比较|对比|区别|差异|强弱|优劣|"
@@ -102,19 +176,34 @@ def normalize_web_research_review(
             f"{corrected} {evidence_interpretation}",
             require_overlap=False,
         )
+        if not query and is_retrieval_diagnostic_query(raw_query):
+            # A malformed review must not become an outbound request.  Keep a
+            # provider/locale route change useful by rebuilding a conservative
+            # query from the user's own subject; the discarded report text is
+            # never used as query material.
+            query = safe_planned_web_query(
+                web_research_anchor(user_message, corrected),
+                user_message,
+                corrected,
+                require_overlap=True,
+            )
         if not query:
             continue
+        strategy = normalize_research_query_strategy(item)
         if any(
             str(existing.get("query") or "").casefold() == query.casefold()
+            and normalize_research_query_strategy(existing) == strategy
             for existing in [*plan.get("queries", []), *additional]
             if isinstance(existing, dict)
         ):
             continue
-        purpose = str(item.get("purpose") or "") if isinstance(item, dict) else ""
-        additional.append({
+        reason_field, reason = query_reason_field(item, "补足首轮证据缺口")
+        additional_item = {
             "query": query,
-            "purpose": re.sub(r"\s+", " ", purpose).strip()[:160] or "补足首轮证据缺口",
-        })
+            reason_field: reason,
+        }
+        additional_item.update(strategy)
+        additional.append(additional_item)
         if len(additional) >= 2:
             break
     plan_issues = [
@@ -122,37 +211,6 @@ def normalize_web_research_review(
         for item in (parsed.get("planIssues") if isinstance(parsed.get("planIssues"), list) else [])
         if str(item).strip()
     ][:6]
-    unsupported_mapping = any(
-        re.search(r"未.{0,12}支持|没有.{0,12}支持|需确认|错误|不一致|指向别", issue)
-        for issue in plan_issues
-    )
-    if unsupported_mapping:
-        # When the review says the first entity mapping was unsupported, go
-        # back to the user's own umbrella term. Using the review's corrected
-        # guess here would merely search that second guess more confidently.
-        anchor = web_research_anchor(user_message)
-        existing_queries = [
-            str(item.get("query") or "")
-            for item in [*plan.get("queries", []), *additional]
-            if isinstance(item, dict)
-        ]
-        if anchor and not any(
-            anchor in query and re.search(r"指谁|是谁|含义|所指|出处|作品|称号|身份", query, flags=re.I)
-            for query in existing_queries
-        ):
-            discovery_query = safe_planned_web_query(
-                f"{anchor} 指谁 含义 对象",
-                user_message,
-                corrected,
-                require_overlap=True,
-            )
-            if discovery_query:
-                additional.insert(0, {
-                    "query": discovery_query,
-                    "purpose": "回到用户原始术语确认实际所指，避免继续验证首轮猜测",
-                })
-                additional = additional[:2]
-        corrected = original_resolved
     entity_findings = [
         re.sub(r"\s+", " ", str(item)).strip()[:180]
         for item in (parsed.get("entityFindings") if isinstance(parsed.get("entityFindings"), list) else [])
@@ -168,9 +226,9 @@ def normalize_web_research_review(
         if isinstance(source, dict)
     ]
     available_urls = {
-        canonicalize_public_url(str(source.get("url") or "").strip())
+        url
         for source in review_sources
-        if str(source.get("url") or "").strip()
+        for url in _source_available_urls(source)
     }
     source_by_id = {
         str(source.get("id") or ""): source
@@ -252,7 +310,7 @@ def normalize_web_research_review(
     if temporal_required and not temporal_coverage_complete:
         plan_issues.append("temporal_coverage_unresolved")
         plan_issues = unique_strings(plan_issues)[:6]
-    read_urls: list[dict[str, str]] = []
+    read_urls: list[dict[str, Any]] = []
     for item in (
         parsed.get("readUrls")
         if isinstance(parsed.get("readUrls"), list)
@@ -260,18 +318,29 @@ def normalize_web_research_review(
     ):
         raw_url = item.get("url") if isinstance(item, dict) else item
         try:
-            url = canonicalize_public_url(str(raw_url or "").strip())
+            raw_url_text = str(raw_url or "").strip()
+            parsed_url = urllib.parse.urlsplit(raw_url_text)
+            if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
+                continue
+            url = canonicalize_public_url(raw_url_text)
         except (SafeWebError, ValueError, TypeError):
             continue
-        if not url or url not in available_urls:
+        if not url:
             continue
         if any(existing["url"] == url for existing in read_urls):
             continue
-        purpose = str(item.get("purpose") or "") if isinstance(item, dict) else ""
-        read_urls.append({
-            "url": url,
-            "purpose": re.sub(r"\s+", " ", purpose).strip()[:160] or "读取高价值来源正文",
-        })
+        reason_field, reason = query_reason_field(item, "读取高价值来源正文")
+        read_item: dict[str, Any] = {"url": url, reason_field: reason}
+        if url not in available_urls:
+            # A model may know a public entry point even when the search
+            # adapter returned no usable source row.  Keep it as an explicit
+            # next-step candidate, never as already-observed evidence.  The
+            # URL is still HTTP(S)-checked and canonicalized here; the
+            # existing read tool performs public-address validation before it
+            # opens the page. Do not extract or construct URLs from prose.
+            read_item["candidate"] = True
+            read_item["sourceStatus"] = "candidate"
+        read_urls.append(read_item)
         if len(read_urls) >= 2:
             break
     for source_id in sorted(remaining_unresolved):
@@ -298,7 +367,7 @@ def normalize_web_research_review(
         ),
         "correctedResolvedQuestion": corrected,
         "evidenceInterpretation": evidence_interpretation,
-        "entityFindings": [] if unsupported_mapping else entity_findings,
+        "entityFindings": entity_findings,
         "planIssues": plan_issues,
         "temporalAssessment": temporal_assessment,
         "readUrls": read_urls,

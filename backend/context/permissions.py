@@ -37,10 +37,15 @@ class PermissionContext:
         else:
             lines.append("- 摄像头权限：未授予。不要声称通过摄像头看到用户。")
         if settings.get("permissionWebSearch"):
+            providers = ["duckduckgo", "yahoo", "wikipedia"]
+            if str(settings.get("webSearchApiKey") or "").strip():
+                providers.append("brave")
             lines.append(
-                "- 在线搜索权限：已授予。遇到依赖最新或实时事实的问题可调用 web_search；"
-                "遇到用户明确给出的公网 URL 可调用 read_web_page。最终回答用实际页面标题和 URL 引用后端来源；若沿用 [S1] 等标签，不得重排编号。"
+                "- 在线搜索权限：已授予。用户要求查证资料或需要最新事实时调用 web_search；"
+                "read_web_page 可读取用户给出的、搜索找到的或网页中链接的公网 URL。最终回答用实际页面标题和 URL 引用后端来源；若沿用 [S1] 等标签，不得重排编号。"
             )
+            lines.append("- 本轮可选搜索 provider：" + ", ".join(providers)
+                         + "；省略 provider 使用配置的搜索入口。duckduckgo 入口会自动尝试可用的备用搜索线路。")
         else:
             lines.append("- 在线搜索权限：未授予。不要声称已经联网搜索或读取网页。")
         workspace = str(settings.get("agentFileWorkspace") or self.defaults()["agentFileWorkspace"])

@@ -15,6 +15,18 @@ from agent.research_architecture import extract_latin_entities
 from backend.common.text import unique_strings
 from backend.research.query import research_source_policy_id
 from tools.safe_web import canonicalize_public_url
+from tools.web_source_registry import (
+    KNOWN_OFFICIAL_WEB_ROOTS,
+    known_official_web_domain,
+)
+
+
+_READABLE_FETCH_STATUSES = frozenset({"success", "partial", "ok", "fetched"})
+_FAILED_FETCH_STATUSES = frozenset({
+    "captcha", "blocked", "login_required", "paywalled",
+    "js_required", "non_content", "failed", "fetch_error",
+})
+_PENDING_FETCH_STATUSES = frozenset({"", "not_fetched", "pending"})
 
 
 def stable_source_uid(url: str) -> str:
@@ -43,33 +55,20 @@ def official_entity_search_terms(
     )
 
 
-KNOWN_OFFICIAL_WEB_ROOTS = frozenset({
-    "adobe.com",
-    "android.com",
-    "apache.org",
-    "apple.com",
-    "deepseek.com",
-    "docker.com",
-    "go.dev",
-    "google.com",
-    "kubernetes.io",
-    "microsoft.com",
-    "mozilla.org",
-    "nodejs.org",
-    "npmjs.com",
-    "openai.com",
-    "oracle.com",
-    "python.org",
-    "pytorch.org",
-    "rust-lang.org",
-    "tensorflow.org",
-})
-
-
-def known_official_web_domain(domain: str) -> bool:
-    """判断域名是否属于固定的官方根域名集合。"""
-    value = str(domain or "").strip(".").lower()
-    return any(value == root or value.endswith(f".{root}") for root in KNOWN_OFFICIAL_WEB_ROOTS)
+def source_fetch_state(source: dict[str, Any]) -> str:
+    """将来源抓取状态归一为 pending、success、failed 或 unknown。"""
+    fetch_status = str(source.get("fetchStatus") or "").strip().lower()
+    if fetch_status in _READABLE_FETCH_STATUSES:
+        return "success"
+    if fetch_status in _FAILED_FETCH_STATUSES:
+        return "failed"
+    if fetch_status in _PENDING_FETCH_STATUSES:
+        # A body without an explicit status is the shape used by older callers
+        # for an already-read page, so retain its readable evidence state.
+        if not fetch_status and len(str(source.get("body") or "").strip()) >= 120:
+            return "success"
+        return "pending"
+    return "unknown"
 
 
 def classify_web_source(
@@ -172,10 +171,7 @@ def classify_web_source(
     elif re.search(r"百科|wikipedia|新闻|news|媒体|magazine", identity, re.I):
         source_type, tier = "secondary_reference", "B"
     fetch_status = str(item.get("fetchStatus") or "").strip().lower()
-    if fetch_status in {
-        "captcha", "blocked", "login_required", "paywalled",
-        "js_required", "non_content", "failed", "fetch_error",
-    }:
+    if fetch_status in _FAILED_FETCH_STATUSES:
         tier = "D"
         quality_flags.append(fetch_status)
     if item.get("promptInjectionMarkers"):
@@ -227,18 +223,10 @@ def enrich_web_sources(
 
 def source_has_readable_evidence(source: dict[str, Any]) -> bool:
     """只接受已读取且达到正文长度门槛的来源证据。"""
-    fetch_status = str(source.get("fetchStatus") or "").strip().lower()
-    if fetch_status in {
-        "captcha", "blocked", "login_required", "paywalled",
-        "js_required", "non_content", "failed", "fetch_error",
-    }:
-        return False
     body = str(source.get("body") or "").strip()
-    if fetch_status:
-        return fetch_status in {"success", "partial", "ok", "fetched"} and len(body) >= 120
     # A provider snippet is discovery metadata, not proof that the page was
-    # read.  Only a substantive fetched body can cross the evidence gate.
-    return len(body) >= 120
+    # read. Only a substantive successful fetch can cross the evidence gate.
+    return source_fetch_state(source) == "success" and len(body) >= 120
 
 
 def source_satisfies_policy(source: dict[str, Any], policy_id: str) -> bool:
@@ -276,6 +264,7 @@ __all__ = [
     "known_official_web_domain",
     "official_entity_search_terms",
     "source_has_readable_evidence",
+    "source_fetch_state",
     "source_satisfies_policy",
     "stable_source_uid",
 ]

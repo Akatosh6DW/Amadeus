@@ -364,7 +364,11 @@ def build_fast_stream_messages(
                 },
                 ensure_ascii=False,
             )
-            + "\nresearch_policy=allowed 且知识信心不足时必须输出 research_escalation，不能把不确定的外部事实写成 FinalAnswer。research_policy=forbidden 时不得联网升级。",
+            + (
+                "\n联网工具按用户请求与信息需要选择，用 kind=tool_use 和 calls 调用；取得结果后继续同一工具循环。research_policy=forbidden 时不得联网。"
+                if services.context.cognitive_turn_state(body)
+                else "\nresearch_policy=allowed 且知识信心不足时必须输出 research_escalation，不能把不确定的外部事实写成 FinalAnswer。research_policy=forbidden 时不得联网升级。"
+            ),
         }
     )
     attachment_binding = services.prompts.current_turn_attachment_binding_prompt(body)

@@ -2,6 +2,14 @@
 
 Amadeus由原创代码和多个独立第三方组件组成。根目录的 MIT 许可证（`LICENSE`）只适用于项目维护者有权授权的原创部分。
 
+## DDGS
+
+- Project: <https://github.com/deedy5/ddgs>
+- Version: 9.16.0
+- License: MIT
+
+用于公开网页搜索；其依赖随 Python 环境安装，许可证保留在安装包中。
+
 ## GPT-SoVITS
 
 - Project: <https://github.com/RVC-Boss/GPT-SoVITS>

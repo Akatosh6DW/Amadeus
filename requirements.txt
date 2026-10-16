@@ -2,3 +2,5 @@ pywebview>=6.2.1
 Pillow>=10.0
 pypdf>=5.0
 tzdata>=2025.2
+ddgs==9.16.0
+certifi>=2025.1.31

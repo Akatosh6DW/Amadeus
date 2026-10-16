@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Bounded web search and page reading for AMADEUS.
 
-The network boundary in this module deliberately does less than a browser: it
-accepts public HTTP(S) text resources, pins DNS results for each connection,
-revalidates every redirect, and never executes active content.
+The network boundary accepts public HTTP(S) text resources, pins DNS results
+for direct connections, supports the user's system HTTP proxy, revalidates
+every redirect, and never executes active content.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import http.client
 import ipaddress
+import io
 import json
 import re
 import socket
@@ -19,16 +21,30 @@ import ssl
 import threading
 import time
 import urllib.parse
+import urllib.request
 import zlib
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from typing import Any
 
+import certifi
+
+from tools.web_source_registry import known_official_web_domain
+from tools import metasearch
+from tools.web_links import MAX_WEB_LINK_CANDIDATES, compact_web_links, extract_markdown_links
+from tools.web_text import project_web_text
+from tools.web_page_cache import PageReadCache
+
 
 USER_AGENT = "AMADEUS-Research/1.0 (+local desktop assistant)"
-MAX_WIRE_BYTES = 2 * 1024 * 1024
-MAX_TEXT_BYTES = 2 * 1024 * 1024
+# Official specifications and PDF reports regularly exceed 2 MiB. Bound the
+# download independently of the much smaller text passed to the model.
+MAX_WIRE_BYTES = 20 * 1024 * 1024
+MAX_TEXT_BYTES = 20 * 1024 * 1024
 MAX_PAGE_CHARS = 14_000
+PAGE_ACCEPT = "text/markdown,text/html;q=0.9,application/xhtml+xml;q=0.9,text/plain;q=0.9,application/json;q=0.8,application/pdf;q=0.8"
 MAX_REDIRECTS = 3
 TRACKING_QUERY_KEYS = {
     "fbclid",
@@ -45,6 +61,7 @@ ALLOWED_CONTENT_TYPES = {
     "text/plain",
     "text/markdown",
     "application/json",
+    "application/pdf",
 }
 BLOCKED_HOST_SUFFIXES = (
     ".local",
@@ -55,6 +72,8 @@ BLOCKED_HOST_SUFFIXES = (
 )
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = threading.Lock()
+_PAGE_CACHE = PageReadCache()
+_PROVIDER_RETRY_AFTER: dict[tuple[str, str], float] = {}
 SUPPORTED_FRESHNESS = frozenset({"pd", "pw", "pm", "py"})
 DUCKDUCKGO_DATE_FILTER = {"pd": "d", "pw": "w", "pm": "m", "py": "y"}
 
@@ -69,6 +88,13 @@ class UnsafeUrlError(SafeWebError):
 
 class ResponseLimitError(SafeWebError):
     """The remote response exceeded a configured safety bound."""
+
+
+def _remaining_time(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SafeWebError("网页请求超过总等待时限")
+    return remaining
 
 
 def canonicalize_public_url(url: str) -> str:
@@ -98,20 +124,30 @@ def canonicalize_public_url(url: str) -> str:
     )
 
 
-def page_access_status(text: str) -> str:
+def page_access_status(text: str, *, title: str = "") -> str:
     """Classify common non-content pages that may still return HTTP 200."""
 
     compact = re.sub(r"\s+", " ", str(text or "")).strip().lower()
-    if re.search(r"enable javascript|javascript (?:is )?required|请启用\s*javascript", compact):
-        return "js_required"
-    if re.search(r"captcha|robot check|verify you are human|人机验证|验证码", compact):
-        return "captcha"
-    if re.search(r"access denied|request blocked|forbidden|访问被拒绝|拒绝访问", compact):
+    heading = re.sub(r"\s+", " ", str(title or "")).strip().lower()
+    # A document can discuss 403 Forbidden, CAPTCHAs or paywalls. These words
+    # anywhere in an article are not evidence that the article failed to load.
+    if re.fullmatch(r"(?:error\s*[: -]?\s*)?(?:403\s*[-:]?\s*)?(?:forbidden|access denied|request blocked|访问被拒绝|拒绝访问)[.!。]?", heading):
         return "blocked"
-    if re.search(r"please log in|sign in to continue|登录后(?:查看|继续)|请先登录", compact):
-        return "login_required"
-    if re.search(r"subscribe to (?:read|continue)|paywall|付费后阅读|订阅后阅读", compact):
-        return "paywalled"
+    if len(compact) > 4000:
+        return "success"
+    opening = compact[:800]
+    patterns = (
+        ("js_required", r"(?:please )?enable javascript|javascript (?:is )?required|请启用\s*javascript"),
+        ("captcha", r"verify (?:that )?you are (?:a )?human|robot check|(?:complete|solve|enter) (?:the |a )?captcha|请.{0,12}(?:人机验证|验证码)"),
+        ("blocked", r"(?:error\s*[: -]?\s*)?(?:403\s*[-:]?\s*)?(?:forbidden|access denied|request blocked|访问被拒绝|拒绝访问)(?:[.!。:]|$)"),
+        ("login_required", r"please log in|sign in to continue|登录后(?:查看|继续)|请先登录"),
+        ("paywalled", r"subscribe to (?:read|continue)|付费后阅读|订阅后阅读"),
+    )
+    for status, pattern in patterns:
+        if re.match(pattern, opening, flags=re.I):
+            return status
+        if heading in {"just a moment...", "attention required!", "security verification"} and re.search(pattern, opening, flags=re.I):
+            return status
     return "success"
 
 
@@ -193,14 +229,100 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         self.sock = socket.create_connection((self._address, self.port), self.timeout)
 
 
+def _web_tls_context() -> ssl.SSLContext:
+    # Keep the OS trust store (including user-installed proxy certificates),
+    # and supplement it with Mozilla roots for incomplete Windows/Conda stores.
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, host: str, address: str, port: int, timeout: float):
-        super().__init__(host, port=port, timeout=timeout, context=ssl.create_default_context())
+        super().__init__(host, port=port, timeout=timeout, context=_web_tls_context())
         self._address = address
 
     def connect(self) -> None:
+        deadline = time.monotonic() + self.timeout
         raw = socket.create_connection((self._address, self.port), self.timeout)
-        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        try:
+            raw.settimeout(_remaining_time(deadline))
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except BaseException:
+            raw.close()
+            raise
+
+
+def _system_proxy_for(url: str) -> urllib.parse.SplitResult | None:
+    """Read the current environment/Windows proxy, including bypass rules.
+
+    Do not cache this: toggling the desktop proxy should affect the next request.
+    The proxy is a user-configured transport, so its local address/port is not
+    subject to the public *destination* URL restrictions.
+    """
+    target = urllib.parse.urlsplit(url)
+    proxies = urllib.request.getproxies()
+    raw = str(proxies.get(target.scheme) or proxies.get("all") or "").strip()
+    if not raw or urllib.request.proxy_bypass(target.hostname or ""):
+        return None
+    try:
+        proxy = urllib.parse.urlsplit(raw if "://" in raw else "http://" + raw)
+        port = 80 if proxy.port is None else proxy.port
+        if proxy.scheme != "http" or not proxy.hostname or not 0 < port <= 65535:
+            raise ValueError("unsupported proxy")
+    except ValueError as error:
+        raise SafeWebError("网页搜索需要 HTTP 代理地址；可使用代理软件的 HTTP/混合端口") from error
+    return proxy
+
+
+def _proxy_request(
+    proxy: urllib.parse.SplitResult,
+    target: urllib.parse.SplitResult,
+    *,
+    path: str,
+    method: str,
+    body: bytes | None,
+    headers: dict[str, str],
+    timeout: float,
+) -> tuple[int, dict[str, str], bytes]:
+    """Use a trusted HTTP proxy; HTTPS CONNECT retains hostname TLS checks.
+
+    The destination has already passed public URL validation. The configured
+    proxy resolves its hostname, rather than reusing potentially polluted local
+    public DNS answers. Direct connections retain IP pinning.
+    """
+    deadline = time.monotonic() + timeout
+    host = (target.hostname or "").encode("idna").decode("ascii")
+    proxy_headers: dict[str, str] = {}
+    if proxy.username is not None:
+        credentials = f"{urllib.parse.unquote(proxy.username)}:{urllib.parse.unquote(proxy.password or '')}"
+        proxy_headers["Proxy-Authorization"] = "Basic " + base64.b64encode(credentials.encode()).decode("ascii")
+    request_headers = dict(headers)
+    # Proxy credentials belong only to the proxy, never the destination server.
+    request_headers = {k: v for k, v in request_headers.items() if k.lower() != "proxy-authorization"}
+    if target.scheme == "https":
+        connection = http.client.HTTPSConnection(
+            proxy.hostname, proxy.port or 80, timeout=timeout,
+            context=_web_tls_context(),
+        )
+        connection.set_tunnel(host, target.port or 443, headers=proxy_headers)
+    else:
+        connection = http.client.HTTPConnection(proxy.hostname, proxy.port or 80, timeout=timeout)
+        request_headers.update(proxy_headers)
+        authority = f"[{host}]" if ":" in host else host
+        if target.port:
+            authority += f":{target.port}"
+        path = f"http://{authority}{path}"
+    try:
+        return _read_connection_response(
+            connection, method=method, path=path, body=body, headers=request_headers,
+            deadline=deadline,
+        )
+    except (OSError, http.client.HTTPException) as error:
+        # Do not include proxy URLs/passwords or silently bypass an enabled proxy.
+        raise SafeWebError(f"经代理访问网页失败（{type(error).__name__}）；请检查代理线路或稍后重试") from error
+    finally:
+        connection.close()
 
 
 def _socket_permission_denied(error: BaseException | None) -> bool:
@@ -285,18 +407,24 @@ class _ValidatedHostHTTPSConnection(http.client.HTTPSConnection):
             host,
             port=port,
             timeout=timeout,
-            context=ssl.create_default_context(),
+            context=_web_tls_context(),
         )
         self._addresses = tuple(addresses)
 
     def connect(self) -> None:
+        deadline = time.monotonic() + self.timeout
         raw = _validated_hostname_socket(
             self.host,
             self.port,
             self.timeout,
             self._addresses,
         )
-        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        try:
+            raw.settimeout(_remaining_time(deadline))
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except BaseException:
+            raw.close()
+            raise
 
 
 def _read_connection_response(
@@ -306,20 +434,40 @@ def _read_connection_response(
     path: str,
     body: bytes | None,
     headers: dict[str, str],
+    deadline: float | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
+    response: http.client.HTTPResponse | None = None
+
+    def update_timeout() -> None:
+        if deadline is not None:
+            connection.timeout = _remaining_time(deadline)
+            sock = getattr(connection, "sock", None)
+            if sock is None and response is not None:
+                # HTTPConnection releases its socket after Connection: close
+                # headers, but HTTPResponse still owns the buffered reader.
+                stream = getattr(response, "fp", None)
+                sock = getattr(getattr(stream, "raw", None), "_sock", None)
+            if sock is not None:
+                sock.settimeout(connection.timeout)
+
+    update_timeout()
     connection.request(method, path, body=body, headers=headers)
+    update_timeout()
     response = connection.getresponse()
     response_headers = {key.lower(): value for key, value in response.getheaders()}
     chunks: list[bytes] = []
     total = 0
     while True:
-        chunk = response.read(min(65_536, MAX_WIRE_BYTES + 1 - total))
+        update_timeout()
+        # read1 returns after one underlying read, so a slowly trickling body
+        # cannot reset the complete request budget for every incoming packet.
+        chunk = getattr(response, "read1", response.read)(min(65_536, MAX_WIRE_BYTES + 1 - total))
         if not chunk:
             break
         chunks.append(chunk)
         total += len(chunk)
         if total > MAX_WIRE_BYTES:
-            raise ResponseLimitError("网页响应超过 2 MB 限制")
+            raise ResponseLimitError(f"网页响应超过 {MAX_WIRE_BYTES // (1024 * 1024)} MiB 限制")
     return (
         response.status,
         response_headers,
@@ -338,7 +486,7 @@ def _decode_bounded(payload: bytes, encoding: str) -> bytes:
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
         decoded = decoder.decompress(payload, MAX_TEXT_BYTES + 1)
         if len(decoded) > MAX_TEXT_BYTES:
-            raise ResponseLimitError("网页解压后超过 2 MB 限制")
+            raise ResponseLimitError(f"网页解压后超过 {MAX_TEXT_BYTES // (1024 * 1024)} MiB 限制")
         decoded += decoder.flush(MAX_TEXT_BYTES + 1 - len(decoded))
     elif normalized == "deflate":
         try:
@@ -350,7 +498,7 @@ def _decode_bounded(payload: bytes, encoding: str) -> bytes:
     else:
         raise SafeWebError(f"不支持网页压缩格式：{normalized}")
     if len(decoded) > MAX_TEXT_BYTES:
-        raise ResponseLimitError("网页解压后超过 2 MB 限制")
+        raise ResponseLimitError(f"网页解压后超过 {MAX_TEXT_BYTES // (1024 * 1024)} MiB 限制")
     return decoded
 
 
@@ -362,6 +510,7 @@ def _request_once(
     headers: dict[str, str],
     timeout: float,
 ) -> tuple[int, dict[str, str], bytes]:
+    deadline = time.monotonic() + timeout
     parsed, addresses = validate_public_url(url)
     host = (parsed.hostname or "").encode("idna").decode("ascii")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -384,14 +533,21 @@ def _request_once(
         "Connection": "close",
         **headers,
     }
+    proxy = _system_proxy_for(url)
+    if proxy is not None:
+        return _proxy_request(
+            proxy, parsed, path=path, method=method, body=body,
+            headers=request_headers, timeout=_remaining_time(deadline),
+        )
     last_error: Exception | None = None
     permission_denied = False
     for address in addresses:
+        remaining = _remaining_time(deadline)
         connection: http.client.HTTPConnection
         if parsed.scheme == "https":
-            connection = _PinnedHTTPSConnection(host, address, port, timeout)
+            connection = _PinnedHTTPSConnection(host, address, port, remaining)
         else:
-            connection = _PinnedHTTPConnection(host, address, port, timeout)
+            connection = _PinnedHTTPConnection(host, address, port, remaining)
         try:
             return _read_connection_response(
                 connection,
@@ -399,6 +555,7 @@ def _request_once(
                 path=path,
                 body=body,
                 headers=request_headers,
+                deadline=deadline,
             )
         except (OSError, ssl.SSLError, http.client.HTTPException) as error:
             last_error = error
@@ -406,16 +563,17 @@ def _request_once(
         finally:
             connection.close()
     if permission_denied:
+        remaining = _remaining_time(deadline)
         if parsed.scheme == "https":
             hostname_connection: http.client.HTTPConnection = (
-                _ValidatedHostHTTPSConnection(host, addresses, port, timeout)
+                _ValidatedHostHTTPSConnection(host, addresses, port, remaining)
             )
         else:
             hostname_connection = _ValidatedHostHTTPConnection(
                 host,
                 addresses,
                 port,
-                timeout,
+                remaining,
             )
         try:
             return _read_connection_response(
@@ -424,6 +582,7 @@ def _request_once(
                 path=path,
                 body=body,
                 headers=request_headers,
+                deadline=deadline,
             )
         except UnsafeUrlError:
             raise
@@ -441,19 +600,21 @@ def safe_http_request(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 12,
+    allow_http_redirects: bool = False,
 ) -> dict[str, Any]:
     """Fetch a bounded public text response with redirect revalidation."""
 
     current = str(url or "").strip()
     current_method = method.upper()
     current_body = body
+    deadline = time.monotonic() + max(0.05, min(float(timeout), 30.0))
     for redirect_count in range(MAX_REDIRECTS + 1):
         status, response_headers, payload = _request_once(
             current,
             method=current_method,
             body=current_body,
             headers=dict(headers or {}),
-            timeout=max(2.0, min(float(timeout), 30.0)),
+            timeout=_remaining_time(deadline),
         )
         if status in {301, 302, 303, 307, 308}:
             if redirect_count >= MAX_REDIRECTS:
@@ -462,7 +623,7 @@ def safe_http_request(
             if not location:
                 raise SafeWebError("网页返回了无目标重定向")
             redirected = urllib.parse.urljoin(current, location)
-            if urllib.parse.urlsplit(current).scheme == "https" and urllib.parse.urlsplit(redirected).scheme == "http":
+            if not allow_http_redirects and urllib.parse.urlsplit(current).scheme == "https" and urllib.parse.urlsplit(redirected).scheme == "http":
                 raise UnsafeUrlError("拒绝从 HTTPS 降级重定向到 HTTP")
             current = redirected
             validate_public_url(current)
@@ -485,31 +646,110 @@ def safe_http_request(
 
 
 class _ReadableHtmlParser(HTMLParser):
-    BLOCK_TAGS = {"p", "div", "article", "section", "main", "li", "h1", "h2", "h3", "h4", "blockquote", "br"}
+    BLOCK_TAGS = {"p", "div", "article", "section", "main", "li", "h1", "h2", "h3", "h4", "blockquote", "br", "table", "tr"}
     SKIP_TAGS = {"script", "style", "noscript", "svg", "canvas", "form", "nav", "footer", "template"}
+    VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
+        self.links: list[dict[str, str]] = []
         self._skip_depth = 0
         self._in_title = False
+        self._tables: list[dict[str, Any]] = []
+        self._header_parts: list[str] | None = None
+        self._active_link: dict[str, Any] | None = None
+        self._tag_stack: list[tuple[str, bool]] = []
+        self._content_depth = 0
+        self._content_link_count = 0
+        self._other_link_count = 0
+
+    def _finish_link(self) -> None:
+        link = self._active_link
+        self._active_link = None
+        if not link:
+            return
+        label = re.sub(r"\s+", " ", " ".join(link.get("parts") or [])).strip()
+        href = str(link.get("href") or "").strip()
+        content_priority = bool(self._content_depth)
+        candidate_count = self._content_link_count if content_priority else self._other_link_count
+        if label and href and candidate_count < MAX_WEB_LINK_CANDIDATES:
+            self.links.append({
+                "text": label,
+                "url": href,
+                "_contentPriority": "1" if content_priority else "0",
+            })
+            if content_priority:
+                self._content_link_count += 1
+            else:
+                self._other_link_count += 1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         if tag in self.SKIP_TAGS:
             self._skip_depth += 1
+        attributes = dict(attrs)
+        role_tokens = str(attributes.get("role") or "").lower().split()
+        content_region = tag in {"main", "article"} or "main" in role_tokens
+        if tag not in self.VOID_TAGS:
+            self._tag_stack.append((tag, content_region))
+        if content_region:
+            self._content_depth += 1
+        if not self._skip_depth and tag == "a":
+            self._finish_link()
+            href = attributes.get("href")
+            self._active_link = {"href": str(href or "").strip(), "parts": []}
         if tag == "title":
             self._in_title = True
+        if not self._skip_depth and tag == "table":
+            self._tables.append({"headers": [], "column": 0, "simple": True})
+        if not self._skip_depth and self._tables:
+            table = self._tables[-1]
+            if tag == "tr":
+                table["column"] = 0
+            if tag in {"td", "th"}:
+                attributes = dict(attrs)
+                if any(str(attributes.get(key) or "1") != "1" for key in ("colspan", "rowspan")):
+                    table["simple"] = False
+                if tag == "th":
+                    if table["column"] == 0 and table["headers"]:
+                        table["simple"] = False
+                    self._header_parts = []
         if not self._skip_depth and tag in self.BLOCK_TAGS:
             self.text_parts.append("\n")
+        if not self._skip_depth and tag in {"td", "th"}:
+            self.text_parts.append(" | ")
+            if tag == "td" and self._tables:
+                table = self._tables[-1]
+                if table["simple"] and table["column"] < len(table["headers"]):
+                    self.text_parts.append(table["headers"][table["column"]] + ": ")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag == "a":
+            self._finish_link()
+        for index in range(len(self._tag_stack) - 1, -1, -1):
+            if self._tag_stack[index][0] == tag:
+                closed = self._tag_stack[index:]
+                del self._tag_stack[index:]
+                self._content_depth = max(
+                    0,
+                    self._content_depth - sum(1 for _, is_content in closed if is_content),
+                )
+                break
         if tag == "title":
             self._in_title = False
         if tag in self.SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
+        if not self._skip_depth and self._tables:
+            if tag == "th" and self._header_parts is not None:
+                self._tables[-1]["headers"].append(" ".join(self._header_parts))
+                self._header_parts = None
+            if tag in {"td", "th"}:
+                self._tables[-1]["column"] += 1
+            if tag == "table":
+                self._tables.pop()
         if not self._skip_depth and tag in self.BLOCK_TAGS:
             self.text_parts.append("\n")
 
@@ -521,10 +761,37 @@ class _ReadableHtmlParser(HTMLParser):
             return
         if self._in_title:
             self.title_parts.append(cleaned)
+        if self._header_parts is not None:
+            self._header_parts.append(cleaned)
+        if self._active_link is not None:
+            self._active_link["parts"].append(cleaned)
         self.text_parts.append(cleaned + " ")
 
 
-def extract_readable_text(payload: bytes, content_type: str, charset_hint: str = "") -> tuple[str, str]:
+def extract_readable_document(
+    payload: bytes,
+    content_type: str,
+    charset_hint: str = "",
+    *,
+    base_url: str = "",
+    max_chars: int = MAX_PAGE_CHARS,
+) -> tuple[str, str, list[dict[str, str]]]:
+    if content_type == "application/pdf":
+        from pypdf import PdfReader
+        try:
+            reader = PdfReader(io.BytesIO(payload))
+            title = str((reader.metadata or {}).get("/Title") or "")[:300]
+            parts: list[str] = []
+            size = 0
+            for page in reader.pages[:100]:
+                text = page.extract_text() or ""
+                parts.append(text)
+                size += len(text)
+                if size >= max_chars:
+                    break
+            return title, "\n\n".join(parts)[:max_chars], []
+        except Exception as error:
+            raise SafeWebError(f"PDF 正文提取失败（{type(error).__name__}）") from error
     encodings = [charset_hint, "utf-8", "gb18030", "shift_jis", "latin-1"]
     text = ""
     for encoding in dict.fromkeys(item.strip() for item in encodings if item.strip()):
@@ -541,27 +808,75 @@ def extract_readable_text(payload: bytes, content_type: str, charset_hint: str =
             text = json.dumps(value, ensure_ascii=False, indent=2)
         except json.JSONDecodeError:
             pass
-        return "", text[:MAX_PAGE_CHARS]
+        return "", text[:max_chars], []
     if content_type in {"text/plain", "text/markdown"}:
-        return "", re.sub(r"\s+", " ", text).strip()[:MAX_PAGE_CHARS]
+        links = extract_markdown_links(text) if content_type == "text/markdown" else []
+        return "", re.sub(r"[^\S\n]+", " ", text).strip()[:max_chars], compact_web_links(
+            links, base_url=base_url,
+        )
     parser = _ReadableHtmlParser()
     parser.feed(text)
     title = re.sub(r"\s+", " ", " ".join(parser.title_parts)).strip()[:300]
     lines = [re.sub(r"\s+", " ", line).strip() for line in "".join(parser.text_parts).splitlines()]
-    readable = "\n".join(line for line in lines if len(line) >= 2)
-    return title, html.unescape(readable)[:MAX_PAGE_CHARS]
+    # These lines are HTML block boundaries, not typographic line wrapping.
+    # Retain them as paragraphs so later bounded projections keep complete
+    # clauses and table rows instead of flattening unrelated values together.
+    readable = "\n\n".join(line for line in lines if len(line) >= 2)
+    ordered_links = sorted(
+        parser.links,
+        key=lambda item: int(str(item.get("_contentPriority") or "0")),
+        reverse=True,
+    )
+    return title, html.unescape(readable)[:max_chars], compact_web_links(
+        ordered_links, base_url=base_url,
+    )
 
 
-def read_web_page(url: str, *, timeout: float = 12) -> dict[str, Any]:
-    response = safe_http_request(url, timeout=timeout)
+def extract_readable_text(
+    payload: bytes,
+    content_type: str,
+    charset_hint: str = "",
+    *,
+    max_chars: int = MAX_PAGE_CHARS,
+) -> tuple[str, str]:
+    """Backward-compatible text-only wrapper around document extraction."""
+
+    title, text, _links = extract_readable_document(
+        payload, content_type, charset_hint, max_chars=max_chars,
+    )
+    return title, text
+
+
+def _page_cache_ttl(headers: dict[str, str]) -> float:
+    control = str(headers.get("cache-control") or "").lower()
+    if re.search(r"(?:^|,)\s*(?:no-store|no-cache|private)\b", control):
+        return 0
+    ttl = 60.0
+    max_age = re.search(r'(?:^|,)\s*max-age\s*=\s*"?(\d+)', control)
+    if max_age:
+        try:
+            ttl = min(ttl, max(0, int(max_age.group(1)) - int(headers.get("age", "0"))))
+        except ValueError:
+            ttl = 0
+    return ttl
+
+
+def _load_web_page(url: str, *, timeout: float) -> dict[str, Any]:
+    # Sites that support content negotiation can supply their original Markdown
+    # directly. Other sites still return HTML/PDF through the same URL checks.
+    response = safe_http_request(url, timeout=timeout, headers={
+        "Accept": PAGE_ACCEPT, "Accept-Encoding": "gzip, deflate",
+    }, allow_http_redirects=True)  # Anonymous public pages may redirect through HTTP.
     content_header = response["headers"].get("content-type", "")
     charset_match = re.search(r"charset\s*=\s*['\"]?([^;'\"\s]+)", content_header, re.I)
-    title, text = extract_readable_text(
-        response["body"], response["contentType"], charset_match.group(1) if charset_match else ""
+    title, text, links = extract_readable_document(
+        response["body"], response["contentType"], charset_match.group(1) if charset_match else "",
+        base_url=response["url"],
+        max_chars=MAX_TEXT_BYTES,
     )
     if len(text) < 40:
         raise SafeWebError("网页没有提取出足够的可读正文")
-    fetch_status = page_access_status(text)
+    fetch_status = page_access_status(text, title=title)
     if fetch_status != "success":
         raise SafeWebError(f"网页正文不可用：{fetch_status}")
     parsed = urllib.parse.urlsplit(response["url"])
@@ -572,12 +887,38 @@ def read_web_page(url: str, *, timeout: float = 12) -> dict[str, Any]:
         "domain": parsed.hostname or "",
         "title": title or parsed.hostname or response["url"],
         "text": text,
+        "links": links,
         "accessedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "mimeType": response["contentType"],
         "fetchStatus": "success",
-        "truncated": len(text) >= MAX_PAGE_CHARS,
-        "promptInjectionMarkers": prompt_injection_markers(text),
+        "extractedChars": len(text),
+        "_cache_ttl": _page_cache_ttl(response["headers"]),
     }
+
+
+def read_web_page(url: str, *, timeout: float = 12, query: str = "") -> dict[str, Any]:
+    # Keep the complete extracted document in the cache. A follow-up query must
+    # be able to select a different section without downloading the URL again.
+    requested = str(url or "").strip()
+    identity = urllib.parse.urlsplit(requested)._replace(fragment="").geturl()
+    route_key = hashlib.sha256(json.dumps(urllib.request.getproxies(), sort_keys=True).encode()).hexdigest()
+    key = (identity, route_key, USER_AGENT, PAGE_ACCEPT)
+    try:
+        page, cache_hit = _PAGE_CACHE.get_or_load(
+            key, lambda: _load_web_page(requested, timeout=timeout), timeout=timeout,
+        )
+    except TimeoutError as error:
+        raise SafeWebError("等待共享网页读取超过总等待时限") from error
+    page.pop("_cache_ttl", None)
+    page["requestedUrl"] = requested
+    text = page["text"]
+    if len(text) > MAX_PAGE_CHARS:
+        text = project_web_text({"body": text}, query, max_chars=MAX_PAGE_CHARS, chunk_limit=10)["bodyExcerpt"]
+    page.update(
+        text=text, truncated=page["extractedChars"] > len(text),
+        promptInjectionMarkers=prompt_injection_markers(text), cacheHit=cache_hit,
+    )
+    return page
 
 
 class _DuckDuckGoParser(HTMLParser):
@@ -730,6 +1071,8 @@ def _search_duckduckgo(
     timeout: float,
     freshness: str = "",
 ) -> list[dict[str, str]]:
+    if metasearch.available():
+        return _search_maintained_engine(query, max_results, timeout, "duckduckgo", freshness)
     params = {"q": query, "kl": "wt-wt"}
     date_filter = DUCKDUCKGO_DATE_FILTER.get(str(freshness or "").strip().lower())
     if date_filter:
@@ -743,6 +1086,23 @@ def _search_duckduckgo(
     if not parser.results and ("anomaly.js" in content or "anomaly-modal" in content):
         raise SafeWebError("搜索服务要求验证码（captcha），尚未取得搜索结果")
     return parser.results[:max_results]
+
+
+def _search_maintained_engine(
+    query: str, max_results: int, timeout: float, engine: str, freshness: str = "",
+) -> list[dict[str, Any]]:
+    proxy = _system_proxy_for("https://html.duckduckgo.com/" if engine == "duckduckgo" else f"https://{engine}.com/")
+    try:
+        return metasearch.search(
+            query, engine=engine, max_results=max_results, timeout=timeout,
+            proxy=proxy.geturl() if proxy else None, freshness=freshness,
+        )
+    except (RuntimeError, ValueError) as error:
+        raise SafeWebError(str(error)) from error
+
+
+def _search_google(query: str, max_results: int, timeout: float) -> list[dict[str, Any]]:
+    return _search_maintained_engine(query, max_results, timeout, "google")
 
 
 class _BingParser(HTMLParser):
@@ -932,6 +1292,8 @@ class _YahooParser(HTMLParser):
 
 
 def _search_yahoo(query: str, max_results: int, timeout: float) -> list[dict[str, str]]:
+    if metasearch.available():
+        return _search_maintained_engine(query, max_results, timeout, "yahoo")
     url = "https://search.yahoo.com/search?" + urllib.parse.urlencode({
         "p": query,
         "n": max_results,
@@ -1020,9 +1382,11 @@ def _page_read_priority(
     domain = str(source.get("domain") or "").lower()
     title = str(source.get("title") or "").lower()
     score = -position * 0.05
+    official_bonus = 5.0 if known_official_web_domain(domain) else 0.0
+    score += official_bonus
     latin_terms = {item.lower() for item in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", query)}
     if any(term in domain for term in latin_terms):
-        score += 3.0
+        score += 3.0 if official_bonus else 0.5
     if re.search(r"(?:^|\.)(?:docs?|documentation|developer|developers|api-docs)[.-]", domain):
         score += 2.0
     if re.search(r"官方|official|documentation|docs", title, re.I):
@@ -1047,7 +1411,9 @@ def _page_read_priority(
             if age_days <= window_days:
                 score += 0.5 + 2.3 * (1.0 - min(1.0, age_days / window_days))
             else:
-                score -= 3.2
+                # A verified publisher does not make an out-of-window article
+                # the best first read for a request for current information.
+                score -= 3.2 + official_bonus
         except (TypeError, ValueError):
             # An unparsed date clue is useful to the reviewer but cannot be
             # treated as proof that the page falls inside the requested window.
@@ -1074,6 +1440,7 @@ def web_search(
     provider = str(provider or "duckduckgo").strip().lower()
     max_results = max(1, min(int(max_results), 8))
     read_top_pages = max(0, min(int(read_top_pages), 3, max_results))
+    route_key = hashlib.sha256(json.dumps(urllib.request.getproxies(), sort_keys=True).encode()).hexdigest()
     cache_key = json.dumps(
         [
             provider,
@@ -1085,6 +1452,8 @@ def web_search(
             region,
             source_policy_id,
             USER_AGENT,
+            # An old direct-route failure must not survive enabling a proxy.
+            route_key,
         ],
         ensure_ascii=False,
     )
@@ -1096,6 +1465,7 @@ def web_search(
             return cached_result
     provider_attempts: list[str] = []
     provider_errors: list[dict[str, str]] = []
+    skipped_providers: list[str] = []
     effective_provider = provider
     requested_freshness = str(freshness or "").strip().lower()
     if provider == "wikipedia":
@@ -1107,27 +1477,49 @@ def web_search(
     elif provider == "yahoo":
         provider_attempts.append("yahoo")
         raw_results = _search_yahoo(clean_query, max_results, timeout)
+    elif provider == "bing":
+        provider_attempts.append("bing")
+        raw_results = _search_bing(clean_query, max_results, timeout)
     elif provider == "duckduckgo":
         # The free release must work on networks where one public search host is
         # blocked. Keep the total search-stage deadline close to the configured
         # timeout and fail over to an independent endpoint before giving up.
         raw_results: list[dict[str, str]] = []
-        providers = [("duckduckgo", _search_duckduckgo)]
-        if re.search(r"[\u3400-\u9fff]", clean_query):
-            providers.append(("baidu", _search_baidu))
+        if metasearch.available():
+            providers = [("duckduckgo", _search_duckduckgo), ("yahoo", _search_yahoo), ("google", _search_google)]
+        else:
+            providers = [("duckduckgo", _search_duckduckgo), ("bing", _search_bing)]
+            if re.search(r"[\u3400-\u9fff]", clean_query):
+                providers.append(("baidu", _search_baidu))
             providers.append(("yahoo", _search_yahoo))
-        providers.append(("bing", _search_bing))
+        now = time.monotonic()
+        with _CACHE_LOCK:
+            expired = [key for key, retry_after in _PROVIDER_RETRY_AFTER.items() if retry_after <= now]
+            for key in expired:
+                del _PROVIDER_RETRY_AFTER[key]
+            available = [(name, fn) for name, fn in providers if (route_key, name) not in _PROVIDER_RETRY_AFTER]
+        # If every route failed, allow a recovery probe instead of locking out
+        # all search. Changing the system proxy naturally selects a new key.
+        if available:
+            available_names = {name for name, _ in available}
+            skipped_providers = [name for name, _ in providers if name not in available_names]
+            providers = available
+        search_deadline = time.monotonic() + max(0.05, min(float(timeout), 30.0))
         per_provider_timeout = max(
             3.0,
             min(7.0, float(timeout) / max(1, len(providers))),
         )
         for candidate, search_function in providers:
+            remaining = search_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            attempt_timeout = min(per_provider_timeout, remaining)
             provider_attempts.append(candidate)
             try:
                 candidate_results = (
-                    search_function(clean_query, max_results, per_provider_timeout, requested_freshness)
+                    search_function(clean_query, max_results, attempt_timeout, requested_freshness)
                     if candidate == "duckduckgo"
-                    else search_function(clean_query, max_results, per_provider_timeout)
+                    else search_function(clean_query, max_results, attempt_timeout)
                 )
                 if candidate_results:
                     raw_results = candidate_results
@@ -1138,6 +1530,8 @@ def web_search(
                     "error": "搜索服务没有返回结果",
                 })
             except (SafeWebError, OSError, ValueError, json.JSONDecodeError) as error:
+                with _CACHE_LOCK:
+                    _PROVIDER_RETRY_AFTER[(route_key, candidate)] = time.monotonic() + 60.0
                 provider_errors.append({
                     "provider": candidate,
                     "error": str(error)[:240],
@@ -1148,7 +1542,7 @@ def web_search(
             )
             raise SafeWebError(f"所有搜索线路均失败（{detail or '没有可用结果'}）")
     else:
-        raise SafeWebError("暂不支持该搜索服务；请选择 duckduckgo、yahoo、brave 或 wikipedia")
+        raise SafeWebError("暂不支持该搜索服务；请选择 duckduckgo、bing、yahoo、brave 或 wikipedia")
     date_filter_supported = effective_provider in {"duckduckgo", "brave"}
     applied_freshness = (
         requested_freshness
@@ -1191,6 +1585,7 @@ def web_search(
             "publishedTimestamp": str(item.get("publishedTimestamp") or published_timestamp)[:80],
             "dateEvidence": str(item.get("dateEvidence") or date_hint)[:120],
             "searchProvider": effective_provider,
+            "searchBackend": str(item.get("searchBackend") or effective_provider),
             "requestedFreshness": requested_freshness,
             "appliedFreshness": applied_freshness,
             "dateFilterSupported": date_filter_supported,
@@ -1209,14 +1604,17 @@ def web_search(
     page_timeout = max(3.0, min(float(timeout), 8.0))
     read_deadline = time.monotonic() + read_top_pages * page_timeout
     readable_pages = 0
-    for _, source in read_candidates:
+    def fetch_source(source: dict[str, Any]) -> tuple[dict[str, Any] | None, SafeWebError | None]:
         remaining = read_deadline - time.monotonic()
-        if readable_pages >= read_top_pages or remaining <= 0:
-            break
+        if remaining <= 0:
+            return None, None
         try:
-            # A fast 403/empty page is an attempt, not a readable result. Try
-            # another returned source within the same total reading budget.
-            page = read_web_page(source["url"], timeout=min(page_timeout, remaining))
+            return read_web_page(source["url"], timeout=min(page_timeout, remaining), query=clean_query), None
+        except SafeWebError as error:
+            return None, error
+
+    def apply_page(source: dict[str, Any], page: dict[str, Any] | None, error: SafeWebError | None) -> int:
+        if page is not None:
             source["url"] = page["url"]
             source["domain"] = page["domain"]
             source["title"] = page["title"] or source["title"]
@@ -1228,20 +1626,41 @@ def web_search(
             source["fetchStatus"] = str(page.get("fetchStatus") or "success")
             source["truncated"] = bool(page.get("truncated"))
             source["promptInjectionMarkers"] = list(page.get("promptInjectionMarkers") or [])
-            readable_pages += 1
-        except SafeWebError as error:
+            source["links"] = list(page.get("links") or [])
+            return 1
+        if error is not None:
             source["bodyError"] = str(error)[:240]
             status_match = re.search(
                 r"(js_required|captcha|blocked|login_required|paywalled)",
                 str(error),
             )
             source["fetchStatus"] = status_match.group(1) if status_match else "fetch_error"
+        return 0
+
+    # Independent pages share one bounded reading stage. Keep discovery order
+    # and source IDs stable; only the HTTP reads overlap. Failed pages can be
+    # replaced within the original budget without requesting extra good pages.
+    cursor = 0
+    with ThreadPoolExecutor(max_workers=max(1, read_top_pages), thread_name_prefix="web-read") as pool:
+        while readable_pages < read_top_pages and cursor < len(read_candidates):
+            if time.monotonic() >= read_deadline:
+                break
+            batch = read_candidates[cursor:cursor + read_top_pages - readable_pages]
+            cursor += len(batch)
+            if len(batch) == 1:
+                source = batch[0][1]
+                readable_pages += apply_page(source, *fetch_source(source))
+                continue
+            pending = [(source, pool.submit(copy_context().run, fetch_source, source)) for _, source in batch]
+            for source, future in pending:
+                readable_pages += apply_page(source, *future.result())
     result = {
         "query": clean_query,
         "provider": effective_provider,
         "requestedProvider": provider,
         "providerAttempts": provider_attempts,
         "providerErrors": provider_errors,
+        "providerSkipped": skipped_providers,
         "dateFilter": date_filter,
         "sources": sources,
         "searchedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),

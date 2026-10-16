@@ -1325,7 +1325,6 @@ function bindDom() {
     webSearchProviderInput: document.getElementById("webSearchProviderInput"),
     webSearchApiKeyInput: document.getElementById("webSearchApiKeyInput"),
     webSearchMaxResultsInput: document.getElementById("webSearchMaxResultsInput"),
-    webReadTopPagesInput: document.getElementById("webReadTopPagesInput"),
     webSearchStatus: document.getElementById("webSearchStatus"),
     testWebSearchBtn: document.getElementById("testWebSearchBtn"),
     proactiveInteractionsEnabledInput: document.getElementById("proactiveInteractionsEnabledInput"),
@@ -3389,7 +3388,7 @@ function normalizeSettings(raw) {
     permissionFileWrite: Boolean(merged.permissionFileWrite),
     permissionOpenBrowser: Boolean(merged.permissionOpenBrowser),
     agentFileWorkspace: String(merged.agentFileWorkspace || DEFAULT_SETTINGS.agentFileWorkspace),
-    webSearchProvider: ["duckduckgo", "brave"].includes(String(merged.webSearchProvider).toLowerCase())
+    webSearchProvider: ["duckduckgo", "bing", "brave"].includes(String(merged.webSearchProvider).toLowerCase())
       ? String(merged.webSearchProvider).toLowerCase() : "duckduckgo",
     webSearchApiKeySet: Boolean(merged.webSearchApiKeySet),
     webSearchMaxResults: clamp(toNumber(merged.webSearchMaxResults, 5), 1, 8),
@@ -3474,9 +3473,8 @@ function fillSettingsForm() {
   dom.webSearchApiKeyInput.placeholder = settings.webSearchApiKeySet
     ? "留空保留已保存的搜索 Key" : "DuckDuckGo 不需要填写";
   dom.webSearchMaxResultsInput.value = settings.webSearchMaxResults;
-  dom.webReadTopPagesInput.value = settings.webReadTopPages;
   dom.webSearchStatus.textContent = settings.permissionWebSearch
-    ? `${settings.webSearchProvider === "brave" ? "Brave" : "DuckDuckGo"} 已授权` : "权限关闭";
+    ? `${{brave: "Brave", bing: "Bing", duckduckgo: "DuckDuckGo"}[settings.webSearchProvider] || "DuckDuckGo"} 已授权` : "权限关闭";
   if (dom.proactiveInteractionsEnabledInput) {
     dom.proactiveInteractionsEnabledInput.checked = settings.proactiveInteractionsEnabled;
   }
@@ -3933,7 +3931,6 @@ function collectPermissionsSettings() {
     webSearchProvider: dom.webSearchProviderInput.value,
     webSearchApiKey: dom.webSearchApiKeyInput.value.trim(),
     webSearchMaxResults: clamp(toNumber(dom.webSearchMaxResultsInput.value, settings.webSearchMaxResults), 1, 8),
-    webReadTopPages: clamp(toNumber(dom.webReadTopPagesInput.value, settings.webReadTopPages), 0, 3),
   };
 }
 
@@ -3952,7 +3949,7 @@ async function savePermissionsSettings() {
     dom.agentFileWorkspaceInput.value = settings.agentFileWorkspace;
     dom.webSearchApiKeyInput.value = "";
     dom.webSearchStatus.textContent = settings.permissionWebSearch
-      ? `${settings.webSearchProvider === "brave" ? "Brave" : "DuckDuckGo"} 已授权` : "权限关闭";
+      ? `${{brave: "Brave", bing: "Bing", duckduckgo: "DuckDuckGo"}[settings.webSearchProvider] || "DuckDuckGo"} 已授权` : "权限关闭";
   } catch (error) {
     fillSettingsForm();
     toast(`权限设置保存失败：${error.message}`);

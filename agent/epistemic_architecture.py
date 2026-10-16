@@ -448,10 +448,18 @@ class ResearchReceipt:
     started_at: str
     completed_at: str | None
     evidence_sufficient: bool
+    # User-facing S-number citations are only evidence when that exact source
+    # had readable body text in a successful tool result.  Keep this separate
+    # from ``source_uids``: a search result can name a source without reading it.
+    read_source_ids: tuple[str, ...] = ()
+    read_source_uids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
-        for key in ("executed_queries", "source_uids", "pages_read"):
+        for key in (
+            "executed_queries", "source_uids", "pages_read", "read_source_ids",
+            "read_source_uids",
+        ):
             value[key] = list(value[key])
         return value
 
@@ -490,6 +498,22 @@ class ResearchReceipt:
             ),
             evidence_sufficient=bool(
                 data.get("evidence_sufficient", data.get("evidenceSufficient"))
+            ),
+            read_source_ids=tuple(
+                str(item)
+                for item in data.get(
+                    "read_source_ids",
+                    data.get("readSourceIds", ()),
+                )
+                if str(item)
+            ),
+            read_source_uids=tuple(
+                str(item)
+                for item in data.get(
+                    "read_source_uids",
+                    data.get("readSourceUids", ()),
+                )
+                if str(item)
             ),
         )
 
@@ -1096,8 +1120,26 @@ def research_receipt_from_tool_results(
     queries: list[str] = []
     source_uids: list[str] = []
     pages_read: list[str] = []
+    read_source_ids: list[str] = []
+    read_source_uids: list[str] = []
     evidence_sufficient = False
     any_success = False
+
+    def source_has_readable_body(source: Mapping[str, Any]) -> bool:
+        """Mirror the Web evidence gate without creating an agent→backend import."""
+
+        fetch_status = str(source.get("fetchStatus") or "").strip().lower()
+        if fetch_status in {
+            "captcha", "blocked", "login_required", "paywalled",
+            "js_required", "non_content", "failed", "fetch_error",
+        }:
+            return False
+        if fetch_status and fetch_status not in {
+            "success", "partial", "ok", "fetched",
+        }:
+            return False
+        return len(str(source.get("body") or "").strip()) >= 120
+
     for item in web_results:
         any_success = any_success or bool(item.get("ok"))
         plan = item.get("researchPlan") if isinstance(item.get("researchPlan"), Mapping) else {}
@@ -1124,11 +1166,12 @@ def research_receipt_from_tool_results(
             ).strip()
             if uid:
                 source_uids.append(uid)
-            has_read_body = bool(str(source.get("body") or "").strip())
-            fetch_status = str(source.get("fetchStatus") or "").lower()
-            if bool(item.get("ok")) and has_read_body and fetch_status in {
-                "", "success", "ok", "fetched"
-            }:
+            if bool(item.get("ok")) and source_has_readable_body(source):
+                source_id = str(source.get("id") or "").strip().upper()
+                if re.fullmatch(r"S\d+", source_id, re.I):
+                    read_source_ids.append(source_id)
+                if uid:
+                    read_source_uids.append(uid)
                 url = str(source.get("canonicalUrl") or source.get("url") or uid).strip()
                 if url:
                     pages_read.append(url)
@@ -1136,6 +1179,8 @@ def research_receipt_from_tool_results(
     unique_queries = tuple(dict.fromkeys(queries))
     unique_sources = tuple(dict.fromkeys(source_uids))
     unique_pages = tuple(dict.fromkeys(pages_read))
+    unique_read_source_ids = tuple(dict.fromkeys(read_source_ids))
+    unique_read_source_uids = tuple(dict.fromkeys(read_source_uids))
     status = (
         "completed"
         if any_success and unique_sources and evidence_sufficient
@@ -1154,6 +1199,8 @@ def research_receipt_from_tool_results(
         started_at=started_at or completed,
         completed_at=completed,
         evidence_sufficient=evidence_sufficient,
+        read_source_ids=unique_read_source_ids,
+        read_source_uids=unique_read_source_uids,
     )
 
 
@@ -1603,9 +1650,24 @@ def grounded_claim_gate_decision(
     research_policy: str = "allowed",
     capability_state: Mapping[str, Any] | None = None,
     visual_evidence_verified: bool = False,
+    citation_source_uids: Mapping[str, str] | None = None,
+    enforce_web_claims: bool = True,
 ) -> GateDecision:
-    claims = extract_assistant_claims(text, epistemic_state)
-    action_violations = list(research_action_claim_violations(text, receipt))
+    # Models commonly put a citation immediately after sentence punctuation.
+    # Bind that marker to the preceding claim before claim segmentation so a
+    # locally supported partial answer is not mistaken for an uncited claim.
+    claim_text = re.sub(
+        r"([。！？.!?])\s*((?:\[S\d+\]\s*)+)",
+        r" \2\1",
+        str(text or ""),
+        flags=re.I,
+    )
+    claims = extract_assistant_claims(claim_text, epistemic_state)
+    # Planning can request more research; delivery leaves Web wording to the model.
+    action_violations = (
+        list(research_action_claim_violations(text, receipt))
+        if enforce_web_claims else []
+    )
     if action_violations:
         return GateDecision(
             status="BLOCK",
@@ -1619,7 +1681,7 @@ def grounded_claim_gate_decision(
 
     external_requirements = tuple(
         item for item in epistemic_state.fact_requirements
-        if item.verification_required
+        if enforce_web_claims and item.verification_required
         and item.assistant_must_assert
         and item.domain == "external_world"
         and item.evidence_class == "web_evidence"
@@ -1646,17 +1708,61 @@ def grounded_claim_gate_decision(
         and receipt.evidence_sufficient
     )
     citation_tokens = tuple(dict.fromkeys(re.findall(r"\[S\d+\]", str(text or ""), re.I)))
-    if citation_tokens and not has_sufficient_receipt:
+    if citation_source_uids is not None:
+        visible_source_uids = {
+            str(source_id).strip().upper(): str(source_uid).strip()
+            for source_id, source_uid in citation_source_uids.items()
+            if re.fullmatch(r"S\d+", str(source_id).strip(), re.I)
+            and str(source_uid).strip()
+        }
+        read_source_uids = set(receipt.read_source_uids if receipt else ())
+        readable_citation_ids = {
+            source_id
+            for source_id, source_uid in visible_source_uids.items()
+            if source_uid in read_source_uids
+        }
+    else:
+        # Compatibility path for pure agent callers that do not own the final
+        # public-source projection. Backend delivery always supplies the stable
+        # UID map so repeated batch-local S1 aliases cannot cross-authorize.
+        readable_citation_ids = {
+            str(item).strip().upper()
+            for item in (receipt.read_source_ids if receipt else ())
+            if re.fullmatch(r"S\d+", str(item).strip(), re.I)
+        }
+    cited_source_ids = {
+        token.strip("[]").upper() for token in citation_tokens
+    }
+    if (
+        enforce_web_claims
+        and citation_tokens
+        and not cited_source_ids.issubset(readable_citation_ids)
+        and (
+            not has_sufficient_receipt
+            or citation_source_uids is not None
+        )
+    ):
         return GateDecision(
             status="REWRITE_WITH_UNCERTAINTY",
             required_evidence_classes=("web_evidence",),
             reasons=("citation_without_sufficient_evidence",),
             claims=claims,
         )
+
+    def claim_has_read_citation(claim: AssistantClaim) -> bool:
+        claim_citations = {
+            item.upper()
+            for item in re.findall(r"\[(S\d+)\]", claim.text, re.I)
+        }
+        return bool(claim_citations) and claim_citations.issubset(
+            readable_citation_ids
+        )
+
     unsupported_external = (
         tuple(
             item for item in asserted_external
             if not _UNCERTAINTY_LANGUAGE.search(item.text)
+            and not claim_has_read_citation(item)
         )
         if str(research_policy) != "allowed"
         and hard_external_requirements
@@ -1708,6 +1814,7 @@ def grounded_claim_gate_decision(
             claim
             for claim in soft_scoped_assertions
             if not _UNCERTAINTY_LANGUAGE.search(claim.text)
+            and not claim_has_read_citation(claim)
         )
         if unsupported_soft_assertions:
             return GateDecision(

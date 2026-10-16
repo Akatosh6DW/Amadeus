@@ -6,13 +6,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import re
 import urllib.parse
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
-from backend.chat.parsing import parse_json_object
-from backend.research.sources import stable_source_uid
+from backend.research.sources import source_has_readable_evidence, stable_source_uid
 from tools.safe_web import canonicalize_public_url
 
 
@@ -25,6 +23,22 @@ def preferred_web_citation_id(results: list[dict[str, Any]]) -> str:
         if not status.get("sufficient"):
             continue
         answer_ids = {str(value) for value in status.get("answerSourceIds", []) if str(value)}
+        if not answer_ids:
+            # Some providers return the deterministic sufficiency verdict but
+            # omit its redundant answerSourceIds projection. In that case a
+            # readable source from the same sufficient result is still a
+            # verified citation target.
+            answer_ids = {
+                str(source.get("id") or "")
+                for source in (
+                    item.get("sources")
+                    if isinstance(item.get("sources"), list)
+                    else []
+                )
+                if isinstance(source, dict)
+                and re.fullmatch(r"S\d+", str(source.get("id") or ""), re.I)
+                and source_has_readable_evidence(source)
+            }
         valid_ids.update(answer_ids)
     for item in results:
         status = item.get("evidenceStatus") if isinstance(item.get("evidenceStatus"), dict) else {}
@@ -42,58 +56,16 @@ def preferred_web_citation_id(results: list[dict[str, Any]]) -> str:
     return sorted(valid_ids, key=lambda value: int(value[1:]) if value[1:].isdigit() else 999)[0] if valid_ids else ""
 
 def ensure_verified_web_citation(value: Any, results: list[dict[str, Any]]) -> Any:
-    citation_id = preferred_web_citation_id(results)
-    if not citation_id:
-        return value
+    """Preserve model citations without authoring an unbound fallback.
 
-    def attach_to_object(parsed_value: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
-        parsed = dict(parsed_value)
-        reply = str(parsed.get("reply") or "").strip()
-        if reply:
-            if re.search(r"\[S\d+\]", reply, re.I):
-                return parsed, False
-            parsed["reply"] = f"{reply} [{citation_id}]"
-            return parsed, True
-        units = parsed.get("speechUnits")
-        if isinstance(units, list):
-            normalized_units = [dict(item) for item in units if isinstance(item, Mapping)]
-            visible_text = " ".join(
-                str(item.get("zh") or item.get("textZh") or "")
-                for item in normalized_units
-            )
-            if re.search(r"\[S\d+\]", visible_text, re.I):
-                return parsed, False
-            for index in range(len(normalized_units) - 1, -1, -1):
-                zh = str(
-                    normalized_units[index].get("zh")
-                    or normalized_units[index].get("textZh")
-                    or ""
-                ).strip()
-                if zh:
-                    normalized_units[index]["zh"] = f"{zh} [{citation_id}]"
-                    parsed["speechUnits"] = normalized_units
-                    return parsed, True
-        return parsed, False
-
-    if isinstance(value, dict):
-        parsed, changed = attach_to_object(value)
-        return parsed if changed else value
-
-    if not isinstance(value, str):
-        return value
-
-    parsed = parse_json_object(value)
-    if isinstance(parsed, dict):
-        parsed, changed = attach_to_object(parsed)
-        return json.dumps(parsed, ensure_ascii=False) if changed else value
-
-    # DeepSeek can occasionally ignore response_format after a transient retry
-    # and return usable plain text. Preserve that answer instead of treating a
-    # provider formatting deviation as a disconnected chat request.
-    reply = value.strip()
-    if not reply or re.search(r"\[S\d+\]", reply, re.I):
-        return value
-    return f"{reply} [{citation_id}]"
+    The final source batch is assembled later by ``attach_verified_web_sources``.
+    Adding the first numerically valid source here cannot establish which page
+    supports the model's claims, especially when several tool results reuse
+    local ``S1``/``S2`` identifiers.  Leave the model value byte-for-byte
+    intact and let the final attachment stage keep only explicit citations that
+    map to the visible source batch.
+    """
+    return value
 
 def public_web_sources(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
@@ -156,6 +128,40 @@ def public_web_sources(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 return sources
     return sources
 
+
+def readable_public_source_uids(
+    results: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Map final visible S-ids to stable UIDs only for actually read bodies."""
+
+    readable_identity_by_public_uid = {
+        str(
+            source.get("sourceUid")
+            or stable_source_uid(str(source.get("url") or ""))
+        ): str(
+            source.get("sourceUid")
+            or source.get("canonicalUrl")
+            or source.get("url")
+            or ""
+        )
+        for item in results
+        if isinstance(item, dict)
+        and item.get("ok")
+        and item.get("name") in {"web_search", "read_web_page"}
+        for source in (
+            item.get("sources") if isinstance(item.get("sources"), list) else []
+        )
+        if isinstance(source, dict) and source_has_readable_evidence(source)
+    }
+    return {
+        str(source.get("id") or "").upper(): readable_identity_by_public_uid[
+            str(source.get("sourceUid") or "")
+        ]
+        for source in public_web_sources(results)
+        if str(source.get("id") or "")
+        and str(source.get("sourceUid") or "") in readable_identity_by_public_uid
+    }
+
 @dataclass(frozen=True)
 class CitationPorts:
     """来源 batch 的唯一持久化端口。"""
@@ -186,19 +192,24 @@ class VerifiedWebCitationService:
         if not sources:
             return result
         valid_ids = {source["id"] for source in sources}
+        readable_ids = set(readable_public_source_uids(tool_results))
         reply = str(result.get("reply") or "").strip()
         reply = re.sub(
             r"\[(S\d+)\]",
-            lambda match: f"[{match.group(1).upper()}]" if match.group(1).upper() in valid_ids else "",
+            lambda match: (
+                f"[{match.group(1).upper()}]"
+                if match.group(1).upper() in valid_ids
+                and (evidence_sufficient or match.group(1).upper() in readable_ids)
+                else ""
+            ),
             reply,
             flags=re.I,
         )
         if not evidence_sufficient:
-            # Keep discovered sources visible for diagnostics/transparency, but do
-            # not promote them into citations supporting the final answer.
-            reply = re.sub(r"\[S\d+\]", "", reply, flags=re.I).rstrip()
-        elif not any(f"[{source_id}]" in reply for source_id in valid_ids):
-            reply = reply.rstrip() + f" [S1]"
+            # A globally partial receipt can still contain a readable source for
+            # one local claim. Keep only citations bound to those actual bodies;
+            # never auto-cite an unresolved part of the answer.
+            reply = reply.rstrip()
         source_batch = self.ports.freeze_source_batch(
             sources,
             request_id=str(result.get("requestId") or ""),

@@ -1202,6 +1202,7 @@
               搜索服务
               <select id="webSearchProviderInput">
                 <option value="duckduckgo">DuckDuckGo Lite（免 Key）</option>
+                <option value="bing">Bing（免 Key）</option>
                 <option value="brave">Brave Search API（需要 Key）</option>
               </select>
             </label>
@@ -1209,16 +1210,10 @@
               搜索 API Key
               <input id="webSearchApiKeyInput" type="password" spellcheck="false" placeholder="DuckDuckGo 不需要填写">
             </label>
-            <div class="two-col">
-              <label class="field">
-                每次来源数量
-                <input id="webSearchMaxResultsInput" type="number" min="1" max="8" step="1">
-              </label>
-              <label class="field">
-                读取正文数量
-                <input id="webReadTopPagesInput" type="number" min="0" max="3" step="1">
-              </label>
-            </div>
+            <label class="field">
+              每次来源数量
+              <input id="webSearchMaxResultsInput" type="number" min="1" max="8" step="1">
+            </label>
             <div class="hint">只访问公网 HTTP(S) 文本页面；本机、局域网、异常端口、下载文件和超大响应会被拒绝。网页内容不会写入长期记忆。启用后，搜索服务与来源网站可看到查询请求和你的公网 IP。</div>
             <button class="full-button" id="testWebSearchBtn" type="button">测试搜索与正文读取</button>
           </div>

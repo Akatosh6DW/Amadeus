@@ -677,10 +677,14 @@ class ReferenceContextService:
             )
         if model_owned:
             # 保留来源记录供追踪，但不把词面先行项提升成检索目标、入选消息
-            # 或确定性提示；语义解释仍完全交给模型。
+            # 或确定性提示；语义解释仍完全交给模型。检索投影仍需要一份
+            # 冻结的本轮任务文本，否则后续正文只能退回空查询或元数据。
+            # 该字段不是 resolvedQuestion，不参与后端指代解析或授权判断。
+            model_owned_query = str(resolved_task or user_message or "").strip()[:1200]
             return {
                 "active": False, "kind": "model_owned", "interpretationOwner": "model",
                 "referenceLedger": ledger.to_dict(), "referenceResolution": {}, "referenceEvidence": [],
+                "modelOwnedQuery": model_owned_query,
             }
         legacy = (legacy_resolver or self._legacy_contextual_reference_resolution)(
             user_message, messages, context_state=context_state,
