@@ -46,7 +46,7 @@ Chats, memories, to-dos and settings are stored on your computer. Features such 
 
 She sometimes says something has been scheduled or remembered when it was not actually saved. For anything important, check the to-do or memory list.
 
-Questions or suggestions are welcome in Issues.
+Bug reports and feature suggestions are welcome in Issues or by email at [akatoshll6dw@gmail.com](mailto:akatoshll6dw@gmail.com). For bug reports, please include the app version, steps to reproduce the issue, and screenshots when possible.
 
 ## Credits and license
 
