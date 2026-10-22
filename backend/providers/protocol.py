@@ -26,6 +26,13 @@ def prepare_provider_payload(settings: Mapping[str, Any], payload: Mapping[str, 
     active = dict(payload)
     if urlsplit(str(settings.get("apiEndpoint") or "")).hostname != "generativelanguage.googleapis.com":
         return active
+    # DeepSeek's top-level thinking field is rejected by Google's compatibility
+    # endpoint. Translate the fast-response intent only where Gemini supports
+    # it; never overwrite an explicit provider-native reasoning preference.
+    thinking = active.pop("thinking", None)
+    model = str(active.get("model") or settings.get("apiModel") or "").lower()
+    if isinstance(thinking, Mapping) and thinking.get("type") == "disabled" and model.startswith("gemini-3"):
+        active.setdefault("reasoning_effort", "low")
     messages = list(active.get("messages") or [])
     instructions = [item for item in messages if isinstance(item, Mapping)
                     and item.get("role") in {"system", "developer"}]

@@ -1,4 +1,9 @@
-"""DeepSeek image understanding; no local OCR or caption model fallback."""
+"""OpenAI-compatible cloud image understanding routes.
+
+The historical module name is kept for import compatibility.  DeepSeek remains
+the legacy standalone vision route, while the active Google Gemini chat route
+uses the same endpoint, model, key, and network settings as normal chat.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,18 @@ from urllib.parse import urlparse
 
 VISION_MODEL = "deepseek-v4-flash-vision-exp"
 VISION_ENDPOINT = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_ENDPOINT_HOST = "api.deepseek.com"
+GOOGLE_ENDPOINT_HOST = "generativelanguage.googleapis.com"
+
+
+def vision_provider(settings: Mapping[str, Any]) -> str:
+    """Return the exact known provider selected by the active chat endpoint."""
+    host = urlparse(str(settings.get("apiEndpoint") or "")).hostname
+    if host == GOOGLE_ENDPOINT_HOST:
+        return "google"
+    if host == DEEPSEEK_ENDPOINT_HOST:
+        return "deepseek"
+    return ""
 
 
 def vision_model(settings: Mapping[str, Any]) -> str:
@@ -18,13 +35,46 @@ def vision_model(settings: Mapping[str, Any]) -> str:
 
 
 def vision_api_key(settings: Mapping[str, Any]) -> str:
+    provider = vision_provider(settings)
+    # A Google chat request must use the Google chat key.  An old independent
+    # DeepSeek key is deliberately ignored on this route.
+    if provider == "google":
+        return str(settings.get("apiKey") or "").strip()
     dedicated = str(settings.get("visionApiKey") or "").strip()
     if dedicated:
         return dedicated
-    # Never send another provider's credential to DeepSeek.
-    if urlparse(str(settings.get("apiEndpoint") or "")).hostname == "api.deepseek.com":
+    # The main key is shareable only with the official DeepSeek endpoint.
+    if provider == "deepseek":
         return str(settings.get("apiKey") or "").strip()
     return ""
+
+
+def vision_request_route(settings: Mapping[str, Any]) -> dict[str, str]:
+    """Resolve the endpoint/model/key used by a non-native image read.
+
+    A configured independent ``visionApiKey`` is the legacy DeepSeek route and
+    remains usable even when the active chat endpoint is another provider.  A
+    known Google endpoint always follows the active chat settings and never
+    falls back to that DeepSeek credential.  Unknown providers are disabled so
+    their keys cannot be sent to a guessed service.
+    """
+    provider = vision_provider(settings)
+    model = vision_model(settings)
+    if provider == "google":
+        return {
+            "provider": "google",
+            "endpoint": str(settings.get("apiEndpoint") or "").strip(),
+            "model": model,
+            "apiKey": str(settings.get("apiKey") or "").strip(),
+        }
+    if provider == "deepseek" or str(settings.get("visionApiKey") or "").strip():
+        return {
+            "provider": "deepseek",
+            "endpoint": VISION_ENDPOINT,
+            "model": model,
+            "apiKey": vision_api_key(settings),
+        }
+    return {"provider": "", "endpoint": "", "model": model, "apiKey": ""}
 
 
 def image_input_content(path: Path, question: str = "") -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -96,7 +146,9 @@ def prepare_vision_request(
     return payload, metadata
 
 
-def normalize_vision_response(value: Mapping[str, Any], *, model: str = VISION_MODEL) -> dict[str, Any]:
+def normalize_vision_response(
+    value: Mapping[str, Any], *, model: str = VISION_MODEL, provider: str = "deepseek",
+) -> dict[str, Any]:
     def text(key: str, limit: int) -> str:
         raw = value.get(key)
         return raw.strip()[:limit] if isinstance(raw, str) else ""
@@ -113,7 +165,7 @@ def normalize_vision_response(value: Mapping[str, Any], *, model: str = VISION_M
             })
     return {
         "ok": True, "available": True,
-        "provider": "deepseek", "model": model, "device": "cloud",
+        "provider": provider, "model": model, "device": "cloud",
         "caption": caption, "globalDescription": caption, "ocrText": ocr,
         "text": ocr, "regions": regions[:32], "visualTiles": [], "ocrItems": [],
         "analysisFocus": [str(item)[:200] for item in value.get("analysisFocus", [])[:12]]

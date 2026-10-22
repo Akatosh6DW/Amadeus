@@ -883,14 +883,14 @@
           </div>
           <label class="check-row">
             <input id="visionEnabledInput" type="checkbox">
-            <span>启用 DeepSeek 云端识图</span>
+            <span>启用云端识图</span>
           </label>
-          <div class="hint">识图跟随上方 Model，请选择支持图片输入的型号。截图、摄像头、图片附件和扫描 PDF 的识图会上传图片至 DeepSeek，并产生 API 用量；关闭后不再进行识图，也不会切回本地模型。屏幕和摄像头仍需各自授权。</div>
+          <div class="hint">识图跟随上方 Endpoint、Model、API Key 和连接路线。Google Gemini 与 DeepSeek 官方接口会沿用当前聊天配置；截图、摄像头、图片附件和扫描 PDF 会上传图片并产生 API 用量。关闭后不再进行识图，也不会切回本地模型。屏幕和摄像头仍需各自授权。</div>
           <label class="field">
-            DeepSeek 视觉 API Key（可选）
+            DeepSeek 独立视觉 API Key（可选）
             <input id="visionApiKeyInput" type="password" spellcheck="false" placeholder="主聊天使用 DeepSeek 官方接口时，共用上方 Key">
           </label>
-          <div class="hint" id="visionApiHint">留空不修改已有 Key；没有独立 Key 时尝试共用主聊天的 DeepSeek Key。</div>
+          <div class="hint" id="visionApiHint">留空不修改已有 Key；没有独立 Key 时，DeepSeek 官方聊天可共用上方 Key。使用 Google Gemini 时只发送上方 Google API Key。</div>
           <div class="button-row">
             <button id="saveApiBtn" type="button">保存 API 设置</button>
             <button id="testApiBtn" type="button">测试连接</button>
@@ -1035,7 +1035,7 @@
               <option value="0.35">较多：每次新主动话题约 35%</option>
             </select>
           </label>
-          <div class="hint">仅在屏幕读取权限和 DeepSeek 云端识图已启用时触发，图片会上传并计费；后续追问、正在输入、思考、说话或开发者模式中不会额外截图。</div>
+          <div class="hint">仅在屏幕读取权限和云端识图已启用时触发，图片会按当前聊天服务商上传并计费；后续追问、正在输入、思考、说话或开发者模式中不会额外截图。</div>
           <div class="model-box">
             <div class="model-box-head">
               <strong>主动话题偏好</strong>
@@ -1242,7 +1242,7 @@
             摄像头设备编号
             <input id="cameraIndexInput" type="number" min="0" max="8" step="1">
           </label>
-          <div class="hint">屏幕截图与摄像头单帧保存在本地；启用云端识图时会发送给 DeepSeek 分析并产生 API 用量。明确要求查看摄像头或本人当前样子时才拍摄，摄像头不会在后台持续录像。关闭识图可在 API 设置中操作。</div>
+          <div class="hint">屏幕截图与摄像头单帧保存在本地；启用云端识图时会发送给当前聊天服务商分析并产生 API 用量。明确要求查看摄像头或本人当前样子时才拍摄，摄像头不会在后台持续录像。关闭识图可在 API 设置中操作。</div>
           <div class="model-box">
             <div class="model-box-head">
               <strong>在线搜索</strong>

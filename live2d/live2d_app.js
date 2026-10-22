@@ -3498,7 +3498,7 @@ function fillSettingsForm() {
   dom.apiKeyInput.placeholder = "API key";
   if (dom.visionEnabledInput) dom.visionEnabledInput.checked = settings.visionEnabled !== false;
   if (dom.visionApiKeyInput) dom.visionApiKeyInput.value = settings.visionApiKeySet ? SAVED_API_KEY_MASK : "";
-  if (dom.visionApiHint) dom.visionApiHint.textContent = settings.visionStatus?.message || "DeepSeek 云端识图：主聊天使用官方接口时可共用 Key。";
+  if (dom.visionApiHint) dom.visionApiHint.textContent = settings.visionStatus?.message || "云端识图跟随当前聊天 Endpoint、Model、Key 和连接路线；Google Gemini 不使用独立 DeepSeek Key。";
   if (dom.apiNetworkModeInput) dom.apiNetworkModeInput.value = settings.apiNetworkMode || "auto";
   if (dom.apiProxyUrlInput) dom.apiProxyUrlInput.value = settings.apiProxyUrl || "";
   dom.responseFormatInput.checked = settings.useResponseFormat;

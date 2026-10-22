@@ -3,9 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlsplit
 
-from agent.deepseek_vision import VISION_MODEL
+from agent.deepseek_vision import VISION_MODEL, vision_provider
 
 
 DIRECT_IMAGE_INSTRUCTION = """[原图对话]
@@ -20,19 +19,27 @@ DIRECT_IMAGE_INSTRUCTION = """[原图对话]
 
 def native_visual_chat_enabled(settings: Mapping[str, Any]) -> bool:
     return (bool(str(settings.get("apiModel") or "").strip())
-            and urlsplit(str(settings.get("apiEndpoint") or "")).hostname == "api.deepseek.com"
-            and bool(settings.get("apiKey")) and bool(settings.get("visionEnabled", True)))
+            and vision_provider(settings) in {"deepseek", "google"}
+            and bool(str(settings.get("apiKey") or "").strip())
+            and bool(settings.get("visionEnabled", True)))
 
 
-def load_image_input(path: Path, *, model: str = VISION_MODEL) -> dict[str, Any]:
+def load_image_input(
+    path: Path, *, model: str = VISION_MODEL, provider: str | None = None,
+) -> dict[str, Any]:
     """Validate acquired bytes; do not pretend that loading them identified anything."""
     from PIL import Image
     try:
         with Image.open(path) as picture:
             width, height = picture.size
             picture.verify()
+        # Callers with settings should pass the exact provider.  Keep model
+        # inference for old compatibility call sites that only pass a model.
+        selected_provider = str(provider or "").strip().lower()
+        if selected_provider not in {"deepseek", "google"}:
+            selected_provider = "google" if str(model).lower().startswith("gemini-") else "deepseek"
         return {"ok": True, "available": True, "directImageInput": True,
-                "model": model, "provider": "deepseek", "width": width, "height": height,
+                "model": model, "provider": selected_provider, "width": width, "height": height,
                 "caption": "", "ocrText": "", "regions": [], "uncertainItems": []}
     except (OSError, ValueError) as error:
         return {"ok": False, "available": False, "directImageInput": False,

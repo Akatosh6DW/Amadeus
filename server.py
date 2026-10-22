@@ -504,7 +504,7 @@ from agent.cognitive_commit import (
 )
 from agent.semantic_memory_retrieval import SemanticMemoryRuntime
 from agent.deepseek_vision import (
-    VISION_ENDPOINT, VISION_MODEL, vision_api_key, vision_model,
+    VISION_ENDPOINT, VISION_MODEL, vision_api_key, vision_model, vision_provider,
     prepare_vision_request, normalize_vision_response, image_input_content,
 )
 from agent.multimodal_chat import DIRECT_IMAGE_INSTRUCTION, native_visual_chat_enabled, load_image_input
@@ -5852,7 +5852,7 @@ def try_vision_image(
 
 def read_or_attach_image(path: Path, settings: dict[str, Any], question: str = "") -> dict[str, Any]:
     if settings.get("_directVisualChat") and native_visual_chat_enabled(settings):
-        return load_image_input(path, model=vision_model(settings))
+        return load_image_input(path, model=vision_model(settings), provider=vision_provider(settings))
     return try_vision_image(path, settings, question, "detailed")
 
 
@@ -7733,6 +7733,7 @@ def _attachment_service() -> AttachmentService:
         load_direct_image=lambda image_path, active_settings: load_image_input(
             image_path,
             model=vision_model(active_settings),
+            provider=vision_provider(active_settings),
         ),
         read_or_attach_image=read_or_attach_image,
         read_pdf=try_vision_pdf,
