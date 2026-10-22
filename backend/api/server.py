@@ -28,6 +28,7 @@ class HttpRoutes:
     assets: Any
     workbench: Any
     settings: Any
+    model_profiles: Any
     cache: Any
     conversation: Any
     tasks: Any
@@ -152,6 +153,8 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
             return
         if self.services.routes.workbench.get(self, parsed_path, request_url.query):
             return
+        if self.services.routes.model_profiles.get(self, parsed_path):
+            return
         if self.services.routes.settings.get(self, parsed_path):
             return
         if self.services.routes.cache.get(self, parsed_path):
@@ -201,6 +204,8 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
                 self.send_json({"ok": False, "error": "not_available_in_release"}, 404)
                 return
             if self.services.routes.workbench.post_release(self, parsed_path, body):
+                return
+            if self.services.routes.model_profiles.post(self, parsed_path, body):
                 return
             if self.services.routes.settings.post(self, parsed_path, body):
                 return

@@ -849,6 +849,38 @@
             <span>请求 JSON response_format</span>
           </label>
           <div class="hint" id="apiKeyHint">API key 未设置</div>
+          <div class="model-box" id="modelProfilesBox">
+            <div class="model-box-head">
+              <strong>模型连接配置档</strong>
+              <span id="modelProfileActive">当前：未绑定配置档</span>
+            </div>
+            <div class="two-col">
+              <label class="field">
+                配置档名称
+                <input id="modelProfileNameInput" spellcheck="false" placeholder="例如 Gemini Flash">
+              </label>
+              <label class="field">
+                选择配置档
+                <select id="modelProfileSelect" disabled>
+                  <option value="">还没有保存的配置档</option>
+                </select>
+              </label>
+            </div>
+            <label class="check-row">
+              <input id="modelProfileOverwriteInput" type="checkbox">
+              <span>保存时覆盖所选配置档</span>
+            </label>
+            <label class="check-row">
+              <input id="modelProfileClearKeyInput" type="checkbox">
+              <span>保存时清除该配置档的 API Key</span>
+            </label>
+            <div class="button-row">
+              <button id="saveModelProfileBtn" type="button">保存当前编辑为配置档</button>
+              <button id="activateModelProfileBtn" type="button" disabled>启用所选配置档</button>
+              <button id="deleteModelProfileBtn" type="button" disabled>删除所选配置档</button>
+            </div>
+            <div class="hint" id="modelProfileStatus">配置档只保存在本机当前用户资料中；Key 不会回传到页面。</div>
+          </div>
           <label class="check-row">
             <input id="visionEnabledInput" type="checkbox">
             <span>启用 DeepSeek 云端识图</span>
@@ -1475,6 +1507,7 @@
     <script src="chat/thinking_indicator.js?v=20260923-thinking-indicator-controller"></script>
     <script src="settings/settings_controller.js?v=20260923-settings-controller"></script>
     <script src="settings/update_controller.js?v=20261022-update-controller"></script>
+    <script src="settings/model_profile_controller.js?v=20261022-model-profile-controller"></script>
     <script src="settings/api_verification.js?v=20260921-api-verification-controller"></script>
     <script src="character/touch_interaction.js?v=20260923-touch-interaction-controller"></script>
     <script src="character/model_transform_controller.js?v=20260923-model-transform-controller"></script>

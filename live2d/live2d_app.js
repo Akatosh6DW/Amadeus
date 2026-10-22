@@ -57,6 +57,8 @@ const CHAT_MESSAGE_VIEW = window.AmadeusMessageView;
 if (!CHAT_MESSAGE_VIEW) throw new Error("chat/message_view.js is required");
 const API_VERIFICATION = window.AmadeusApiVerification;
 if (!API_VERIFICATION) throw new Error("settings/api_verification.js is required");
+const MODEL_PROFILE_CONTROLLER = window.AmadeusModelProfileController;
+if (!MODEL_PROFILE_CONTROLLER) throw new Error("settings/model_profile_controller.js is required");
 const SETTINGS_CONTROLLER = window.AmadeusSettingsController;
 if (!SETTINGS_CONTROLLER) throw new Error("settings/settings_controller.js is required");
 const UPDATE_CONTROLLER = window.AmadeusUpdateController;
@@ -375,6 +377,7 @@ let latestRuntimeStatus = null;
 let bookmarksController = null;
 let messageView = null;
 let apiVerificationController = null;
+let modelProfileController = null;
 let settingsController = null;
 let updateController = null;
 let todoController = null;
@@ -1003,6 +1006,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPersonaController();
   bindRelationshipController();
   bindApiVerification();
+  bindModelProfileController();
   bindChatController();
   bindThinkingIndicatorController();
   bindProactiveControllers();
@@ -1270,6 +1274,16 @@ function bindDom() {
     apiProxyUrlInput: document.getElementById("apiProxyUrlInput"),
     responseFormatInput: document.getElementById("responseFormatInput"),
     apiKeyHint: document.getElementById("apiKeyHint"),
+    modelProfilesBox: document.getElementById("modelProfilesBox"),
+    modelProfileActive: document.getElementById("modelProfileActive"),
+    modelProfileSelect: document.getElementById("modelProfileSelect"),
+    modelProfileNameInput: document.getElementById("modelProfileNameInput"),
+    modelProfileOverwriteInput: document.getElementById("modelProfileOverwriteInput"),
+    modelProfileClearKeyInput: document.getElementById("modelProfileClearKeyInput"),
+    saveModelProfileBtn: document.getElementById("saveModelProfileBtn"),
+    activateModelProfileBtn: document.getElementById("activateModelProfileBtn"),
+    deleteModelProfileBtn: document.getElementById("deleteModelProfileBtn"),
+    modelProfileStatus: document.getElementById("modelProfileStatus"),
     saveApiBtn: document.getElementById("saveApiBtn"),
     testApiBtn: document.getElementById("testApiBtn"),
     apiTestStatus: document.getElementById("apiTestStatus"),
@@ -1937,6 +1951,42 @@ function bindApiVerification() {
     },
   });
   apiVerificationController.bind();
+}
+
+function bindModelProfileController() {
+  modelProfileController = MODEL_PROFILE_CONTROLLER.createModelProfileController({
+    elements: {
+      status: dom.modelProfileStatus,
+      active: dom.modelProfileActive,
+      select: dom.modelProfileSelect,
+      name: dom.modelProfileNameInput,
+      endpoint: dom.apiEndpointInput,
+      model: dom.apiModelInput,
+      cognitive: dom.cognitiveRepairModelInput,
+      apiKey: dom.apiKeyInput,
+      networkMode: dom.apiNetworkModeInput,
+      proxy: dom.apiProxyUrlInput,
+      responseFormat: dom.responseFormatInput,
+      overwrite: dom.modelProfileOverwriteInput,
+      clearKey: dom.modelProfileClearKeyInput,
+      save: dom.saveModelProfileBtn,
+      activate: dom.activateModelProfileBtn,
+      remove: dom.deleteModelProfileBtn,
+    },
+    request: (...args) => fetch(...args),
+    getDraft: () => settings,
+    savedApiKeyMask: SAVED_API_KEY_MASK,
+    onActivated: async payload => {
+      const previousSettings = { ...settings };
+      await loadSettings();
+      apiVerificationController?.onSettingsSaved(payload?.settings || settings, previousSettings);
+      fillSettingsForm();
+      applySettingsToUi();
+    },
+    notify: toast,
+    confirm: message => window.confirm(message),
+  });
+  modelProfileController.bind();
 }
 
 function bindSceneController() {
@@ -2714,6 +2764,11 @@ async function boot() {
   initSpeechVoices();
   await touchInteractionController.loadConfig();
   await loadSettings();
+  if (modelProfileController) {
+    await modelProfileController.refresh().catch(error => {
+      console.warn("model profile refresh failed:", error);
+    });
+  }
   configureRuntimeMode();
   if (DEV_MODE && !MODEL_PREVIEW_ONLY && dom.developerPanel) {
     const personaMonitorRoot = document.getElementById("devPersonaSkillMonitor");

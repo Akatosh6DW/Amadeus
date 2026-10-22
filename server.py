@@ -208,6 +208,7 @@ from backend.memory.retrieval import MemoryRetrievalPorts, MemoryRetrievalServic
 from backend.api import transport as http_transport
 from backend.api.conversation_routes import ConversationOperations, ConversationRoutes
 from backend.api.memory_routes import MemoryOperations, MemoryRoutes
+from backend.api.model_profile_routes import ModelProfileOperations, ModelProfileRoutes
 from backend.api.runtime_routes import RuntimeOperations, RuntimeRoutes
 from backend.api.settings_routes import SettingsOperations, SettingsRoutes
 from backend.api.update_routes import UpdateOperations, UpdateRoutes
@@ -540,6 +541,7 @@ from backend.providers import llm as llm_transport
 from backend.providers import protocol as llm_protocol
 from backend.providers import network as provider_network
 from backend.config import settings_store
+from backend.model_profiles import ModelProfileService
 from backend.context import tool_evidence
 from backend.context import session as session_context_service
 from backend.research.query import (
@@ -10334,6 +10336,42 @@ SETTINGS_ROUTES = SettingsRoutes(SettingsOperations(
     test_web_search=lambda: test_web_search_connection(),
 ))
 
+MODEL_PROFILE_SERVICE = ModelProfileService(
+    DATA_DIR / "model_profiles.json",
+    load_settings=load_settings,
+    save_settings=save_settings,
+    is_configured=lambda values: configured(dict(values)),
+)
+
+
+def list_model_profiles() -> dict[str, Any]:
+    return MODEL_PROFILE_SERVICE.list_profiles(load_settings())
+
+
+def save_model_profile(body: Mapping[str, Any]) -> dict[str, Any]:
+    return MODEL_PROFILE_SERVICE.save_profile(body, load_settings())
+
+
+def activate_model_profile(profile_id: str) -> dict[str, Any]:
+    result = MODEL_PROFILE_SERVICE.activate_profile(profile_id, load_settings())
+    # The service needs the private settings result to keep the profile and
+    # settings mutation together.  Never send that result back to the browser.
+    private_settings = result.pop("settings", None)
+    result["settings"] = public_settings(private_settings) if isinstance(private_settings, dict) else public_settings()
+    return result
+
+
+def delete_model_profile(profile_id: str) -> dict[str, Any]:
+    return MODEL_PROFILE_SERVICE.delete_profile(profile_id, load_settings())
+
+
+MODEL_PROFILE_ROUTES = ModelProfileRoutes(ModelProfileOperations(
+    list_profiles=list_model_profiles,
+    save_profile=save_model_profile,
+    activate_profile=activate_model_profile,
+    delete_profile=delete_model_profile,
+))
+
 
 def _request_update_shutdown() -> None:
     """Stop services owned by this backend, then let the updater close the GUI."""
@@ -11745,7 +11783,8 @@ TOUCH_APPLICATION = TouchApplication(
 HTTP_SERVICES = http_server.HttpServices(
     routes=http_server.HttpRoutes(
         runtime=RUNTIME_ROUTES, updates=UPDATE_ROUTES, assets=ASSET_ROUTES, workbench=WORKBENCH_ROUTES,
-        settings=SETTINGS_ROUTES, cache=CACHE_ROUTES, conversation=CONVERSATION_ROUTES,
+        settings=SETTINGS_ROUTES, model_profiles=MODEL_PROFILE_ROUTES,
+        cache=CACHE_ROUTES, conversation=CONVERSATION_ROUTES,
         tasks=TASK_ROUTES, memory=MEMORY_ROUTES, actions=ACTION_ROUTES, speech=SPEECH_ROUTES,
     ),
     runtime=http_server.HttpRuntime(
