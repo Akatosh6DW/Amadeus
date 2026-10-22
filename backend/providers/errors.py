@@ -38,11 +38,68 @@ def sanitize_provider_error_message(value: Any) -> str:
         text,
     )
     text = re.sub(
+        r"(?i)\bAIza[A-Za-z0-9_-]{10,}\b",
+        "[REDACTED_API_KEY]",
+        text,
+    )
+    text = re.sub(
         r"(?i)(api[_ -]?key\s*[:=]\s*)\S+",
         r"\1[REDACTED]",
         text,
     )
+    text = re.sub(
+        r"(?i)((?:x-goog-api-key|google-api-key|access[_ -]?token)\s*[:=]\s*)\S+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:key|api[_-]?key)=)[^&\s]+",
+        r"\1[REDACTED]",
+        text,
+    )
     return text[:500]
+
+
+def _provider_error_fields(payload: Any) -> tuple[str, str, str]:
+    """Extract code, status/type and message from common provider envelopes."""
+
+    candidates: list[Any]
+    if isinstance(payload, dict):
+        detail = payload.get("error")
+        if isinstance(detail, list):
+            candidates = detail
+        elif detail is None:
+            candidates = [payload]
+        else:
+            candidates = [detail]
+    elif isinstance(payload, list):
+        candidates = payload
+    else:
+        return "", "", ""
+
+    scalar_message = ""
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            nested = candidate.get("error")
+            detail = nested if isinstance(nested, dict) else candidate
+            provider_code = str(detail.get("code") or "")
+            provider_type = str(detail.get("status") or detail.get("type") or "")
+            provider_message = str(detail.get("message") or "")
+            if provider_code or provider_type or provider_message:
+                if isinstance(payload, dict):
+                    provider_code = provider_code or str(payload.get("code") or "")
+                    provider_type = provider_type or str(payload.get("status") or payload.get("type") or "")
+                    provider_message = provider_message or str(payload.get("message") or "")
+                return provider_code, provider_type, provider_message
+        elif candidate is not None:
+            scalar_message = str(candidate)
+    if isinstance(payload, dict):
+        return (
+            str(payload.get("code") or ""),
+            str(payload.get("status") or payload.get("type") or ""),
+            str(payload.get("message") or scalar_message or ""),
+        )
+    return "", "", scalar_message
 
 
 def upstream_http_error_diagnostics(
@@ -75,20 +132,7 @@ def upstream_http_error_diagnostics(
             payload = json.loads(raw.decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             payload = None
-        if isinstance(payload, dict):
-            detail = payload.get("error")
-            if isinstance(detail, dict):
-                provider_code = str(detail.get("code") or "")
-                provider_type = str(detail.get("type") or "")
-                provider_message = str(detail.get("message") or "")
-            elif detail is not None:
-                provider_message = str(detail)
-            if not provider_message:
-                provider_message = str(payload.get("message") or "")
-            if not provider_code:
-                provider_code = str(payload.get("code") or "")
-            if not provider_type:
-                provider_type = str(payload.get("type") or "")
+        provider_code, provider_type, provider_message = _provider_error_fields(payload)
 
     diagnostics = {
         "status": int(error.code),
@@ -110,21 +154,28 @@ def upstream_http_error_user_message(
 
     diagnostics = diagnostics_reader(error)
     status = int(diagnostics.get("status") or error.code)
-    provider_code = str(
-        diagnostics.get("providerErrorCode")
-        or diagnostics.get("providerErrorType")
-        or ""
-    ).strip()
-    suffix = f"，错误类型 {provider_code}" if provider_code else ""
+    provider_code = str(diagnostics.get("providerErrorCode") or "").strip()
+    provider_type = str(diagnostics.get("providerErrorType") or "").strip()
+    provider_message = str(diagnostics.get("providerMessage") or "").strip()
+    provider_label = provider_type or provider_code
+    suffix = f"，错误类型 {provider_label}" if provider_label else ""
+    if provider_type and provider_code and provider_type != provider_code:
+        suffix += f"（{provider_code}）"
+    if provider_message:
+        suffix += f"，服务商信息：{provider_message}"
     if status == 400:
-        return f"DeepSeek 拒绝了主对话请求（HTTP 400{suffix}），请求格式或模型上下文不兼容。"
+        return f"服务商拒绝了主对话请求（HTTP 400{suffix}），请求格式或模型上下文不兼容。"
     if status == 401:
-        return "API Key 验证失败（HTTP 401）。服务商未接受当前密钥，请在设置中检查 API Key 和 Endpoint，保存后测试连接。"
+        return f"API Key 验证失败（HTTP 401{suffix}）。服务商未接受当前密钥，请在设置中检查 API Key 和 Endpoint，保存后测试连接。"
     if status == 402:
-        return "API 账户余额不足（HTTP 402），请检查服务商账户余额。"
+        return f"API 账户余额不足（HTTP 402{suffix}），请检查服务商账户余额。"
     if status == 403:
-        return "API 访问被拒绝（HTTP 403），请检查密钥的模型访问权限或服务商访问限制。"
-    return f"DeepSeek 返回 HTTP {status}{suffix}。"
+        return f"API 访问被拒绝（HTTP 403{suffix}），请检查密钥的模型访问权限或服务商访问限制。"
+    if status == 404:
+        return f"接口或模型不存在（HTTP 404{suffix}），请核对 Endpoint 和 Model。"
+    if status == 429:
+        return f"请求过于频繁或触及额度限制（HTTP 429{suffix}），请稍后重试。"
+    return f"服务商返回 HTTP {status}{suffix}。"
 
 
 def upstream_connection_error_category(error: BaseException) -> str:

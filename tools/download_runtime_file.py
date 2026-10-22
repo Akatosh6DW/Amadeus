@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 import uuid
 import zipfile
-from typing import Callable
+from typing import Callable, Mapping
 
 
 CHUNK_SIZE = 4 * 1024 * 1024
@@ -85,15 +85,30 @@ def _content_range(value: str) -> tuple[int, int, int | None] | None:
     return start, end, total
 
 
-def _request(url: str, headers: dict[str, str]) -> object:
+def _request(
+    url: str,
+    headers: dict[str, str],
+    *,
+    opener: object | None = None,
+    request_headers: Mapping[str, str] | None = None,
+) -> object:
+    common_headers = dict(request_headers or {})
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT, **headers},
+        headers={"User-Agent": USER_AGENT, **common_headers, **headers},
     )
+    open_method = getattr(opener, "open", None)
+    if callable(open_method):
+        return open_method(request, timeout=DEFAULT_TIMEOUT)
     return urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT)
 
 
-def probe_remote(url: str) -> RemoteInfo:
+def probe_remote(
+    url: str,
+    *,
+    opener: object | None = None,
+    request_headers: Mapping[str, str] | None = None,
+) -> RemoteInfo:
     """Read remote size/identity with a one-byte range request.
 
     Hugging Face returns a useful ``Content-Range`` for this request.  A server
@@ -102,7 +117,12 @@ def probe_remote(url: str) -> RemoteInfo:
     """
 
     try:
-        response = _request(url, {"Range": "bytes=0-0"})
+        response = _request(
+            url,
+            {"Range": "bytes=0-0"},
+            opener=opener,
+            request_headers=request_headers,
+        )
     except urllib.error.HTTPError as error:
         raise DownloadError(f"remote probe failed ({error.code}): {url}") from error
     try:
@@ -130,11 +150,23 @@ def probe_remote(url: str) -> RemoteInfo:
         response.close()
 
 
-def _fetch_range(url: str, start: int, end: int) -> bytes:
+def _fetch_range(
+    url: str,
+    start: int,
+    end: int,
+    *,
+    opener: object | None = None,
+    request_headers: Mapping[str, str] | None = None,
+) -> bytes:
     if start < 0 or end < start:
         raise ValueError("invalid range")
     try:
-        response = _request(url, {"Range": f"bytes={start}-{end}"})
+        response = _request(
+            url,
+            {"Range": f"bytes={start}-{end}"},
+            opener=opener,
+            request_headers=request_headers,
+        )
     except urllib.error.HTTPError as error:
         raise SourceChanged(f"range request failed ({error.code})") from error
     try:
@@ -277,7 +309,13 @@ def _source_matches(metadata: dict[str, object], requested_url: str, remote: Rem
     return True
 
 
-def _partial_matches_remote(path: Path, remote: RemoteInfo) -> bool:
+def _partial_matches_remote(
+    path: Path,
+    remote: RemoteInfo,
+    *,
+    opener: object | None = None,
+    request_headers: Mapping[str, str] | None = None,
+) -> bool:
     size = path.stat().st_size
     if size == 0:
         return True
@@ -289,8 +327,18 @@ def _partial_matches_remote(path: Path, remote: RemoteInfo) -> bool:
         source.seek(size - sample)
         suffix = source.read(sample)
     try:
-        return prefix == _fetch_range(remote.url, 0, sample - 1) and suffix == _fetch_range(
-            remote.url, size - sample, size - 1
+        return prefix == _fetch_range(
+            remote.url,
+            0,
+            sample - 1,
+            opener=opener,
+            request_headers=request_headers,
+        ) and suffix == _fetch_range(
+            remote.url,
+            size - sample,
+            size - 1,
+            opener=opener,
+            request_headers=request_headers,
         )
     except (DownloadError, OSError):
         return False
@@ -326,6 +374,8 @@ def download_file(
     backoff: float = DEFAULT_BACKOFF,
     progress: Callable[[int, int | None], None] | None = None,
     validate_archive: bool | None = None,
+    opener: object | None = None,
+    request_headers: Mapping[str, str] | None = None,
 ) -> Path:
     """Download one file, resuming a verified partial file when possible."""
 
@@ -373,7 +423,7 @@ def download_file(
     last_error: Exception | None = None
     for attempt in range(retries):
         try:
-            remote = probe_remote(url)
+            remote = probe_remote(url, opener=opener, request_headers=request_headers)
             metadata = _read_metadata(part_metadata)
             size = part.stat().st_size if part.exists() else 0
             if expected_size is not None and remote.total is not None and expected_size != remote.total:
@@ -383,7 +433,12 @@ def download_file(
             total = expected_size if expected_size is not None else remote.total
             if size and (
                 (metadata and not _source_matches(metadata, url, remote))
-                or not _partial_matches_remote(part, remote)
+                or not _partial_matches_remote(
+                    part,
+                    remote,
+                    opener=opener,
+                    request_headers=request_headers,
+                )
                 or (total is not None and size > total)
             ):
                 _remove(part)
@@ -421,7 +476,12 @@ def download_file(
             if size:
                 headers["Range"] = f"bytes={size}-"
             try:
-                response = _request(remote.url, headers)
+                response = _request(
+                    remote.url,
+                    headers,
+                    opener=opener,
+                    request_headers=request_headers,
+                )
             except urllib.error.HTTPError as error:
                 if error.code == 416 and total is not None and size == total:
                     raise DownloadError("range completed but archive validation is required") from error

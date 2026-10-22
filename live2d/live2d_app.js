@@ -59,6 +59,8 @@ const API_VERIFICATION = window.AmadeusApiVerification;
 if (!API_VERIFICATION) throw new Error("settings/api_verification.js is required");
 const SETTINGS_CONTROLLER = window.AmadeusSettingsController;
 if (!SETTINGS_CONTROLLER) throw new Error("settings/settings_controller.js is required");
+const UPDATE_CONTROLLER = window.AmadeusUpdateController;
+if (!UPDATE_CONTROLLER) throw new Error("settings/update_controller.js is required");
 const TOUCH_INTERACTION = window.AmadeusTouchInteraction;
 if (!TOUCH_INTERACTION) throw new Error("character/touch_interaction.js is required");
 const PROACTIVE_CONTROLLER = window.AmadeusProactiveController;
@@ -374,6 +376,7 @@ let bookmarksController = null;
 let messageView = null;
 let apiVerificationController = null;
 let settingsController = null;
+let updateController = null;
 let todoController = null;
 let modelTransformController = null;
 let chatController = null;
@@ -984,6 +987,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindBookmarks();
   bindMessageView();
   bindSettingsController();
+  bindUpdateController();
   bindTodoController();
   bindSceneController();
   bindDeveloperModelEditorController();
@@ -1243,6 +1247,12 @@ function bindDom() {
     settingsModal: document.getElementById("settingsModal"),
     closeSettingsBtn: document.getElementById("closeSettingsBtn"),
     settingsStatus: document.getElementById("settingsStatus"),
+    updateCurrentVersion: document.getElementById("updateCurrentVersion"),
+    updateLatestVersion: document.getElementById("updateLatestVersion"),
+    checkUpdateBtn: document.getElementById("checkUpdateBtn"),
+    startUpdateBtn: document.getElementById("startUpdateBtn"),
+    updateProgress: document.getElementById("updateProgress"),
+    updateStatus: document.getElementById("updateStatus"),
     settingsTabs: [...document.querySelectorAll(".settings-tabs button")],
     tabPages: [...document.querySelectorAll(".tab-page")],
     settingsPersonaStatus: document.getElementById("settingsPersonaStatus"),
@@ -1583,6 +1593,24 @@ function bindSettingsController() {
     notify: message => toast(message),
   });
   settingsController.bind();
+}
+
+function bindUpdateController() {
+  updateController = UPDATE_CONTROLLER.createUpdateController({
+    elements: {
+      current: dom.updateCurrentVersion,
+      latest: dom.updateLatestVersion,
+      check: dom.checkUpdateBtn,
+      start: dom.startUpdateBtn,
+      progress: dom.updateProgress,
+      status: dom.updateStatus,
+    },
+    request: (...args) => fetch(...args),
+    confirm: message => window.confirm(message),
+    notify: message => toast(message),
+  });
+  updateController.bind();
+  updateController.refresh().catch(error => console.warn("update status refresh failed:", error));
 }
 
 function bindTodoController() {
@@ -6102,9 +6130,9 @@ async function handleChatRequestError(error, { generation, requestId, inputs, pr
     return;
   }
   updateConnectionStatus({ connectionState: "failed", connectionCode: error?.code || "CONNECTION" });
-  toast(`DeepSeek 连接失败：${detail}`);
+  toast(`模型服务连接失败：${detail}`);
   const applied = await applyAssistant({
-    reply: `DeepSeek 连接失败，已自动重试但仍未收到回答。错误：${detail}。请检查网络、API Key、接口地址或额度后再试。`,
+    reply: `模型服务连接失败，已自动重试但仍未收到回答。错误：${detail}。请检查网络、API Key、接口地址或额度后再试。`,
     spokenTextJa: "接続が一度途切れて、完全な返事を受け取れなかったみたい。質問は分かってるから、もう一度送って。",
     emotion: "concerned",
     gesture: "glitch",

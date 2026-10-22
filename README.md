@@ -16,11 +16,13 @@ Amadeus System 是一个《命运石之门》同人项目。桌面上的 Live2D 
 
 ## 安装
 
-1. 从 [v1.0.1 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.1) 下载 `AMADEUS-v1.0.1-setup.zip`。
+1. 从 [v1.0.2 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.2) 下载 `AMADEUS-v1.0.2-setup.zip`。
 2. 解压后双击 `install-release.cmd`，安装器会自动下载程序、运行环境和声音资源，默认装在 `%USERPROFILE%\Apps\Amadeus`。
 3. 运行 `AMADEUS.exe`，在“设置 → API”里填入你的 API Key。
 
 默认使用 DeepSeek（Endpoint `https://api.deepseek.com/chat/completions`，模型 `deepseek-v4-flash-vision-exp`）。也支持配置其他兼容 OpenAI 接口的服务；看图功能需要模型支持图片输入。
+
+v1.0.2 修复 Gemini 连接测试误报和聊天反复恢复的问题，并新增发行版内检查、下载和安装更新的功能。Gemini 配置与旧版升级方式见 [发行说明](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.2)。
 
 ## 从源码运行
 

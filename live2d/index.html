@@ -796,6 +796,7 @@
 
         <div class="settings-tabs">
           <button class="active" data-tab="api" type="button">API</button>
+          <button data-tab="update" type="button">更新</button>
           <button data-tab="display" type="button">显示</button>
           <button data-tab="interaction" type="button">互动</button>
           <button data-tab="voice" type="button">声音</button>
@@ -814,7 +815,7 @@
           </label>
           <label class="field">
             Model
-            <input id="apiModelInput" spellcheck="false" placeholder="填写要使用的 DeepSeek 模型 ID">
+            <input id="apiModelInput" spellcheck="false" placeholder="填写要使用的模型 ID">
           </label>
           <label class="field">
             纠正与自修复模型
@@ -863,6 +864,23 @@
             <button id="testApiBtn" type="button">测试连接</button>
           </div>
           <div class="hint" id="apiTestStatus">测试会发送一个极短请求，不会写入对话记忆。</div>
+        </div>
+
+        <div class="tab-page" data-page="update">
+          <div class="model-box">
+            <div class="model-box-head">
+              <strong>应用更新</strong>
+              <span id="updateCurrentVersion">当前版本：未知</span>
+            </div>
+            <div class="hint" id="updateLatestVersion">检查 GitHub 上的 Amadeus System 最新发行版。</div>
+            <div class="button-row">
+              <button id="checkUpdateBtn" type="button">检查更新</button>
+              <button id="startUpdateBtn" type="button" disabled>立即更新</button>
+            </div>
+            <progress id="updateProgress" max="1" value="0" hidden aria-label="更新进度"></progress>
+            <div class="hint" id="updateStatus" aria-live="polite">点击“检查更新”获取发行版信息。</div>
+          </div>
+          <div class="hint">更新会保留当前用户的设置、对话和记忆；下载完成后应用会自动退出、替换发行版并重新启动。</div>
         </div>
 
         <div class="tab-page" data-page="display">
@@ -1456,6 +1474,7 @@
     <script src="chat/chat_controller.js?v=20260923-chat-controller"></script>
     <script src="chat/thinking_indicator.js?v=20260923-thinking-indicator-controller"></script>
     <script src="settings/settings_controller.js?v=20260923-settings-controller"></script>
+    <script src="settings/update_controller.js?v=20261022-update-controller"></script>
     <script src="settings/api_verification.js?v=20260921-api-verification-controller"></script>
     <script src="character/touch_interaction.js?v=20260923-touch-interaction-controller"></script>
     <script src="character/model_transform_controller.js?v=20260923-model-transform-controller"></script>

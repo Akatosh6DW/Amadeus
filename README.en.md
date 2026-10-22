@@ -16,11 +16,13 @@ Amadeus System is a *Steins;Gate* fan project. A Live2D character modeled on Kur
 
 ## Install
 
-1. Download `AMADEUS-v1.0.1-setup.zip` from the [v1.0.1 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.1).
+1. Download `AMADEUS-v1.0.2-setup.zip` from the [v1.0.2 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.2).
 2. Extract it and double-click `install-release.cmd`. The installer downloads the program, runtimes and voice assets, and installs to `%USERPROFILE%\Apps\Amadeus` by default.
 3. Run `AMADEUS.exe` and enter your API key under Settings → API.
 
 DeepSeek is the default (endpoint `https://api.deepseek.com/chat/completions`, model `deepseek-v4-flash-vision-exp`). Other OpenAI-compatible services can be configured; image features require a model that accepts image input.
+
+v1.0.2 fixes Gemini connection-test false failures and repeated chat recovery, and adds in-app release updates. See the [release notes](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.0.2) for Gemini configuration and upgrading from older versions.
 
 ## Run from source
 

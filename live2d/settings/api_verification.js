@@ -98,7 +98,7 @@
 
     async function testConnection() {
       const revision = apiConfigurationRevision;
-      elements.apiTestStatus.textContent = "正在连接 DeepSeek...";
+      elements.apiTestStatus.textContent = "正在连接 API...";
       try {
         const response = await request("/api/test-api", {
           method: "POST",

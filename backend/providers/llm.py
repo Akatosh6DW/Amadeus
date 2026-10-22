@@ -65,6 +65,7 @@ def send_uncoordinated(
     if safe_request_id:
         headers["X-Amadeus-Request-Id"] = safe_request_id
     active_payload, json_mode_state, json_mode_key = llm_protocol.prepare_upstream_json_mode(settings, payload)
+    active_payload = llm_protocol.prepare_provider_payload(settings, active_payload)
     request_body = json.dumps(active_payload, ensure_ascii=False).encode("utf-8")
     json_mode_active = bool(active_payload.get("response_format"))
     # DeepSeek documents that JSON Output can occasionally return HTTP 200
@@ -286,6 +287,7 @@ def send_uncoordinated(
                 if json_mode_state is not None:
                     json_mode_state[json_mode_key] = True
                 active_payload = llm_protocol.json_mode_fallback_payload(active_payload)
+                active_payload = llm_protocol.prepare_provider_payload(settings, active_payload)
                 request_body = json.dumps(active_payload, ensure_ascii=False).encode("utf-8")
                 json_mode_active = False
                 io.log_event(
@@ -332,6 +334,7 @@ def iter_uncoordinated(
     if safe_request_id:
         headers["X-Amadeus-Request-Id"] = safe_request_id
     active_payload, json_mode_state, json_mode_key = llm_protocol.prepare_upstream_json_mode(settings, payload)
+    active_payload = llm_protocol.prepare_provider_payload(settings, active_payload)
     active_payload["stream"] = True
     request = urllib.request.Request(
         io.chat_endpoint(settings["apiEndpoint"]),

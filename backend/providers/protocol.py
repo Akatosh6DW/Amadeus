@@ -4,10 +4,51 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlsplit
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from backend.providers.errors import UpstreamProtocolError
+
+
+def prepare_provider_payload(settings: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Adapt wire constraints without changing instruction roles or user history.
+
+    Gemini's compatibility endpoint retains only the last system message.
+    Consolidate all instruction messages, in order, before crossing that API
+    boundary so persona, output contract and validation feedback survive.
+    Gemini extracts system/developer messages into systemInstruction. An
+    assistant draft followed by our system feedback therefore still ends in a
+    model turn, which its Chat Completions adapter rejects. Keep that feedback
+    authoritative and add a neutral transport continuation only when needed.
+    This projection is never persisted as a user utterance.
+    """
+    active = dict(payload)
+    if urlsplit(str(settings.get("apiEndpoint") or "")).hostname != "generativelanguage.googleapis.com":
+        return active
+    messages = list(active.get("messages") or [])
+    instructions = [item for item in messages if isinstance(item, Mapping)
+                    and item.get("role") in {"system", "developer"}]
+    if instructions:
+        blocks = []
+        for item in instructions:
+            content = item.get("content")
+            if isinstance(content, str):
+                blocks.append(content)
+            elif isinstance(content, list):
+                blocks.extend(str(part.get("text") or "") for part in content
+                              if isinstance(part, Mapping) and part.get("type") == "text")
+        messages = [{"role": "system", "content": "\n\n".join(blocks)},
+                    *[item for item in messages if not isinstance(item, Mapping)
+                      or item.get("role") not in {"system", "developer"}]]
+    turns = [item for item in messages if isinstance(item, Mapping)
+             and item.get("role") not in {"system", "developer"}]
+    if not turns or turns[-1].get("role") == "assistant":
+        messages.append({"role": "user", "content":
+                         "Continue the current request under the system instructions and validation feedback. "
+                         "This is an application continuation, not a new user request or authorization."})
+    active["messages"] = messages
+    return active
 
 
 def upstream_response_shape(data: Any) -> dict[str, Any]:

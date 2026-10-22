@@ -180,7 +180,7 @@
           memoryUpdates: [],
         };
         if (data.startupFallbackReason) {
-          preparedStartupGreeting.startupFallbackNotice = "启动问候没有取得有效的 DeepSeek 回复，当前显示的是本地备用问候。";
+          preparedStartupGreeting.startupFallbackNotice = "启动问候没有取得有效的模型回复，当前显示的是本地备用问候。";
         }
         await prepareStartupGreetingSpeech(preparedStartupGreeting, voiceReadyPromise, greetingGeneration);
         return preparedStartupGreeting;
@@ -341,7 +341,7 @@
         }
         if (greeting && data.startupFallbackReason) {
           feedback.updateConnectionStatus?.({ connectionState: "startup-greeting-fallback" });
-          feedback.toast?.(data.startupFallbackNotice || "启动问候未连接 DeepSeek，已明确切换为本地备用问候");
+          feedback.toast?.(data.startupFallbackNotice || "启动问候未连接模型服务，已明确切换为本地备用问候");
         }
         proactiveState.lastProactiveAt = nowValue;
         proactiveState.unansweredCount = transition.nextCount;

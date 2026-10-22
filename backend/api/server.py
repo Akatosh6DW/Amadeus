@@ -24,6 +24,7 @@ from backend.api import transport as http_transport
 @dataclass(frozen=True)
 class HttpRoutes:
     runtime: Any
+    updates: Any
     assets: Any
     workbench: Any
     settings: Any
@@ -144,6 +145,8 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
             return
         if self.services.routes.runtime.get_status(self, parsed_path, self.server.server_address):
             return
+        if self.services.routes.updates.get(self, parsed_path):
+            return
         if self.services.runtime.release_mode() and self.services.runtime.release_blocked(parsed_path):
             self.send_json({"ok": False, "error": "not_available_in_release"}, 404)
             return
@@ -206,6 +209,8 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
             if self.services.routes.workbench.post(self, parsed_path, body):
                 return
             if self.services.routes.runtime.post_after_release(self, parsed_path, body):
+                return
+            if self.services.routes.updates.post(self, parsed_path, body):
                 return
             if self.services.routes.tasks.post(self, parsed_path, body):
                 return
@@ -316,7 +321,7 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
             self.send_json({
                 "ok": False,
                 "code": "upstream_network_error",
-                "error": "连接 DeepSeek 时发生了瞬时网络错误。",
+                "error": "连接模型服务时发生了瞬时网络错误。",
                 "retryable": True,
                 "requestId": request_id,
             }, 503)
@@ -342,7 +347,7 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
             self.send_json({
                 "ok": False,
                 "code": "upstream_incomplete_response",
-                "error": "DeepSeek 返回了不完整响应，自动重试后仍未恢复。",
+                "error": "模型服务返回了不完整响应，自动重试后仍未恢复。",
                 "retryable": True,
                 "requestId": request_id,
             }, 503)

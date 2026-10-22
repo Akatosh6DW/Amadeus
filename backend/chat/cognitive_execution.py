@@ -959,6 +959,10 @@ def resolve_cognitive_response(
                     and step.get("status") not in {"completed", "failed"}
                 ]
                 services.runtime.write_log("cognitive_completion_state_rejected", requestId=request_id,
+                    candidateShape={"keys": sorted(str(key) for key in value)[:30],
+                                    "outcomeType": type(value.get("outcome")).__name__,
+                                    "cognitiveKeys": sorted(str(key) for key in value.get("cognitive", {}))[:20]
+                                    if isinstance(value.get("cognitive"), Mapping) else []},
                     taskId=(state.get("task") or {}).get("taskId"),
                     planRevision=(state.get("task") or {}).get("planRevision"),
                     steps=[{key: step.get(key) for key in ("stepId", "name", "status", "receiptId")}

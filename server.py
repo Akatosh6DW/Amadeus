@@ -210,6 +210,8 @@ from backend.api.conversation_routes import ConversationOperations, Conversation
 from backend.api.memory_routes import MemoryOperations, MemoryRoutes
 from backend.api.runtime_routes import RuntimeOperations, RuntimeRoutes
 from backend.api.settings_routes import SettingsOperations, SettingsRoutes
+from backend.api.update_routes import UpdateOperations, UpdateRoutes
+from backend.update_service import ReleaseUpdateService
 from backend.api.speech_routes import SpeechOperations, SpeechRoutes
 from backend.api.task_routes import TaskOperations, TaskRoutes
 from backend.api.workbench_routes import WorkbenchOperations, WorkbenchRoutes
@@ -696,7 +698,7 @@ RUNTIME_PATHS: RuntimePaths = resolve_runtime_paths(
 )
 RUNTIME_MODE = RUNTIME_PATHS.mode
 DATA_DIR = RUNTIME_PATHS.root
-APP_BUILD = "1.0.1"
+APP_BUILD = "1.0.2"
 PORT_REGISTRY = {
     "browserDebug": 5173,
     "desktopBackend": 5174,
@@ -10332,6 +10334,54 @@ SETTINGS_ROUTES = SettingsRoutes(SettingsOperations(
     test_web_search=lambda: test_web_search_connection(),
 ))
 
+
+def _request_update_shutdown() -> None:
+    """Stop services owned by this backend, then let the updater close the GUI."""
+
+    for stop_service in (stop_gpt_sovits_service, stop_vision_service):
+        try:
+            stop_service()
+        except Exception as error:
+            write_server_log(
+                "update_shutdown_service_stop_failed",
+                errorType=type(error).__name__,
+                error=str(error)[:300],
+            )
+
+    timer = threading.Timer(0.35, lambda: os._exit(0))
+    timer.daemon = True
+    timer.start()
+
+
+def _update_owned_process_ids() -> list[int]:
+    """Pass only this backend's GUI/runtime PIDs to the detached helper."""
+
+    values = [os.getpid(), os.getppid()]
+    tts_process = getattr(GPT_SOVITS_SERVICE, "process", None)
+    vision_process = VISION_PROCESS
+    for process in (tts_process, vision_process):
+        pid = getattr(process, "pid", None)
+        if pid:
+            values.append(int(pid))
+    return sorted({value for value in values if value > 0})
+
+
+UPDATE_SERVICE = ReleaseUpdateService(
+    release_mode=bool(RELEASE_MODE and getattr(sys, "frozen", False)),
+    current_version=APP_BUILD,
+    install_root=BUNDLE_ROOT,
+    cache_root=DATA_DIR / "updates",
+    helper_path=ROOT / "tools" / "update_release.ps1",
+    shutdown=_request_update_shutdown,
+    settings=lambda: load_settings(),
+    process_ids=_update_owned_process_ids,
+)
+UPDATE_ROUTES = UpdateRoutes(UpdateOperations(
+    status=lambda: UPDATE_SERVICE.status(),
+    check=lambda: UPDATE_SERVICE.check(),
+    start=lambda confirmed: UPDATE_SERVICE.start(confirmed=confirmed),
+))
+
 CONVERSATION_ROUTES = ConversationRoutes(ConversationOperations(
     storage_health=lambda: conversation_storage_health(),
     archive_preview=lambda limit: read_conversation_archive_turns(limit),
@@ -11694,7 +11744,7 @@ TOUCH_APPLICATION = TouchApplication(
 
 HTTP_SERVICES = http_server.HttpServices(
     routes=http_server.HttpRoutes(
-        runtime=RUNTIME_ROUTES, assets=ASSET_ROUTES, workbench=WORKBENCH_ROUTES,
+        runtime=RUNTIME_ROUTES, updates=UPDATE_ROUTES, assets=ASSET_ROUTES, workbench=WORKBENCH_ROUTES,
         settings=SETTINGS_ROUTES, cache=CACHE_ROUTES, conversation=CONVERSATION_ROUTES,
         tasks=TASK_ROUTES, memory=MEMORY_ROUTES, actions=ACTION_ROUTES, speech=SPEECH_ROUTES,
     ),
