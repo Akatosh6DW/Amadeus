@@ -166,7 +166,8 @@ class ScheduleWorkflowService:
                 {"role": "system", "content": (
                     "主回答因为上游协议退化而没有留下 scheduleIntent。现在只做一次独立语义判定；"
                     "不要写角色回复，不要依据单个词触发。输出唯一 JSON 对象，顶层只能有 scheduleIntent。"
-                    "todo_manage 已支持 recurrenceRule=daily；每天重复的提醒应保留该规则。"
+                    "todo_manage 支持 recurrenceRule=daily、weekly、weekdays、monthly 以及后端接受的 RFC5545 RRULE；"
+                    "用户要求暂停或恢复现有任务时使用 action=pause 或 action=resume，并保留目标绑定。"
                     "没有明确钟点时创建全天任务，dueAt为空，明确的日期保留到dueDate；"
                     "不要索要 exactClockTime，也不要把 recurrenceRule 当成缺失能力。"
                 )},
@@ -392,7 +393,7 @@ class ScheduleWorkflowService:
                     "你正在对同一轮日程活动做证据后的第二次语义判定。此前本地日程读取已经返回；"
                     "结合用户原话、相邻对话、原判定和真实候选，输出唯一 JSON，顶层只能有 scheduleIntent。"
                     "不得用关键词或相似度自行授权，也不得写角色回复。用户原话若明确要求完成、修改、删除、"
-                    "推迟或新增，并且读取结果已经唯一确定目标，就应生成带 targetRef.taskId 和 "
+                    "暂停、恢复、推迟或新增，并且读取结果已经唯一确定目标，就应生成带 targetRef.taskId 和 "
                     "commitIntent=true 的 mutation command；只有目标仍不唯一或确实缺少执行字段时才 clarification。"
                     "用户只是查询、讨论、假设或明确禁止写入时，绝不能生成写命令。\n"
                     "原判定：" + json.dumps(decision, ensure_ascii=False, separators=(",", ":")) + "\n"

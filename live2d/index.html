@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="/live2d/local_api.js?v=20260910-local-session"></script>
     <title>Amadeus System</title>
-    <link rel="stylesheet" href="live2d.css?v=20260912-crop-frame">
+    <link rel="stylesheet" href="live2d.css?v=20261025-model-profiles">
   </head>
   <body>
     <section class="boot-sequence" id="bootSequence" aria-hidden="true">
@@ -809,12 +809,34 @@
         </div>
 
         <div class="tab-page active" data-page="api">
+          <div class="model-box" id="modelProfilesBox">
+            <div class="model-box-head">
+              <strong>模型配置</strong>
+              <span id="modelProfileActive" aria-live="polite">正在读取当前配置…</span>
+            </div>
+            <label class="field">已保存的配置
+              <select id="modelProfileSelect" disabled aria-label="已保存的模型配置"></select>
+            </label>
+            <div class="button-row">
+              <button id="activateModelProfileBtn" type="button" disabled>切换到此配置</button>
+              <button id="newModelProfileBtn" type="button">新增配置</button>
+              <button id="editModelProfileBtn" type="button" disabled>编辑此配置</button>
+              <button id="deleteModelProfileBtn" type="button" disabled>删除此配置</button>
+            </div>
+            <div class="hint">选中配置后点击“切换到此配置”才会生效。编辑和保存不会自动切换。</div>
+            <div class="hint" id="modelProfileStatus" role="status" aria-live="polite">配置和密钥仅保存在本机。</div>
+          </div>
+          <div class="model-box hidden" id="modelProfileEditor">
+            <strong id="modelProfileEditorTitle">新增配置</strong>
+            <label class="field">配置名称
+              <input id="modelProfileNameInput" spellcheck="false" placeholder="例如 DeepSeek、Gemini">
+            </label>
           <label class="field">
-            Endpoint
+            接口地址（Endpoint）
             <input id="apiEndpointInput" spellcheck="false" placeholder="https://api.deepseek.com/chat/completions">
           </label>
           <label class="field">
-            Model
+            模型名称（Model）
             <input id="apiModelInput" spellcheck="false" placeholder="填写要使用的模型 ID">
           </label>
           <label class="field">
@@ -824,11 +846,11 @@
               <option value="pro">独立 Pro（固定 deepseek-v4-pro）</option>
             </select>
           </label>
-          <div class="hint">默认全部跟随上方 Model：日常聊天、工具调用、识图与修正。以后更新型号，只需修改 Model 并保存；无需逐项更换。修正完成后仍回到正常对话。独立 Pro 是固定型号的单独选择，不随主模型变化。</div>
+          <div class="hint">默认全部跟随上方 Model：日常聊天、工具调用、识图与修正。修改后点击“保存并使用”即可应用。修正完成后仍回到正常对话。独立 Pro 是固定型号的单独选择，不随主模型变化。</div>
           <label class="field">
             API Key
             <input id="apiKeyInput" type="password" spellcheck="false" placeholder="留空表示不修改已保存 key">
-            <span class="hint">圆点仅表示已保存的密钥被隐藏，不代表密钥有效。修改后请先保存，再测试连接。</span>
+            <span class="hint">圆点仅表示已保存的密钥被隐藏，不代表密钥有效。留空保留这套配置原有的 Key；更换服务商时需要填写对应 Key。</span>
           </label>
           <label class="field">
             连接路线
@@ -849,53 +871,37 @@
             <span>请求 JSON response_format</span>
           </label>
           <div class="hint" id="apiKeyHint">API key 未设置</div>
-          <div class="model-box" id="modelProfilesBox">
-            <div class="model-box-head">
-              <strong>模型连接配置档</strong>
-              <span id="modelProfileActive">当前：未绑定配置档</span>
-            </div>
-            <div class="two-col">
-              <label class="field">
-                配置档名称
-                <input id="modelProfileNameInput" spellcheck="false" placeholder="例如 Gemini Flash">
-              </label>
-              <label class="field">
-                选择配置档
-                <select id="modelProfileSelect" disabled>
-                  <option value="">还没有保存的配置档</option>
-                </select>
-              </label>
-            </div>
-            <label class="check-row">
-              <input id="modelProfileOverwriteInput" type="checkbox">
-              <span>保存时覆盖所选配置档</span>
-            </label>
-            <label class="check-row">
-              <input id="modelProfileClearKeyInput" type="checkbox">
-              <span>保存时清除该配置档的 API Key</span>
-            </label>
+          <details>
+            <summary>密钥管理（可选）</summary>
+            <button id="clearModelProfileKeyBtn" type="button">移除此配置已保存的 Key</button>
+          </details>
             <div class="button-row">
-              <button id="saveModelProfileBtn" type="button">保存当前编辑为配置档</button>
-              <button id="activateModelProfileBtn" type="button" disabled>启用所选配置档</button>
-              <button id="deleteModelProfileBtn" type="button" disabled>删除所选配置档</button>
+              <button id="saveModelProfileBtn" type="button">保存配置</button>
+              <button id="saveUseModelProfileBtn" type="button">保存并使用</button>
+              <button id="cancelModelProfileBtn" type="button">取消编辑</button>
             </div>
-            <div class="hint" id="modelProfileStatus">配置档只保存在本机当前用户资料中；Key 不会回传到页面。</div>
+            <div class="hint">“保存配置”只更新这套配置；“保存并使用”同时将它设为当前使用的配置。</div>
           </div>
+          <div class="button-row">
+            <button id="testApiBtn" type="button">测试当前使用的配置</button>
+          </div>
+          <div class="hint" id="apiTestStatus">测试会发送一个极短请求，不会写入对话记忆。</div>
+          <details class="model-box">
+            <summary>识图选项（所有配置共用）</summary>
           <label class="check-row">
             <input id="visionEnabledInput" type="checkbox">
             <span>启用云端识图</span>
           </label>
-          <div class="hint">识图跟随上方 Endpoint、Model、API Key 和连接路线。Google Gemini 与 DeepSeek 官方接口会沿用当前聊天配置；截图、摄像头、图片附件和扫描 PDF 会上传图片并产生 API 用量。关闭后不再进行识图，也不会切回本地模型。屏幕和摄像头仍需各自授权。</div>
+          <div class="hint">识图跟随当前正在使用的模型配置。Google Gemini 与 DeepSeek 官方接口会沿用当前聊天配置；截图、摄像头、图片附件和扫描 PDF 会上传图片并产生 API 用量。关闭后不再进行识图，也不会切回本地模型。屏幕和摄像头仍需各自授权。</div>
           <label class="field">
             DeepSeek 独立视觉 API Key（可选）
-            <input id="visionApiKeyInput" type="password" spellcheck="false" placeholder="主聊天使用 DeepSeek 官方接口时，共用上方 Key">
+            <input id="visionApiKeyInput" type="password" spellcheck="false" placeholder="未单独设置时，共用当前 DeepSeek 配置的 Key">
           </label>
-          <div class="hint" id="visionApiHint">留空不修改已有 Key；没有独立 Key 时，DeepSeek 官方聊天可共用上方 Key。使用 Google Gemini 时只发送上方 Google API Key。</div>
+          <div class="hint" id="visionApiHint">留空不修改已有 Key；没有独立 Key 时，DeepSeek 官方聊天可共用当前配置的 Key。使用 Google Gemini 时只发送当前配置的 Google API Key。</div>
           <div class="button-row">
-            <button id="saveApiBtn" type="button">保存 API 设置</button>
-            <button id="testApiBtn" type="button">测试连接</button>
+            <button id="saveVisionBtn" type="button">保存识图选项</button>
           </div>
-          <div class="hint" id="apiTestStatus">测试会发送一个极短请求，不会写入对话记忆。</div>
+          </details>
         </div>
 
         <div class="tab-page" data-page="update">
@@ -1384,6 +1390,7 @@
           <span>显示</span>
           <select id="todoFilterInput">
             <option value="active">未完成</option>
+            <option value="paused">已暂停</option>
             <option value="all">全部</option>
             <option value="completed">已完成</option>
           </select>
@@ -1397,9 +1404,10 @@
           </div>
           <label>标题<input id="todoEditorTitle" maxlength="240" required></label>
           <label>说明<textarea id="todoEditorDetails" maxlength="4000" rows="3"></textarea></label>
+          <label>到点动作（留空仅提醒）<textarea id="todoEditorOnDue" maxlength="4000" rows="3" placeholder="例如：整理今天的实验记录并告诉我结果"></textarea></label>
           <label>具体时间（留空为全天）<input id="todoEditorDueAt" type="datetime-local"></label>
           <label>全天日期 / 每日任务开始日期（可留空）<input id="todoEditorDueDate" type="date"></label>
-          <p>全天任务每天首次打开时提醒；每日重复任务当天完成后，次日恢复。</p>
+          <p>全天任务每天首次打开时提醒；重复任务可以在列表中暂停或恢复。</p>
           <div class="todo-editor-grid">
             <label>优先级
               <select id="todoEditorPriority">
@@ -1422,6 +1430,10 @@
               <select id="todoEditorRecurrence">
                 <option value="">不重复</option>
                 <option value="daily">每天</option>
+                <option value="weekly">每周</option>
+                <option value="weekdays">工作日</option>
+                <option value="monthly">每月</option>
+                <option value="__custom__" disabled>自定义周期</option>
               </select>
             </label>
           </div>
@@ -1475,7 +1487,7 @@
     <script src="proactive_logic.js?v=20260721-release-tool-vision-selection-v78"></script>
     <script src="chat/proactive_controller.js?v=20260923-proactive-controller"></script>
     <script src="chat/reminder_polling.js?v=20260923-reminder-polling"></script>
-    <script src="chat/todo_controller.js?v=20260923-todo-controller"></script>
+    <script src="chat/todo_controller.js?v=20261024-recurring-ui"></script>
     <script src="emotion_intensity_curve.js?v=20260727-end-dense-v135"></script>
     <script src="annotated_expression_map.js?v=20260728-agent-permissions-v142"></script>
     <script src="garment_rig.js?v=20260908-inner-edge-v6"></script>
@@ -1495,7 +1507,7 @@
     <script src="character/mouth_parameter_renderer.js?v=20260923-mouth-parameter-renderer"></script>
     <script src="character/parameter_renderer.js?v=20260923-parameter-renderer"></script>
     <script src="window_resize.js?v=20260911"></script>
-    <script src="background_editor.js?v=20260912-crop-frame"></script>
+    <script src="background_editor.js?v=20261025-model-profiles"></script>
     <script src="chat/history_search.js?v=20260921"></script>
     <script src="chat/conversation_picker.js?v=20260921-conversation-picker-controller"></script>
     <script src="chat/bookmarks.js?v=20260921-bookmarks-controller"></script>
@@ -1505,10 +1517,10 @@
     <script src="chat/speech_playback.js?v=20260921"></script>
     <script src="chat/chat_controller.js?v=20260923-chat-controller"></script>
     <script src="chat/thinking_indicator.js?v=20260923-thinking-indicator-controller"></script>
-    <script src="settings/settings_controller.js?v=20260923-settings-controller"></script>
+    <script src="settings/settings_controller.js?v=20261025-settings-controller"></script>
     <script src="settings/update_controller.js?v=20261022-update-controller"></script>
-    <script src="settings/model_profile_controller.js?v=20261022-model-profile-controller"></script>
-    <script src="settings/api_verification.js?v=20260921-api-verification-controller"></script>
+    <script src="settings/model_profile_controller.js?v=20261025-model-profile-editor"></script>
+    <script src="settings/api_verification.js?v=20261025-api-verification-controller"></script>
     <script src="character/touch_interaction.js?v=20260923-touch-interaction-controller"></script>
     <script src="character/model_transform_controller.js?v=20260923-model-transform-controller"></script>
     <script src="developer/salieri_panel.js?v=20260923-salieri-panel-controller"></script>
@@ -1519,6 +1531,6 @@
     <script src="developer/model_editor.js?v=20260923-model-editor-controller"></script>
     <script src="developer/voice_reference_controller.js?v=20260923-voice-reference-controller"></script>
     <script src="developer/parameter_lab.js?v=20260923-parameter-lab"></script>
-    <script src="live2d_app.js?v=20260923-thinking-indicator-controller"></script>
+    <script src="live2d_app.js?v=20261025-profile-editor"></script>
   </body>
 </html>

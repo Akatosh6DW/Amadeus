@@ -53,3 +53,11 @@ dist/
 /いとうかなこ - アマデウス.flac
 /牧濑红莉栖.zip
 /牧濑红莉栖/
+
+# Personal attachments, generated documents, and local-only automation helpers.
+/.codex-remote-attachments/
+/output/
+/tools/word_automation/
+# Per-machine environment files; keep the empty deployment example.
+.env.*
+!.env.example

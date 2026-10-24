@@ -363,7 +363,7 @@ Ensure-Git -Conda $conda
 Ensure-WebView2
 Ensure-GptSovitsSource
 $desktopPython = Ensure-CondaEnvironment -Conda $conda -Prefix $desktopEnv -PythonVersion $environment.python.desktop
-if (-not (Test-PythonImports -Python $desktopPython -Modules @("webview", "PIL", "pypdf", "ddgs", "certifi", "primp", "lxml", "cv2", "numpy", "onnxruntime", "tokenizers")) -or $Force) {
+if (-not (Test-PythonImports -Python $desktopPython -Modules @("webview", "PIL", "pypdf", "apscheduler", "dateutil", "ddgs", "certifi", "primp", "lxml", "cv2", "numpy", "onnxruntime", "tokenizers")) -or $Force) {
     Install-PipRequirements -Python $desktopPython -Requirements (Join-Path $root "requirements-deploy.txt")
 }
 Ensure-VoiceEnvironment -Conda $conda -SelectedBackend $selectedBackend

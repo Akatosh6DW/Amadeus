@@ -5966,19 +5966,17 @@ def execute_scheduled_task(reminder: dict[str, Any], settings: dict[str, Any]) -
     """
     task = reminder["task"]
     request_id = "scheduled-" + str(reminder["reminderId"])
+    from backend.tasks.execution_context import isolate_scheduled_context, scheduled_task_context
+    from todo_store import list_todo_runs
     instruction = str(task["onDue"])
-    body = {"requestId": request_id, "userMessage": instruction, "messages": [], "_scheduledTaskExecution": True,
-            "proactiveContext": (
-                "这是用户已授权任务的到期执行，不是用户重新发言。现在执行保存的指令，按需组合已有工具；"
-                "不要再为同一指令设置一次延时，不要仅提醒用户自己做。原文、次数、指定语言要完整保留，"
-                "不省略重复内容；有精确次数要求时先拟完整文本，用 local_compute 的 count_substring/text_length 核对，"
-                "不符合要求就修正后核对，最终原样使用核对通过的文本，不再缩写或省略。口述稿也保留同样的次数。"
-                "精确算术同样复用 local_compute；其他任务按需要选择工具，不能完成时如实说明。"
-                "保持原等待/安静状态，不输出恢复闲聊的指令。"
-                "当前调度任务的完成状态由交付回执更新，不要自行把当前调度任务标完成。"
-                "当前任务ID：" + str(task["taskId"]))}
+    with state_database() as connection:
+        history = [run for run in list_todo_runs(connection, task["taskId"], limit=7)
+                   if run.get("runId") != str(reminder.get("runId") or "")]
+    body = {"requestId": request_id, "userMessage": instruction, "messages": [],
+            "_scheduledTaskExecution": True,
+            "proactiveContext": scheduled_task_context(task, history)}
     ensure_turn_context_snapshot(body, request_id=request_id, user_message=instruction)
-    body["_turnContextSnapshot"]["_contextState"].pop("pendingAction", None)
+    isolate_scheduled_context(body, default_context=default_conversation_context())
     body["_preparedActionTurn"] = prepare_action_turn(instruction, request_id=request_id, pending_action={})
     result = call_upstream(body)
     bind_turn_context_to_result(body, result)
@@ -6014,6 +6012,34 @@ REMINDER_SERVICE = reminder_application.ReminderService(
 
 def generate_todo_reminder(body: dict[str, Any] | None = None) -> dict[str, Any]:
     return REMINDER_SERVICE.generate_todo_reminder(body)
+
+
+def task_execution_history(task_id: str) -> dict[str, Any]:
+    from todo_store import list_todo_runs
+    with state_database() as connection:
+        task = read_todo(connection, task_id)
+        if not task:
+            return {"ok": False, "error": "task_not_found"}
+        return {"ok": True, "task": task, "runs": list_todo_runs(connection, task_id, limit=30)}
+
+
+from backend.tasks.runner import ScheduledTaskRunner
+
+SCHEDULED_TASK_RUNNER = ScheduledTaskRunner(
+    lambda: REMINDER_SERVICE.execute_next_scheduled(),
+    write_log=lambda *args, **kwargs: write_server_log(*args, **kwargs),
+    ready=lambda: configured(load_settings()),
+)
+
+
+def start_scheduled_tasks() -> None:
+    """Recover previous-process claims after acquiring the runtime process lock."""
+    from todo_store import recover_started_todo_runs
+    with state_database() as connection:
+        recovered = recover_started_todo_runs(connection, stale_after_seconds=0)
+    if recovered:
+        write_server_log('scheduled_tasks_recovered', count=len(recovered))
+    SCHEDULED_TASK_RUNNER.start()
 
 
 def screen_capture_storage_paths() -> tuple[Path, Path]:
@@ -10464,6 +10490,7 @@ TASK_ROUTES = TaskRoutes(TaskOperations(
     todo_list=lambda settings, args: tool_todo_list(settings, args),
     todo_manage=lambda settings, args: tool_todo_manage(settings, args),
     poll_reminder=lambda body: generate_todo_reminder(body),
+    task_history=lambda task_id: task_execution_history(task_id),
     acknowledge_reminder=lambda reminder_id, delivered, error: acknowledge_reminder_in_transaction(
         reminder_id,
         delivered=delivered,
@@ -11831,6 +11858,7 @@ STARTUP_SERVICES = StartupServices(
     should_start_vision=lambda settings: should_start_vision_service(settings),
     ensure_vision=lambda *a, **k: ensure_vision_service(*a, **k),
     stop_tts=lambda: stop_gpt_sovits_service(), stop_vision=lambda: stop_vision_service(),
+    start_tasks=lambda: start_scheduled_tasks(), stop_tasks=lambda: SCHEDULED_TASK_RUNNER.stop(),
 )
 
 def main() -> None:

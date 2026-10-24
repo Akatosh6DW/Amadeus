@@ -25,6 +25,8 @@ class StartupServices:
     ensure_vision: Callable[..., Any]
     stop_tts: Callable[[], Any]
     stop_vision: Callable[[], Any]
+    start_tasks: Callable[[], Any] = lambda: None
+    stop_tasks: Callable[[], Any] = lambda: None
 
 def serve(services: StartupServices) -> None:
     services.ensure_data()
@@ -65,10 +67,13 @@ def serve(services: StartupServices) -> None:
                 daemon=True,
                 name="amadeus-vision-starter",
             ).start()
+        if not storage_health.get("recoveryRequired"):
+            services.start_tasks()
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down.")
     finally:
+        services.stop_tasks()
         services.stop_tts()
         services.stop_vision()
         if server is not None:

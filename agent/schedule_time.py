@@ -22,7 +22,13 @@ __all__ = [
 ]
 
 
-_KINDS = frozenset({"next_clock", "calendar", "after", "existing_date"})
+_KINDS = frozenset({
+    "next_clock",
+    "next_weekday",
+    "calendar",
+    "after",
+    "existing_date",
+})
 _COMMON_FIELDS = frozenset({"kind", "reason"})
 _CLOCK_RE = re.compile(r"^(?P<hour>[0-9]|[01]\d|2[0-3]):(?P<minute>[0-5]\d)(?::(?P<second>[0-5]\d))?$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -62,6 +68,14 @@ def _clock(value: Any) -> str:
     return normalized
 
 
+def _weekday(value: Any) -> int:
+    """Validate an ISO weekday without accepting bool or numeric strings."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 7:
+        _raise("todo_time_invalid_weekday")
+    return value
+
+
 def _calendar_date(value: Any) -> str:
     if not isinstance(value, str) or _DATE_RE.fullmatch(value.strip()) is None:
         _raise("todo_time_invalid_date")
@@ -92,7 +106,7 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
 
     ``None`` and an empty mapping mean that the command intentionally carries
     no clock specification and normalize to ``{}``.  Every non-empty mapping
-    must use one of the four known kinds and only fields allowed by that kind.
+    must use one of the five known kinds and only fields allowed by that kind.
     The returned mapping is a fresh plain dictionary suitable for logging and
     for passing to :func:`resolve_time_spec`.
     """
@@ -105,7 +119,7 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
         return {}
 
     unknown = set(value) - {
-        "kind", "clock", "date", "dayOffset", "seconds", "reason"
+        "kind", "clock", "weekday", "date", "dayOffset", "seconds", "reason"
     }
     if unknown:
         _raise("todo_time_unknown_field")
@@ -119,6 +133,7 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
 
     fields_by_kind = {
         "next_clock": _COMMON_FIELDS | {"clock"},
+        "next_weekday": _COMMON_FIELDS | {"weekday", "clock"},
         "calendar": _COMMON_FIELDS | {"clock", "date", "dayOffset"},
         "after": _COMMON_FIELDS | {"seconds"},
         "existing_date": _COMMON_FIELDS | {"clock"},
@@ -136,7 +151,11 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
             _raise("todo_time_clock_required")
         normalized["clock"] = _clock(value["clock"])
 
-    if kind == "calendar":
+    if kind == "next_weekday":
+        if "weekday" not in value or _blank_optional(value["weekday"]):
+            _raise("todo_time_weekday_required")
+        normalized["weekday"] = _weekday(value["weekday"])
+    elif kind == "calendar":
         has_date = "date" in value and not _blank_optional(value["date"])
         has_offset = "dayOffset" in value and not _blank_optional(value["dayOffset"])
         if has_date == has_offset:
@@ -316,7 +335,8 @@ def _utc_iso(value: datetime) -> str:
 
 
 # 使用调用方给定的带时区时间作为锚点；同一输入可重复得到相同的 UTC 时刻。
-# next_clock 才会顺延到下一次钟点，明确指定的日历日期不自动改成明天。
+# next_clock and next_weekday advance only when the local candidate is equal to
+# or before the frozen anchor; explicitly specified calendar dates never move.
 def resolve_time_spec(
     spec: Mapping[str, Any],
     *,
@@ -344,6 +364,9 @@ def resolve_time_spec(
         if existing is None:
             _raise("todo_time_existing_task_required")
         target_date = _parse_existing_due_at(existing).astimezone(zone).date()
+    elif normalized["kind"] == "next_weekday":
+        days_ahead = (normalized["weekday"] - local_anchor.isoweekday()) % 7
+        target_date = local_anchor.date() + timedelta(days=days_ahead)
     elif normalized["kind"] == "calendar":
         if "date" in normalized:
             target_date = date.fromisoformat(normalized["date"])
@@ -354,8 +377,9 @@ def resolve_time_spec(
 
     local_naive = datetime.combine(target_date, _clock_time(normalized["clock"]))
     candidate = _localize(local_naive, zone)
-    if normalized["kind"] == "next_clock" and candidate.astimezone(timezone.utc) <= anchor_utc:
-        next_date = target_date + timedelta(days=1)
+    if normalized["kind"] in {"next_clock", "next_weekday"} and candidate.astimezone(timezone.utc) <= anchor_utc:
+        increment = 7 if normalized["kind"] == "next_weekday" else 1
+        next_date = target_date + timedelta(days=increment)
         candidate = _localize(
             datetime.combine(next_date, _clock_time(normalized["clock"])), zone
         )

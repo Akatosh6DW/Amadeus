@@ -42,8 +42,18 @@ def canonical_tool_arguments(name: str, value: Any) -> dict[str, Any]:
             target = TodoTargetRef.from_mapping(args.get("targetRef") or args.get("target_ref") or args)
         except ValueError:
             return args
-        return {"targetRef": target.to_dict(),
-                "limit": _bounded_integer(args.get("limit") or 8, 1, 20, 8)}
+        operation = {
+            "targetRef": target.to_dict(),
+            "limit": _bounded_integer(args.get("limit") or 8, 1, 20, 8),
+        }
+        if bool(args.get("includeHistory")):
+            operation.update({
+                "includeHistory": True,
+                "historyLimit": _bounded_integer(
+                    args.get("historyLimit") or 8, 1, 20, 8,
+                ),
+            })
+        return operation
     if name == "bookmark_list":
         return {"query": str(args.get("query") or args.get("name") or "").strip()[:240],
                 "limit": _bounded_integer(args.get("limit"), 1, 200, 200)}

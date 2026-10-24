@@ -10,6 +10,7 @@ Amadeus System is a *Steins;Gate* fan project. A Live2D character modeled on Kur
 
 - **Chat and memory**: she remembers your preferences and ongoing plans, even across conversations.
 - **To-dos and reminders**: add items in the to-do panel or just say "remind me about the meeting at 9 tomorrow"; she can also read something aloud to you a little later. Reminders and delayed tasks need the program to stay running.
+- **Recurring tasks (development source)**: ask her to recommend papers based on your current interests every Monday at 9. Edit instructions, pause, and resume through conversation or the to-do editor. Tasks execute while the backend is running and save results for desktop delivery. After shutdown or sleep, missed occurrences are coalesced into one catch-up run.
 - **Voice and expressions**: replies are read aloud in Japanese sentence by sentence, with expressions and motions that follow the mood; tap her and she reacts.
 - **Images and research**: with your permission she can look at images, screenshots and camera frames, read and edit text files, and search the web with sources.
 - **Appearance**: a floating desktop layout or a video-call layout, two outfits, and backgrounds you can replace with your own pictures.

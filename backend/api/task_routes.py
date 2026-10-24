@@ -23,6 +23,7 @@ class TaskOperations:
     acknowledge_reminder: Callable[[str, bool, str], dict[str, Any]]
     bookmark_list: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
     bookmark_manage: Callable[[dict[str, Any], dict[str, Any], str], dict[str, Any]]
+    task_history: Callable[[str], dict[str, Any]] | None = None
 
 
 class TaskRoutes:
@@ -30,9 +31,19 @@ class TaskRoutes:
         self.operations = operations
 
     def get(self, response: JsonResponse, path: str, query_string: str = "") -> bool:
-        if path not in {"/api/bookmarks", "/api/todos"}:
+        if path not in {"/api/bookmarks", "/api/todos", "/api/todos/history"}:
             return False
         query = urllib.parse.parse_qs(query_string, keep_blank_values=True)
+        if path == '/api/todos/history':
+            task_id = str((query.get('taskId') or [''])[0]).strip()
+            if not task_id:
+                response.send_json({'ok': False, 'error': 'task_id_required'}, 400)
+            elif self.operations.task_history is None:
+                response.send_json({'ok': False, 'error': 'task_history_unavailable'}, 503)
+            else:
+                result = self.operations.task_history(task_id)
+                response.send_json(result, 200 if result.get('ok') else 404)
+            return True
         if path == "/api/bookmarks":
             try:
                 limit = int((query.get("limit") or ["200"])[0])

@@ -1095,6 +1095,7 @@ function bindDom() {
     todoEditor: document.getElementById("todoEditor"),
     todoEditorTitle: document.getElementById("todoEditorTitle"),
     todoEditorDetails: document.getElementById("todoEditorDetails"),
+    todoEditorOnDue: document.getElementById("todoEditorOnDue"),
     todoEditorDueAt: document.getElementById("todoEditorDueAt"),
     todoEditorDueDate: document.getElementById("todoEditorDueDate"),
     todoEditorPriority: document.getElementById("todoEditorPriority"),
@@ -1278,13 +1279,11 @@ function bindDom() {
     modelProfileActive: document.getElementById("modelProfileActive"),
     modelProfileSelect: document.getElementById("modelProfileSelect"),
     modelProfileNameInput: document.getElementById("modelProfileNameInput"),
-    modelProfileOverwriteInput: document.getElementById("modelProfileOverwriteInput"),
-    modelProfileClearKeyInput: document.getElementById("modelProfileClearKeyInput"),
     saveModelProfileBtn: document.getElementById("saveModelProfileBtn"),
     activateModelProfileBtn: document.getElementById("activateModelProfileBtn"),
     deleteModelProfileBtn: document.getElementById("deleteModelProfileBtn"),
     modelProfileStatus: document.getElementById("modelProfileStatus"),
-    saveApiBtn: document.getElementById("saveApiBtn"),
+    saveVisionBtn: document.getElementById("saveVisionBtn"),
     testApiBtn: document.getElementById("testApiBtn"),
     apiTestStatus: document.getElementById("apiTestStatus"),
     windowWidthInput: document.getElementById("windowWidthInput"),
@@ -1628,6 +1627,7 @@ function bindUpdateController() {
 }
 
 function bindTodoController() {
+  let preservedTodoRecurrenceRule = "";
   todoController = TODO_CONTROLLER.createTodoController({
     elements: {
       drawer: dom.todoDrawer,
@@ -1637,6 +1637,7 @@ function bindTodoController() {
       quickForm: dom.todoQuickForm,
       list: dom.todoList,
       editor: dom.todoEditor,
+      editorOnDue: dom.todoEditorOnDue,
       editorDueAt: dom.todoEditorDueAt,
       editorDueDate: dom.todoEditorDueDate,
       editorCancel: dom.todoEditorCancelBtn,
@@ -1665,26 +1666,36 @@ function bindTodoController() {
       renderBadge: state => renderTodoBadge(state),
       renderItems: (items, state) => renderTodoItems(items, state),
       setEditor: item => {
+        const recurrence = TODO_CONTROLLER.normalizeRecurrenceEditorValue(item.recurrenceRule);
+        preservedTodoRecurrenceRule = recurrence.preservedRule;
         dom.todoEditorTitle.value = String(item.title || "");
         dom.todoEditorDetails.value = String(item.details || "");
+        dom.todoEditorOnDue.value = String(item.onDue || "");
         dom.todoEditorDueAt.value = todoDateTimeInputValue(item.dueAt);
         dom.todoEditorDueDate.value = String(item.dueDate || "");
         dom.todoEditorPriority.value = String(item.priority || "normal");
         dom.todoEditorRemindBefore.value = String(item.remindBeforeMinutes || 0);
-        dom.todoEditorRecurrence.value = String(item.recurrenceRule || "");
+        dom.todoEditorRecurrence.value = recurrence.selectValue;
         dom.todoEditor.classList.remove("hidden");
         dom.todoEditorTitle.focus();
       },
       readEditor: () => ({
         title: dom.todoEditorTitle.value,
         details: dom.todoEditorDetails.value,
+        onDue: dom.todoEditorOnDue.value,
         dueAt: dom.todoEditorDueAt.value,
         dueDate: dom.todoEditorDueDate.value,
         priority: dom.todoEditorPriority.value,
         remindBeforeMinutes: dom.todoEditorRemindBefore.value,
-        recurrenceRule: dom.todoEditorRecurrence.value,
+        recurrenceRule: TODO_CONTROLLER.recurrenceRuleFromEditor(
+          dom.todoEditorRecurrence.value,
+          preservedTodoRecurrenceRule,
+        ),
       }),
-      clearEditor: () => dom.todoEditor?.classList.add("hidden"),
+      clearEditor: () => {
+        preservedTodoRecurrenceRule = "";
+        dom.todoEditor?.classList.add("hidden");
+      },
     },
     feedback: {
       warn: (...args) => console.warn(...args),
@@ -1935,7 +1946,7 @@ function bindApiVerification() {
       apiNetworkModeInput: dom.apiNetworkModeInput,
       apiProxyUrlInput: dom.apiProxyUrlInput,
       responseFormatInput: dom.responseFormatInput,
-      saveApiButton: dom.saveApiBtn,
+      saveVisionButton: dom.saveVisionBtn,
       testApiButton: dom.testApiBtn,
       apiTestStatus: dom.apiTestStatus,
     },
@@ -1967,8 +1978,14 @@ function bindModelProfileController() {
       networkMode: dom.apiNetworkModeInput,
       proxy: dom.apiProxyUrlInput,
       responseFormat: dom.responseFormatInput,
-      overwrite: dom.modelProfileOverwriteInput,
-      clearKey: dom.modelProfileClearKeyInput,
+      editor: document.getElementById("modelProfileEditor"),
+      title: document.getElementById("modelProfileEditorTitle"),
+      keyHint: dom.apiKeyHint,
+      clearKey: document.getElementById("clearModelProfileKeyBtn"),
+      create: document.getElementById("newModelProfileBtn"),
+      edit: document.getElementById("editModelProfileBtn"),
+      cancel: document.getElementById("cancelModelProfileBtn"),
+      saveUse: document.getElementById("saveUseModelProfileBtn"),
       save: dom.saveModelProfileBtn,
       activate: dom.activateModelProfileBtn,
       remove: dom.deleteModelProfileBtn,
@@ -1978,8 +1995,8 @@ function bindModelProfileController() {
     savedApiKeyMask: SAVED_API_KEY_MASK,
     onActivated: async payload => {
       const previousSettings = { ...settings };
-      await loadSettings();
-      apiVerificationController?.onSettingsSaved(payload?.settings || settings, previousSettings);
+      settingsController.acceptExternalSettings(payload.settings);
+      apiVerificationController?.onSettingsSaved(payload.settings, previousSettings);
       fillSettingsForm();
       applySettingsToUi();
     },
@@ -3268,22 +3285,73 @@ function todoDateTimeInputValue(value) {
     + pad(parsed.getDate()) + "T" + pad(parsed.getHours()) + ":" + pad(parsed.getMinutes());
 }
 
+const TODO_RECURRENCE_LABELS = Object.freeze({
+  daily: "每天重复",
+  weekly: "每周重复",
+  weekdays: "工作日重复",
+  monthly: "每月重复",
+});
+
+const TODO_EXECUTION_STATUS_LABELS = Object.freeze({
+  completed: "已完成",
+  success: "已完成",
+  failed: "未完成",
+  unknown: "结果未知",
+  started: "执行中",
+  running: "执行中",
+  pending: "等待执行",
+});
+
+function todoTextSnippet(value, limit = 80) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > limit ? text.slice(0, Math.max(1, limit - 1)) + "…" : text;
+}
+
+function todoRecurrenceLabel(value) {
+  const rule = String(value || "").trim();
+  return rule ? (TODO_RECURRENCE_LABELS[rule] || "自定义周期") : "";
+}
+
+function todoLastExecutionSummary(item) {
+  const execution = item?.lastExecution;
+  if (!execution || typeof execution !== "object") return "";
+  const status = String(execution.status || "").trim().toLowerCase();
+  const parts = [];
+  if (status) parts.push(TODO_EXECUTION_STATUS_LABELS[status] || "执行状态未知");
+  const finishedAt = todoLocalDateTime(execution.finishedAt);
+  if (finishedAt) parts.push(finishedAt);
+  const reply = todoTextSnippet(execution.reply);
+  if (reply) parts.push(`“${reply}”`);
+  return parts.join(" · ");
+}
+
 function renderTodoItems(items = []) {
   if (!dom.todoList) return;
   dom.todoList.replaceChildren();
   dom.todoEmpty?.classList.toggle("hidden", items.length > 0);
   for (const item of items) {
     const taskId = String(item.taskId || "");
+    const status = String(item.status || "pending");
+    const recurrenceRule = String(item.recurrenceRule || "").trim();
+    const isRecurring = Boolean(recurrenceRule);
+    const isPaused = status === "paused";
     const row = document.createElement("article");
-    row.className = "todo-item" + (item.status === "completed" ? " is-completed" : "");
+    row.className = "todo-item"
+      + (status === "completed" ? " is-completed" : "")
+      + (isPaused ? " is-paused" : "");
     row.dataset.taskId = taskId;
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.className = "todo-item-check";
-    checkbox.checked = item.status === "completed";
+    checkbox.checked = status === "completed";
+    checkbox.disabled = isPaused;
     checkbox.dataset.todoAction = checkbox.checked ? "reopen" : "complete";
-    checkbox.setAttribute("aria-label", checkbox.checked ? "恢复任务" : "完成任务");
+    checkbox.setAttribute(
+      "aria-label",
+      checkbox.checked ? "恢复任务" : (isPaused ? "重复任务已暂停" : "完成任务"),
+    );
 
     const main = document.createElement("div");
     main.className = "todo-item-main";
@@ -3295,10 +3363,17 @@ function renderTodoItems(items = []) {
     meta.className = "todo-item-meta";
     const details = [];
     if (item.priority === "high") details.push("高优先级");
-    if (item.dueAt) details.push(todoLocalDateTime(item.dueAt));
-    else details.push(item.dueDate ? `${item.dueDate}${item.recurrenceRule === "daily" ? " 起" : ""} · 全天` : "全天");
-    if (String(item.recurrenceRule || "") === "daily") details.push("每天重复");
+    const nextDueAt = String(item.nextDueAt || item.dueAt || "");
+    if (nextDueAt) details.push("下次 " + todoLocalDateTime(nextDueAt));
+    else if (item.nextDueDate || item.dueDate) details.push(`下次 ${(item.nextDueDate || item.dueDate)} · 全天`);
+    else details.push("全天");
+    const recurrenceLabel = todoRecurrenceLabel(recurrenceRule);
+    if (recurrenceLabel) details.push(isPaused ? `${recurrenceLabel}（已暂停）` : recurrenceLabel);
+    else if (isPaused) details.push("已暂停");
+    details.push(item.onDue ? `到点执行：${todoTextSnippet(item.onDue)}` : "仅提醒");
     if (item.snoozedUntil) details.push("推迟至 " + todoLocalDateTime(item.snoozedUntil));
+    const lastExecution = todoLastExecutionSummary(item);
+    if (lastExecution) details.push("最近执行：" + lastExecution);
     meta.textContent = details.join(" · ") || "无时间";
     main.append(title, meta);
 
@@ -3308,7 +3383,16 @@ function renderTodoItems(items = []) {
     snooze.dataset.todoAction = "snooze";
     snooze.textContent = "＋10m";
     snooze.title = "推迟提醒 10 分钟";
-    snooze.hidden = item.status === "completed";
+    snooze.hidden = status === "completed" || isPaused;
+
+    const recurrenceButton = document.createElement("button");
+    recurrenceButton.type = "button";
+    recurrenceButton.className = "todo-item-pause";
+    recurrenceButton.dataset.todoAction = isPaused ? "resume" : "pause";
+    recurrenceButton.textContent = isPaused ? "恢复" : "暂停";
+    recurrenceButton.title = isPaused ? "恢复重复任务" : "暂停重复任务";
+    recurrenceButton.setAttribute("aria-label", recurrenceButton.title);
+    recurrenceButton.hidden = !(isRecurring || isPaused) || status === "completed";
 
     const settingsButton = document.createElement("button");
     settingsButton.type = "button";
@@ -3320,7 +3404,7 @@ function renderTodoItems(items = []) {
 
     const actions = document.createElement("div");
     actions.className = "todo-item-actions";
-    actions.append(snooze, settingsButton);
+    actions.append(snooze, recurrenceButton, settingsButton);
     row.append(checkbox, main, actions);
     dom.todoList.append(row);
   }
@@ -3491,20 +3575,10 @@ function normalizeLayoutMode(value) {
 }
 
 function fillSettingsForm() {
-  dom.apiEndpointInput.value = settings.apiEndpoint || "";
-  dom.apiModelInput.value = settings.apiModel || "";
-  dom.cognitiveRepairModelInput.value = settings.cognitiveRepairModel;
-  dom.apiKeyInput.value = settings.apiKeySet ? SAVED_API_KEY_MASK : "";
-  dom.apiKeyInput.placeholder = "API key";
   if (dom.visionEnabledInput) dom.visionEnabledInput.checked = settings.visionEnabled !== false;
   if (dom.visionApiKeyInput) dom.visionApiKeyInput.value = settings.visionApiKeySet ? SAVED_API_KEY_MASK : "";
-  if (dom.visionApiHint) dom.visionApiHint.textContent = settings.visionStatus?.message || "云端识图跟随当前聊天 Endpoint、Model、Key 和连接路线；Google Gemini 不使用独立 DeepSeek Key。";
-  if (dom.apiNetworkModeInput) dom.apiNetworkModeInput.value = settings.apiNetworkMode || "auto";
-  if (dom.apiProxyUrlInput) dom.apiProxyUrlInput.value = settings.apiProxyUrl || "";
-  dom.responseFormatInput.checked = settings.useResponseFormat;
-  dom.apiKeyHint.textContent = settings.apiKeySet
-    ? "API key 已保存在本机，圆点仅为遮罩；直接输入可替换"
-    : "API key 未设置";
+  if (dom.visionApiHint) dom.visionApiHint.textContent = settings.visionStatus?.message || "云端识图跟随当前使用的配置；Google Gemini 不使用独立 DeepSeek Key。";
+  modelProfileController?.render();
   dom.windowWidthInput.value = settings.windowWidth;
   dom.windowHeightInput.value = settings.windowHeight;
   dom.layoutModeInput.value = settings.layoutMode;
@@ -4618,6 +4692,7 @@ function openSettings() {
   backgroundDraft = newBackgroundDraft();
   fillSettingsForm();
   dom.settingsModal.classList.remove("hidden");
+  modelProfileController?.refresh().catch(() => {});
   backgroundEditor?.refresh();
   refreshGptSovitsStatus().catch(error => {
     console.warn("GPT-SoVITS status refresh failed:", error);
@@ -4629,11 +4704,15 @@ function openFirstRunApiSetupIfNeeded() {
   firstRunApiSetupOpened = true;
   openSettings();
   activateSettingsTab("api");
-  window.setTimeout(() => dom.apiKeyInput?.focus(), 0);
-  toast("首次使用只需填写 API Key，其他设置已经就绪");
+  modelProfileController?.refresh().then(() => {
+    if (!modelProfileController.beginEdit(false)) modelProfileController.beginEdit(true);
+    dom.apiKeyInput?.focus();
+  }).catch(() => {});
+  toast("请填写模型配置，点击“保存并使用”完成设置");
 }
 
 function closeSettings() {
+  if (modelProfileController?.getState().editing && !modelProfileController.cancel()) return;
   closeSalieriWindow();
   dom.settingsModal.classList.add("hidden");
   backgroundDraft = null;

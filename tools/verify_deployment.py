@@ -81,7 +81,7 @@ def verify(root: Path, *, voice_only: bool = False) -> dict:
         results["ok"] = all(value["ok"] for value in results.values())
         return results
     results.update({
-        "desktop": probe(root / ".conda/amadeus-desktop/python.exe", ["webview", "PIL", "pypdf", "ddgs", "certifi", "primp", "lxml", "cv2", "numpy", "onnxruntime", "tokenizers"]),
+        "desktop": probe(root / ".conda/amadeus-desktop/python.exe", ["webview", "PIL", "pypdf", "apscheduler", "dateutil", "ddgs", "certifi", "primp", "lxml", "cv2", "numpy", "onnxruntime", "tokenizers"]),
         "gptSovitsSource": verify_source(root),
         "rhubarb": {"ok": (root / ".tools/rhubarb/Rhubarb-Lip-Sync-1.14.0-Windows/rhubarb.exe").is_file()},
     })

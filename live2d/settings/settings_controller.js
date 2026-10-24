@@ -117,6 +117,17 @@
       return tracked;
     }
 
+    function acceptExternalSettings(snapshot) {
+      // An activation response already contains the authoritative public settings.
+      // Invalidate older GETs so they cannot restore the previous connection.
+      loadToken += 1;
+      const normalized = replaceSnapshot({ ...getSettings(), ...snapshot }, "external");
+      clearDraft();
+      renderForm?.();
+      applySettingsToUi?.();
+      return normalized;
+    }
+
     async function load() {
       const token = ++loadToken;
       const saveTokenAtStart = saveToken;
@@ -208,6 +219,7 @@
     return Object.freeze({
       bind,
       load,
+      acceptExternalSettings,
       save,
       setDraft,
       clearDraft,

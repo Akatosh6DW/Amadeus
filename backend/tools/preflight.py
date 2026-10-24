@@ -32,7 +32,7 @@ from agent.todo_architecture import (
 )
 from backend.research.intent import user_explicitly_requests_web_research
 from backend.tools.validation import SENSOR_TOOL_NAMES
-from todo_store import match_active_todos_to_dialogue, read_todo
+from todo_store import match_active_todos_to_dialogue, read_todo, list_todos
 
 
 @dataclass(frozen=True)
@@ -250,6 +250,18 @@ class ToolPreflightService:
                     user_message,
                     messages,
                 )
+                # Pausing stops scheduling, not discoverability. Include a
+                # bounded snapshot even without a title/history match so the
+                # model can resolve "resume that task" semantically.
+                paused = sorted(list_todos(connection, scope='paused', limit=500),
+                                key=lambda item: item.get('updatedAt', ''), reverse=True)
+                if paused:
+                    reconciliation['candidates'] = [
+                        *reconciliation.get('candidates', []),
+                        *[{**item, 'matchType': 'paused_inventory'} for item in paused[:4]],
+                    ]
+                    reconciliation['requiresModelDecision'] = True
+                    reconciliation['truncated'] = bool(reconciliation.get('truncated') or len(paused) > 4)
         except (OSError, sqlite3.Error, RuntimeError) as error:
             reconciliation = {
                 "active": False,
@@ -297,7 +309,7 @@ class ToolPreflightService:
         if value.get("kind") not in {"turn", "tool_use"}:
             return value
         candidates = {item.get("taskId"): item for item in (body.get("_todoReconciliation") or {}).get("candidates", [])
-                      if isinstance(item, Mapping) and item.get("status") in {"pending", "in_progress"}}
+                      if isinstance(item, Mapping) and item.get("status") in {"pending", "in_progress", "paused"}}
         calls = value.get("calls") or value.get("toolRequests") or []
         if not isinstance(calls, list):
             return value
@@ -370,7 +382,7 @@ class ToolPreflightService:
                         current = read_todo(connection, task_id)
                         if (
                             not current
-                            or current.get("status") not in {"pending", "in_progress"}
+                            or current.get("status") not in {"pending", "in_progress", "paused"}
                             or current.get("version") != version
                             or not todo_noop_target_matches(current, target)
                         ):
@@ -452,20 +464,27 @@ def todo_reconciliation_prompt(value: Any) -> str:
         "previousReminder": reconciliation.get("previousReminder"),
     }
     return (
-        "[活动中日程的对话核对]\n"
+        "[已保存日程的对话核对]\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        + "\n这是本轮从待办数据库读取的活动任务快照；历史提醒仅用于关联目标，版本和状态以此快照为准。"
+        + "\n这是本轮从待办数据库读取的活动及暂停任务快照；历史提醒仅用于关联目标，版本和状态以此快照为准。"
         "待办 taskId 与 packet.task.taskId 属于不同状态：前者是用户事项，后者是助手的工具执行计划。"
         "用户事项尚未完成，不表示以前已经结束的助手计划需要恢复，也不要因此把 outcome.taskStatus 改为 active。"
         "候选列表不代表任务已经完成，也不要求你调用工具；active_inventory 只是少量待办背景，并不表示当前话题与它们相关。"
+        "暂停任务仍是用户保存的任务；用户明确要求继续/恢复时，应先绑定该 paused task，再调用 todo_manage(action=resume)。"
+        "‘刚暂停的任务’等描述是指代，不是任务标题。快照不足时先 todo_list(scope=paused|all) 查看候选，"
+        "按状态和内容理解目标；不要把整个指代短语当作 title 精确搜索后就声称任务不存在。"
         "结合用户当前话语、紧邻对话及任务 title/details 自主判断是否有真实进度反馈。"
+        "用户询问某个任务过去的到期执行结果时，用 todo_search(includeHistory=true, historyLimit=1..20) 读取权威历史，"
+        "绑定 taskId 或唯一 targetRef；不要凭历史对话猜测执行结果。"
         "若用户明确反馈自己的对应任务目标已达成，应调用 todo_manage(action=complete)，无需再让用户说‘标记完成’或确认一次。"
+        "用户明确要求暂停或恢复任务时，分别调用 todo_manage(action=pause|resume)；这会改变持久任务状态，不能用 snooze 代替。"
         "到场/开始类提醒在用户已到场/已开始时即可完成；整项工作或课程的完成任务则不能因刚开始就标完成。"
         "previousReminder.recurrenceAdvanced 表示那次重复提醒已结束并顺延；用户回应那次提醒不能把下一次也标完成。"
         "计划、否定、假设、他人的进度或无关闲聊都不应触发完成。"
         "目标明确时直接用此快照中的 taskId、version 作为 expectedVersion，设置 commitIntent=true 和 selection.toolAuthorization=write；"
         "不必为了形式重复 todo_search。缺少目标或快照不足时再检索；结合对话仍有歧义才请用户选择。"
         "onDue 非空表示到期由 Amadeus 执行的完整指令，修改/取消执行内容时同步更新该字段；普通提醒为空。"
+        "用户后续修改任务目标、细节、执行内容或重复规则时，沿用当前候选的 taskId/version 发出 update；不要创建一个新任务来代替原任务。"
         "先在 cognitive.todoReview 中逐项给出候选的简短判断："
         "[{taskId:真实编号,version:当前版本,decision:'complete'|'keep'|'desired_target_already_satisfied',reason:结合当前原话和任务目标的简短理由}]。"
         "普通 keep 只是‘本轮不修改’的观察，永远不能绕过 TASK_REVISION，也不能凭复制快照终止当前目标。"

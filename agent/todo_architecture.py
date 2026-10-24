@@ -15,21 +15,26 @@ import re
 from typing import Any, Literal, Mapping, Sequence
 
 from agent.schedule_time import normalize_time_spec
+from agent.task_recurrence import normalize_recurrence_rule as _normalize_recurrence_rule
 
 
 TodoRequestKind = Literal["none", "query", "mutation"]
 TodoAction = Literal[
-    "list", "create", "update", "complete", "reopen", "delete", "snooze"
+    "list", "create", "update", "complete", "reopen", "delete", "snooze",
+    "pause", "resume",
 ]
 
-TODO_STATUSES = frozenset({"pending", "in_progress", "completed", "deleted"})
+TODO_STATUSES = frozenset({
+    "pending", "in_progress", "paused", "completed", "deleted",
+})
 TODO_PRIORITIES = frozenset({"low", "normal", "high"})
-TODO_RECURRENCE_RULES = frozenset({"", "daily"})
+TODO_RECURRENCE_RULES = frozenset({"", "daily", "weekly", "weekdays", "monthly"})
 TODO_ACTIONS = frozenset({
     "list", "create", "update", "complete", "reopen", "delete", "snooze",
+    "pause", "resume",
 })
 TODO_TARGET_STATUSES = frozenset({
-    "", "active", "pending", "in_progress", "completed", "deleted", "all",
+    "", "active", "pending", "in_progress", "paused", "completed", "deleted", "all",
 })
 TODO_NOOP_TARGET_FIELDS = (
     "title", "details", "status", "priority", "dueAt", "dueDate", "allDay",
@@ -62,6 +67,19 @@ _TODO_NON_COMMITTING = re.compile(
     r"^(?:如果|假如|假设|要是).{0,80}(?:会怎样|会怎么样|怎么样|如何|可以吗|能否|是否)",
     re.I,
 )
+
+
+def normalize_todo_recurrence_rule(value: Any) -> str:
+    """Return the storage-owned canonical recurrence rule."""
+
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "none":
+        return ""
+    try:
+        normalized = _normalize_recurrence_rule(raw)
+    except (TypeError, ValueError):
+        return ""
+    return str(normalized or "").strip()
 
 
 def _nonnegative_int(value: Any) -> int:
@@ -288,7 +306,8 @@ def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any
         due_date = ""
     status = value["status"].strip().lower()
     priority = value["priority"].strip().lower()
-    recurrence_rule = value["recurrenceRule"].strip().lower()
+    recurrence_input = value["recurrenceRule"].strip()
+    recurrence_rule = normalize_todo_recurrence_rule(recurrence_input)
     snoozed_until_input = value["snoozedUntil"].strip()
     snoozed_until = normalized_due_at(snoozed_until_input)
     if snoozed_until_input and not snoozed_until:
@@ -296,7 +315,7 @@ def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any
     if (
         status not in TODO_STATUSES
         or priority not in TODO_PRIORITIES
-        or recurrence_rule not in TODO_RECURRENCE_RULES
+        or (recurrence_input and not recurrence_rule)
         or (due_at and due_date)
         or value["allDay"] != (not bool(due_at))
     ):
@@ -464,7 +483,7 @@ class TodoCommand:
         if action == "create" and not title:
             raise ValueError("todo_title_required")
         if (
-            action in {"update", "complete", "reopen", "delete", "snooze"}
+            action in {"update", "complete", "reopen", "delete", "snooze", "pause", "resume"}
             and not task_id
             and not target_ref.has_selector
         ):
@@ -497,12 +516,13 @@ class TodoCommand:
             raise ValueError("todo_conflicting_time_spec")
         if time_spec.get("kind") == "existing_date" and action != "update":
             raise ValueError("todo_time_existing_task_required")
-        recurrence_rule = str(
+        recurrence_input = str(
             value.get("recurrenceRule") or value.get("recurrence_rule") or ""
-        ).strip().lower()
-        if recurrence_rule == "none":
-            recurrence_rule = ""
-        if recurrence_rule not in TODO_RECURRENCE_RULES:
+        ).strip()
+        if recurrence_input.lower() == "none":
+            recurrence_input = ""
+        recurrence_rule = normalize_todo_recurrence_rule(recurrence_input)
+        if recurrence_input and not recurrence_rule:
             raise ValueError("todo_invalid_recurrence_rule")
         snooze_input = (
             value.get("snoozeUntil")

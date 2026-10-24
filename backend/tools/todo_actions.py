@@ -61,7 +61,7 @@ def public_todo_candidate(value: Mapping[str, Any]) -> dict[str, Any]:
         "dueDate": str(value.get("dueDate") or "")[:10],
         "allDay": not bool(value.get("dueAt")),
         "timezone": str(value.get("timezone") or "")[:80],
-        "recurrenceRule": str(value.get("recurrenceRule") or "")[:40],
+        "recurrenceRule": str(value.get("recurrenceRule") or ""),
         "version": max(0, int(value.get("version") or 0)),
         "matchType": str(value.get("matchType") or "")[:40],
     }
@@ -276,10 +276,19 @@ class TodoActionService:
                     target_status_explicit = isinstance(raw_target, Mapping) and any(
                         key in raw_target for key in ("status", "scope")
                     )
-                    if not target_status_explicit and not resolved_task_id:
-                        target["status"] = (
-                            "completed" if command.action == "reopen" else "active"
-                        )
+                    if not resolved_task_id:
+                        # TodoCommand.to_dict() always carries the target's
+                        # default status ("active").  Treat that default as
+                        # implicit for resume so a paused task remains
+                        # discoverable after request constraint canonicalization.
+                        if command.action == "resume" and (
+                            not target_status_explicit or target.get("status") == "active"
+                        ):
+                            target["status"] = "paused"
+                        elif not target_status_explicit:
+                            target["status"] = (
+                                "completed" if command.action == "reopen" else "active"
+                            )
                     resolution = resolve_task_reference(connection, target)
                     if resolution.get("status") == "resolved" and isinstance(
                         resolution.get("task"), Mapping
@@ -347,12 +356,14 @@ class TodoActionService:
                                 expected_version=command.expected_version,
                             )
                     elif resolution.get("status") == "resolved" and command.action in {
-                        "complete", "reopen", "delete",
+                        "complete", "reopen", "delete", "pause", "resume",
                     }:
                         status = {
                             "complete": "completed",
                             "reopen": "pending",
                             "delete": "deleted",
+                            "pause": "paused",
+                            "resume": "pending",
                         }[command.action]
                         task = set_todo_status(
                             connection,

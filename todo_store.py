@@ -14,6 +14,7 @@ import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.fingerprints import legacy_persistent_fingerprint
+from agent.task_recurrence import next_occurrence, normalize_recurrence_rule
 from agent.todo_architecture import recent_todo_task_ids
 
 
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS todo_items (
     timezone_name TEXT NOT NULL DEFAULT '',
     remind_before_minutes INTEGER NOT NULL DEFAULT 0,
     recurrence_rule TEXT NOT NULL DEFAULT '',
+    recurrence_anchor_at TEXT NOT NULL DEFAULT '',
     snoozed_until TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 1,
     source_turn_id TEXT NOT NULL DEFAULT '',
@@ -70,6 +72,29 @@ CREATE TABLE IF NOT EXISTS todo_reminders (
 CREATE INDEX IF NOT EXISTS idx_todo_reminders_due
 ON todo_reminders(status, available_at, scheduled_at);
 
+CREATE TABLE IF NOT EXISTS todo_runs (
+    run_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    task_version INTEGER NOT NULL,
+    occurrence_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'started',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    claimed_at TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    receipt_json TEXT NOT NULL DEFAULT '{}',
+    last_error TEXT NOT NULL DEFAULT '',
+    next_occurrence_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(task_id, occurrence_at)
+);
+CREATE INDEX IF NOT EXISTS idx_todo_runs_task_time
+ON todo_runs(task_id, occurrence_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_todo_runs_status
+ON todo_runs(status, occurrence_at);
+
 CREATE TABLE IF NOT EXISTS todo_daily_openings (
     timezone_name TEXT NOT NULL,
     local_date TEXT NOT NULL,
@@ -95,6 +120,12 @@ class TodoResultMismatch(RuntimeError):
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _local_timezone() -> Any:
+    """Return the host's local timezone for tasks without an explicit zone."""
+
+    return datetime.now().astimezone().tzinfo or timezone.utc
 
 
 def iso_utc(value: datetime | None = None) -> str:
@@ -133,6 +164,10 @@ def ensure_todo_schema(connection: sqlite3.Connection) -> None:
         )
     if "on_due" not in columns:
         connection.execute("ALTER TABLE todo_items ADD COLUMN on_due TEXT NOT NULL DEFAULT ''")
+    if "recurrence_anchor_at" not in columns:
+        connection.execute(
+            "ALTER TABLE todo_items ADD COLUMN recurrence_anchor_at TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _row_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any]:
@@ -152,6 +187,7 @@ def _row_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any]:
         "timezone": str(value.get("timezone_name") or ""),
         "remindBeforeMinutes": int(value.get("remind_before_minutes") or 0),
         "recurrenceRule": str(value.get("recurrence_rule") or ""),
+        "recurrenceAnchorAt": str(value.get("recurrence_anchor_at") or ""),
         "snoozedUntil": str(value.get("snoozed_until") or ""),
         "version": int(value.get("version") or 1),
         "sourceTurnId": str(value.get("source_turn_id") or ""),
@@ -200,6 +236,7 @@ def list_todos(
     where = {
         "active": "status IN ('pending','in_progress')",
         "pending": "status IN ('pending','in_progress')",
+        "paused": "status = 'paused'",
         "completed": "status = 'completed'",
         "deleted": "status = 'deleted'",
         "all": "status <> 'deleted'",
@@ -282,7 +319,7 @@ def search_todos(
         return [{**exact, "matchType": "task_id", "matchScore": 1000}] if exact else []
 
     status = str(target.get("status") or target.get("scope") or "active").strip().lower()
-    scope = status if status in {"active", "pending", "completed", "deleted", "all"} else "active"
+    scope = status if status in {"active", "pending", "paused", "completed", "deleted", "all"} else "active"
     items = list_todos(connection, scope=scope, limit=500)
     if status == "in_progress":
         items = [item for item in items if item.get("status") == "in_progress"]
@@ -547,6 +584,40 @@ def _check_expected_version(current: Mapping[str, Any], expected_version: int) -
         raise TodoVersionConflict(current, expected_version)
 
 
+def _recurrence_anchor(
+    recurrence_rule: Any,
+    *,
+    due_at: Any = "",
+    due_date: Any = "",
+    timezone_name: Any = "",
+    fallback: datetime | None = None,
+) -> str:
+    """Choose the stable DTSTART persisted with a recurring task."""
+
+    if not normalize_recurrence_rule(recurrence_rule):
+        return ""
+    parsed_due = parse_iso(due_at)
+    if parsed_due is not None:
+        return iso_utc(parsed_due)
+    date_text = str(due_date or "").strip()
+    if date_text:
+        try:
+            day = datetime.fromisoformat(date_text).date()
+            zone_name = str(timezone_name or "").strip()
+            zone = ZoneInfo(zone_name) if zone_name else _local_timezone()
+            return iso_utc(datetime(day.year, day.month, day.day, tzinfo=zone))
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            pass
+    return iso_utc(fallback or utc_now())
+
+
+def _task_recurrence_anchor(task: Mapping[str, Any]) -> datetime | None:
+    anchor = parse_iso(task.get("recurrenceAnchorAt"))
+    if anchor is not None:
+        return anchor
+    return parse_iso(task.get("dueAt")) or parse_iso(task.get("createdAt"))
+
+
 def _event(
     connection: sqlite3.Connection,
     task_id: str,
@@ -587,7 +658,8 @@ def rebuild_todo_reminders(
     version = int(task.get("version") or 1)
     connection.execute(
         "UPDATE todo_reminders SET status='cancelled', updated_at=? "
-        "WHERE task_id=? AND status IN ('pending','claimed')",
+        "WHERE task_id=? AND reminder_kind <> 'execution' "
+        "AND status IN ('pending','claimed')",
         (iso_utc(active_now), task_id),
     )
     if str(task.get("status") or "pending") not in {"pending", "in_progress"}:
@@ -649,13 +721,23 @@ def create_todo(
     active_now = now or utc_now()
     timestamp = iso_utc(active_now)
     task_id = f"todo-{uuid.uuid4().hex}"
+    normalized_recurrence = normalize_recurrence_rule(recurrence_rule)
+    stored_due_at = str(due_at or "").strip()
+    stored_due_date = str(due_date or "").strip() if not stored_due_at else ""
+    recurrence_anchor = _recurrence_anchor(
+        normalized_recurrence,
+        due_at=stored_due_at,
+        due_date=stored_due_date,
+        timezone_name=timezone_name,
+        fallback=active_now,
+    )
     connection.execute(
         """
         INSERT INTO todo_items(
             task_id, title, details, on_due, status, priority, due_at, due_date, timezone_name,
-            remind_before_minutes, recurrence_rule, snoozed_until, version, source_turn_id,
-            created_at, updated_at, completed_at, deleted_at
-        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', '')
+            remind_before_minutes, recurrence_rule, recurrence_anchor_at, snoozed_until,
+            version, source_turn_id, created_at, updated_at, completed_at, deleted_at
+        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', '')
         """,
         (
             task_id,
@@ -663,11 +745,12 @@ def create_todo(
             str(details or "").strip(),
             str(on_due or "").strip(),
             priority,
-            due_at,
-            due_date if not due_at else "",
+            stored_due_at,
+            stored_due_date,
             timezone_name,
             max(0, int(remind_before_minutes)),
-            str(recurrence_rule or ""),
+            normalized_recurrence,
+            recurrence_anchor,
             str(source_turn_id or "")[:100],
             timestamp,
             timestamp,
@@ -691,6 +774,7 @@ def update_todo(
     if not current or current.get("status") == "deleted":
         return {}
     _check_expected_version(current, expected_version)
+    active_now = now or utc_now()
     allowed = {
         "title": "title",
         "details": "details",
@@ -703,9 +787,11 @@ def update_todo(
         "recurrenceRule": "recurrence_rule",
     }
     changes = dict(changes)
+    if "recurrenceRule" in changes:
+        changes["recurrenceRule"] = normalize_recurrence_rule(changes.get("recurrenceRule"))
     if changes.get("dueAt"):
         changes["dueDate"] = ""
-    elif changes.get("dueDate"):
+    elif "dueDate" in changes and changes.get("dueDate"):
         changes["dueAt"] = ""
     assignments: list[str] = []
     values: list[Any] = []
@@ -714,9 +800,31 @@ def update_todo(
             continue
         assignments.append(f"{column} = ?")
         values.append(changes[public_name])
+    if any(name in changes for name in ("recurrenceRule", "dueAt", "dueDate", "timezone")):
+        next_rule = changes.get("recurrenceRule", current.get("recurrenceRule"))
+        next_due_at = changes.get("dueAt", current.get("dueAt"))
+        next_due_date = changes.get("dueDate", current.get("dueDate"))
+        next_timezone = changes.get("timezone", current.get("timezone"))
+        assignments.append("recurrence_anchor_at = ?")
+        if (
+            normalize_recurrence_rule(next_rule)
+            and "dueAt" not in changes
+            and "dueDate" not in changes
+            and str(current.get("recurrenceAnchorAt") or "").strip()
+        ):
+            # Editing the rule changes its future pattern; it must not move
+            # DTSTART to the already-advanced current occurrence.
+            values.append(str(current.get("recurrenceAnchorAt") or ""))
+        else:
+            values.append(_recurrence_anchor(
+                next_rule,
+                due_at=next_due_at,
+                due_date=next_due_date,
+                timezone_name=next_timezone,
+                fallback=parse_iso(current.get("recurrenceAnchorAt")) or active_now,
+            ))
     if not assignments:
         return current
-    active_now = now or utc_now()
     assignments.extend(("snoozed_until = ''", "version = version + 1", "updated_at = ?"))
     values.extend((iso_utc(active_now), task_id))
     where = "task_id = ?"
@@ -743,9 +851,9 @@ def next_recurring_due_at(
     *,
     after: datetime | None = None,
 ) -> str:
-    """Return the next daily wall-clock occurrence strictly after ``after``."""
+    """Return the next occurrence, coalescing occurrences missed while offline."""
 
-    if str(task.get("recurrenceRule") or "") != "daily":
+    if not normalize_recurrence_rule(task.get("recurrenceRule")):
         return ""
     due = parse_iso(task.get("dueAt"))
     if due is None:
@@ -758,14 +866,73 @@ def next_recurring_due_at(
         local_zone = ZoneInfo(timezone_name) if timezone_name else timezone.utc
     except ZoneInfoNotFoundError:
         local_zone = timezone.utc
-    local_due = due.astimezone(local_zone)
-    local_after = active_after.astimezone(local_zone)
-    next_local = local_due
-    for _ in range(3700):
-        next_local = next_local + timedelta(days=1)
-        if next_local > local_after:
-            return iso_utc(next_local)
-    return ""
+    anchor = _task_recurrence_anchor(task) or due
+    next_local = next_occurrence(
+        task.get("recurrenceRule"),
+        anchor=anchor.astimezone(local_zone),
+        after=active_after.astimezone(local_zone),
+    )
+    return iso_utc(next_local) if next_local is not None else ""
+
+
+def _advance_task_occurrence(
+    connection: sqlite3.Connection,
+    current: Mapping[str, Any],
+    *,
+    now: datetime,
+    event_type: str,
+    expected_version: int | None = None,
+) -> dict[str, Any]:
+    """Advance one current timed occurrence under an optional version guard."""
+
+    task_id = str(current.get("taskId") or "")
+    if not task_id or not current.get("dueAt"):
+        return {}
+    next_due = next_recurring_due_at(current, after=now)
+    version = int(current.get("version") or 0)
+    where = "task_id=? AND status IN ('pending','in_progress')"
+    parameters: list[Any] = [iso_utc(now), task_id]
+    if expected_version is not None:
+        where += " AND version=?"
+        parameters.append(int(expected_version))
+    if not next_due:
+        # COUNT/UNTIL exhaustion is a completed schedule, rather than a task
+        # that remains permanently due at its last occurrence.
+        cursor = connection.execute(
+            f"UPDATE todo_items SET status='completed', completed_at=?, "
+            f"snoozed_until='', version=version+1, updated_at=? WHERE {where}",
+            [iso_utc(now), iso_utc(now), *parameters[1:]],
+        )
+        if cursor.rowcount != 1:
+            return {}
+        task = read_todo(connection, task_id)
+        _event(connection, task_id, "recurrence_finished", {
+            "previousDueAt": current.get("dueAt"),
+            "previousVersion": version,
+        }, now=now)
+        rebuild_todo_reminders(connection, task, now=now)
+        return task
+    cursor = connection.execute(
+        f"""
+        UPDATE todo_items
+        SET due_at=?, status='pending', completed_at='', snoozed_until='',
+            version=version+1, updated_at=?
+        WHERE {where}
+        """,
+        [next_due, iso_utc(now), *parameters[1:]],
+    )
+    if cursor.rowcount != 1:
+        return {}
+    task = read_todo(connection, task_id)
+    _event(
+        connection,
+        task_id,
+        event_type,
+        {"previousDueAt": current.get("dueAt"), "nextDueAt": next_due},
+        now=now,
+    )
+    rebuild_todo_reminders(connection, task, now=now)
+    return task
 
 
 def advance_recurring_todo(
@@ -777,28 +944,514 @@ def advance_recurring_todo(
 ) -> dict[str, Any]:
     active_now = now or utc_now()
     current = read_todo(connection, task_id)
-    next_due = next_recurring_due_at(current, after=active_now)
-    if not current or not next_due:
+    if not current:
         return {}
+    return _advance_task_occurrence(
+        connection,
+        current,
+        now=active_now,
+        event_type=event_type,
+    )
+
+
+def _run_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {"value": value}
+        return dict(parsed) if isinstance(parsed, Mapping) else {"value": parsed}
+    return {}
+
+
+def _run_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any]:
+    if row is None:
+        return {}
+    value = dict(row)
+    return {
+        "runId": str(value.get("run_id") or ""),
+        "taskId": str(value.get("task_id") or ""),
+        "taskVersion": int(value.get("task_version") or 0),
+        "occurrenceAt": str(value.get("occurrence_at") or ""),
+        "status": str(value.get("status") or ""),
+        "attemptCount": int(value.get("attempt_count") or 0),
+        "claimedAt": str(value.get("claimed_at") or ""),
+        "startedAt": str(value.get("started_at") or ""),
+        "finishedAt": str(value.get("finished_at") or ""),
+        "result": _run_json(value.get("result_json")),
+        "receipt": _run_json(value.get("receipt_json")),
+        "lastError": str(value.get("last_error") or ""),
+        "nextOccurrenceAt": str(value.get("next_occurrence_at") or ""),
+        "createdAt": str(value.get("created_at") or ""),
+        "updatedAt": str(value.get("updated_at") or ""),
+    }
+
+
+def claim_due_todo_run(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+    task_id: str = "",
+) -> dict[str, Any]:
+    """Claim one due onDue occurrence exactly once.
+
+    A run is keyed by the task and its persisted occurrence time.  Terminal
+    rows and an unresolved ``started`` row are both returned as unavailable;
+    callers can inspect them through ``read_todo_run`` instead of rerunning an
+    operation whose external side effect is unknown.
+    """
+
+    active_now = now or utc_now()
+    # A user may have completed an all-day recurring task through the UI.
+    # Background execution has no client poll to perform the usual daily
+    # reactivation, so do that small durable transition before selecting a
+    # due occurrence.
+    reactivate_daily_all_day_todos(connection, now=active_now)
+    timestamp = iso_utc(active_now)
+    where = [
+        "i.status IN ('pending','in_progress')",
+        "i.on_due <> ''",
+        "(i.due_at = '' OR i.due_at <= ?)",
+        "(i.snoozed_until = '' OR i.snoozed_until <= ?)",
+    ]
+    parameters: list[Any] = [timestamp, timestamp]
+    if str(task_id or "").strip():
+        where.append("i.task_id = ?")
+        parameters.append(str(task_id).strip())
+    rows = connection.execute(
+        "SELECT i.* FROM todo_items i WHERE " + " AND ".join(where) +
+        " ORDER BY CASE WHEN i.due_at='' THEN 1 ELSE 0 END, "
+        "i.due_at ASC, i.due_date ASC, i.created_at ASC",
+        parameters,
+    )
+    for row in rows:
+        task = _row_dict(row)
+        try:
+            occurrence = _task_occurrence_key(task, active_now)
+        except (TypeError, ValueError):
+            continue
+        if not occurrence:
+            continue
+        # A task may be edited while an earlier external action is still
+        # unresolved.  Do not start a second action for that task even if the
+        # edited due time has a different occurrence key.
+        started = connection.execute(
+            "SELECT 1 FROM todo_runs WHERE task_id=? AND status='started' LIMIT 1",
+            (task["taskId"],),
+        ).fetchone()
+        if started is not None:
+            continue
+        existing = connection.execute(
+            "SELECT * FROM todo_runs WHERE task_id=? AND occurrence_at=?",
+            (task["taskId"], occurrence),
+        ).fetchone()
+        if existing is not None:
+            if (
+                str(existing["status"] or "") in {"completed", "failed", "unknown", "cancelled"}
+                and normalize_recurrence_rule(task.get("recurrenceRule"))
+            ):
+                if task.get("dueAt"):
+                    _advance_task_occurrence(
+                        connection,
+                        task,
+                        now=active_now,
+                        event_type="scheduled_run_reconciled",
+                        expected_version=int(task["version"]),
+                    )
+                else:
+                    _advance_all_day_task_occurrence(
+                        connection,
+                        task,
+                        occurrence_at=occurrence,
+                        now=active_now,
+                        event_type="scheduled_run_reconciled",
+                        expected_version=int(task["version"]),
+                    )
+            continue
+        if _migrate_legacy_execution(
+            connection, task, now=active_now, occurrence_at=occurrence
+        ):
+            continue
+        run_id = f"todo-run-{uuid.uuid4().hex}"
+        receipt = json.dumps({"task": task}, ensure_ascii=False, separators=(",", ":"))
+        inserted = connection.execute(
+            """
+            INSERT OR IGNORE INTO todo_runs(
+                run_id, task_id, task_version, occurrence_at, status, attempt_count,
+                claimed_at, started_at, receipt_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'started', 1, ?, ?, ?, ?, ?)
+            """,
+            (run_id, task["taskId"], task["version"], occurrence,
+             timestamp, timestamp, receipt, timestamp, timestamp),
+        )
+        if inserted.rowcount != 1:
+            continue
+        run = read_todo_run(connection, run_id)
+        return {
+            "runId": run_id,
+            "task": task,
+            "taskId": task["taskId"],
+            "taskVersion": int(task["version"]),
+            "occurrenceAt": occurrence,
+            "scheduledAt": occurrence,
+            "status": "started",
+            "attemptCount": 1,
+            "run": run,
+        }
+    return {}
+
+
+def read_todo_run(connection: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT * FROM todo_runs WHERE run_id=?", (str(run_id or ""),)
+    ).fetchone()
+    return _run_dict(row)
+
+
+def list_todo_runs(
+    connection: sqlite3.Connection,
+    task_id: str,
+    *,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT * FROM todo_runs WHERE task_id=? "
+        "ORDER BY started_at DESC, rowid DESC LIMIT ?",
+        (str(task_id or ""), max(1, min(500, int(limit)))),
+    ).fetchall()
+    return [_run_dict(row) for row in rows]
+
+
+def _migrate_legacy_execution(
+    connection: sqlite3.Connection,
+    task: Mapping[str, Any],
+    *,
+    now: datetime,
+    occurrence_at: str = "",
+) -> bool:
+    """Import the old reminder payload marker before a headless claim.
+
+    Older clients stored only ``todo_reminders.payload_json.execution``.  A
+    started marker is intentionally imported as an unresolved run; a finished
+    result is finalized through the new idempotent path and therefore advances
+    a recurring task without waiting for a browser acknowledgement.
+    """
+
+    task_id = str(task.get("taskId") or "")
+    occurrence = str(occurrence_at or _task_occurrence_key(task, now) or "")
+    if not task_id or not occurrence:
+        return False
+    rows = connection.execute(
+        "SELECT * FROM todo_reminders WHERE task_id=? AND task_version=? "
+        "AND status IN ('pending','claimed') "
+        "AND reminder_kind IN ('due','snoozed','all_day') "
+        "ORDER BY created_at DESC",
+        (task_id, int(task.get("version") or 0)),
+    ).fetchall()
+    for row in rows:
+        payload = _run_json(row["payload_json"])
+        execution = payload.get("execution")
+        if not isinstance(execution, Mapping):
+            continue
+        if not execution.get("result") and str(execution.get("status") or "") != "started":
+            continue
+        run_id = f"todo-run-legacy-{row['reminder_id']}"
+        timestamp = iso_utc(now)
+        receipt = json.dumps({"task": task}, ensure_ascii=False, separators=(",", ":"))
+        inserted = connection.execute(
+            """
+            INSERT OR IGNORE INTO todo_runs(
+                run_id, task_id, task_version, occurrence_at, status, attempt_count,
+                claimed_at, started_at, receipt_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'started', 1, ?, ?, ?, ?, ?)
+            """,
+            (run_id, task_id, int(task.get("version") or 0), occurrence,
+             timestamp, timestamp, receipt, timestamp, timestamp),
+        )
+        if inserted.rowcount != 1:
+            return True
+        result = execution.get("result")
+        if isinstance(result, Mapping) and result:
+            status = str(result.get("scheduledExecutionStatus") or "unknown")
+            if status.strip().lower() not in {
+                "completed", "failed", "unknown", "cancelled", "succeeded", "success", "done",
+            }:
+                status = "unknown"
+            finish_todo_run(
+                connection,
+                run_id,
+                status=status,
+                result=result,
+                receipt={"legacyReminderId": str(row["reminder_id"]), "task": task},
+                now=now,
+            )
+        else:
+            # A legacy started marker can be discovered after the new startup
+            # recovery pass (for example, on the first poll after an upgrade).
+            # The old marker cannot be distinguished from an interrupted
+            # process claim, so resolve it once as unknown instead of leaving
+            # the task permanently stuck in ``started``.
+            finish_todo_run(
+                connection,
+                run_id,
+                status="unknown",
+                result={
+                    "reply": "定时任务已经开始执行，但应用在结果确认前重启了；我不会重复执行。",
+                    "spokenTextJa": "予約タスクは実行を開始したけれど、結果の確認前に再起動したわ。重複実行はしない。",
+                    "scheduledExecutionStatus": "unknown",
+                    "scheduledRunId": run_id,
+                    "recovered": True,
+                },
+                receipt={
+                    "legacyReminderId": str(row["reminder_id"]),
+                    "task": task,
+                    "recovered": True,
+                },
+                error="legacy_execution_started_without_terminal_receipt",
+                now=now,
+            )
+        return True
+    return False
+
+
+def finish_todo_run(
+    connection: sqlite3.Connection,
+    run_id: str,
+    *,
+    status: str,
+    result: Mapping[str, Any] | None = None,
+    receipt: Mapping[str, Any] | None = None,
+    error: str = "",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Persist a terminal outcome and advance the task in one store action."""
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status in {"succeeded", "success", "done"}:
+        normalized_status = "completed"
+    if normalized_status not in {"completed", "failed", "unknown", "cancelled"}:
+        raise ValueError("invalid_todo_run_status")
+    active_now = now or utc_now()
+    timestamp = iso_utc(active_now)
+    existing = connection.execute(
+        "SELECT * FROM todo_runs WHERE run_id=?", (str(run_id or ""),)
+    ).fetchone()
+    if existing is None:
+        return {}
+    previous = _run_dict(existing)
+    if previous["status"] in {"completed", "failed", "unknown", "cancelled"}:
+        task = read_todo(connection, previous["taskId"])
+        return {"run": previous, "task": task, "recurrenceAdvanced": False,
+                "nextDueAt": task.get("dueAt", "") if task else "",
+                "deliveryReminderId": f"todo-execution-{str(run_id or '')}"}
+    result_payload = _run_json(result)
+    receipt_payload = _run_json(receipt)
+    # Recovery and legacy migration add metadata after the claim.  Preserve
+    # the original task snapshot captured at claim time even when their
+    # receipt omits it, so history remains useful after edits or deletion.
+    previous_receipt = previous.get("receipt")
+    if "task" not in receipt_payload and isinstance(previous_receipt, Mapping):
+        previous_task = previous_receipt.get("task")
+        if isinstance(previous_task, Mapping):
+            receipt_payload["task"] = dict(previous_task)
+    updated = connection.execute(
+        """
+        UPDATE todo_runs
+        SET status=?, finished_at=?, result_json=?, receipt_json=?, last_error=?, updated_at=?
+        WHERE run_id=? AND status NOT IN ('completed','failed','unknown','cancelled')
+        """,
+        (
+            normalized_status,
+            timestamp,
+            json.dumps(result_payload, ensure_ascii=False, separators=(",", ":")),
+            json.dumps(receipt_payload, ensure_ascii=False, separators=(",", ":")),
+            str(error or "")[:1000],
+            timestamp,
+            str(run_id or ""),
+        ),
+    )
+    if updated.rowcount != 1:
+        final = read_todo_run(connection, run_id)
+        task = read_todo(connection, final.get("taskId", "")) if final else {}
+        return {"run": final, "task": task, "recurrenceAdvanced": False,
+                "nextDueAt": task.get("dueAt", "") if task else "",
+                "deliveryReminderId": f"todo-execution-{str(run_id or '')}"}
+
+    current = read_todo(connection, previous["taskId"])
+    advanced = {}
+    current_due = parse_iso(current.get("dueAt")) if current else None
+    occurrence_matches = bool(
+        current
+        and (
+            (current_due is not None and iso_utc(current_due) == previous["occurrenceAt"])
+            or (not current.get("dueAt") and previous["occurrenceAt"])
+        )
+    )
+    if (
+        current
+        and current.get("status") in {"pending", "in_progress"}
+        and int(current.get("version") or 0) == int(previous["taskVersion"])
+        and occurrence_matches
+        and normalize_recurrence_rule(current.get("recurrenceRule"))
+    ):
+        if current.get("dueAt"):
+            advanced = _advance_task_occurrence(
+                connection,
+                current,
+                now=active_now,
+                event_type="scheduled_run_finished",
+                expected_version=previous["taskVersion"],
+            )
+        else:
+            advanced = _advance_all_day_task_occurrence(
+                connection,
+                current,
+                occurrence_at=previous["occurrenceAt"],
+                now=active_now,
+                event_type="scheduled_run_finished",
+                expected_version=previous["taskVersion"],
+            )
+    elif (
+        current
+        and normalized_status == "completed"
+        and not normalize_recurrence_rule(current.get("recurrenceRule"))
+        and current.get("onDue")
+        and current.get("status") in {"pending", "in_progress"}
+        and int(current.get("version") or 0) == int(previous["taskVersion"])
+    ):
+        advanced = set_todo_status(
+            connection,
+            current["taskId"],
+            "completed",
+            now=active_now,
+            expected_version=current["version"],
+        )
+    next_due = str(advanced.get("dueAt") or "") if advanced else ""
+    next_due_date = str(advanced.get("dueDate") or "") if advanced else ""
+    next_occurrence = next_due or next_due_date
+    connection.execute(
+        "UPDATE todo_runs SET next_occurrence_at=?, updated_at=? WHERE run_id=?",
+        (next_occurrence, timestamp, str(run_id or "")),
+    )
+    delivery_task = advanced or read_todo(connection, previous["taskId"])
+    receipt_task = receipt_payload.get("task")
+    # The execution receipt is the authoritative instruction snapshot.  Keep
+    # it in the delivery envelope even when recurrence advancement edits the
+    # live task or a user deletes it after the worker finished.
+    occurrence_task = (
+        dict(receipt_task) if isinstance(receipt_task, Mapping) else delivery_task
+    )
+    execution_payload = {
+        "runId": str(run_id or ""),
+        "occurrenceAt": previous["occurrenceAt"],
+        "executionStatus": normalized_status,
+        "executionResult": result_payload,
+        "receipt": receipt_payload,
+        "taskSnapshot": occurrence_task,
+        "nextTaskSnapshot": delivery_task,
+    }
+    # A legacy due reminder may still be pending/claimed when a headless run
+    # finishes.  Its browser acknowledgement must not become a second state
+    # transition; the execution delivery below is the sole result envelope.
+    connection.execute(
+        "UPDATE todo_reminders SET status='cancelled', updated_at=? "
+        "WHERE task_id=? AND reminder_kind IN ('due','snoozed','all_day') "
+        "AND task_version=? AND status IN ('pending','claimed')",
+        (timestamp, previous["taskId"], int(previous["taskVersion"])),
+    )
+    delivery_id = f"todo-execution-{str(run_id or '')}"
     connection.execute(
         """
-        UPDATE todo_items
-        SET due_at=?, status='pending', completed_at='', snoozed_until='',
-            version=version+1, updated_at=?
-        WHERE task_id=? AND status IN ('pending','in_progress')
+        INSERT OR IGNORE INTO todo_reminders(
+            reminder_id, task_id, task_version, reminder_kind,
+            scheduled_at, available_at, status, attempt_count,
+            claimed_at, delivered_at, last_error, payload_json,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, 'execution', ?, ?, 'pending', 0, '', '', '', ?, ?, ?)
         """,
-        (next_due, iso_utc(active_now), task_id),
+        (
+            delivery_id,
+            previous["taskId"],
+            int(previous["taskVersion"]),
+            timestamp,
+            timestamp,
+            json.dumps(execution_payload, ensure_ascii=False, separators=(",", ":")),
+            timestamp,
+            timestamp,
+        ),
     )
-    task = read_todo(connection, task_id)
-    _event(
-        connection,
-        task_id,
-        event_type,
-        {"previousDueAt": current.get("dueAt"), "nextDueAt": next_due},
-        now=active_now,
-    )
-    rebuild_todo_reminders(connection, task, now=active_now)
-    return task
+    _event(connection, previous["taskId"], "todo_run_finished", {
+        "runId": str(run_id or ""),
+        "occurrenceAt": previous["occurrenceAt"],
+        "status": normalized_status,
+        "nextOccurrenceAt": next_occurrence,
+        "error": str(error or "")[:1000],
+    }, now=active_now)
+    final = read_todo_run(connection, run_id)
+    task = advanced or read_todo(connection, previous["taskId"])
+    return {
+        "run": final,
+        "task": task,
+        "recurrenceAdvanced": bool(advanced),
+        "nextDueAt": next_due,
+        "nextDueDate": next_due_date,
+        "deliveryReminderId": delivery_id,
+    }
+
+
+def recover_started_todo_runs(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = 0,
+) -> list[dict[str, Any]]:
+    """Resolve abandoned started runs as unknown after a restart.
+
+    This never retries the external action.  It turns unresolved claims into
+    terminal unknown receipts, allowing a recurring task to move to its next
+    occurrence and making the result deliverable from the normal execution
+    reminder queue.  Call this at startup with the default zero threshold
+    while holding the process execution lock.  A positive threshold remains
+    accepted for compatibility with older callers, but recovery should not be
+    scheduled periodically because a slow live worker cannot be distinguished
+    reliably from an abandoned one.
+    """
+
+    active_now = now or utc_now()
+    threshold = int(stale_after_seconds)
+    if threshold <= 0:
+        rows = connection.execute(
+            "SELECT run_id FROM todo_runs WHERE status='started' ORDER BY started_at ASC"
+        ).fetchall()
+    else:
+        stale_before = iso_utc(active_now - timedelta(seconds=threshold))
+        rows = connection.execute(
+            "SELECT run_id FROM todo_runs WHERE status='started' AND started_at <= ? "
+            "ORDER BY started_at ASC",
+            (stale_before,),
+        ).fetchall()
+    recovered: list[dict[str, Any]] = []
+    for row in rows:
+        result = finish_todo_run(
+            connection,
+            str(row["run_id"]),
+            status="unknown",
+            result={
+                "reply": "定时任务已经开始执行，但应用在结果确认前重启了；我不会重复执行。",
+                "spokenTextJa": "予約タスクは実行を開始したけれど、結果の確認前に再起動したわ。重複実行はしない。",
+                "scheduledExecutionStatus": "unknown",
+                "scheduledRunId": str(row["run_id"]),
+                "recovered": True,
+            },
+            receipt={"recovered": True},
+            error="execution_started_without_terminal_receipt",
+            now=active_now,
+        )
+        if result:
+            recovered.append(result)
+    return recovered
 
 
 def set_todo_status(
@@ -818,7 +1471,7 @@ def set_todo_status(
         return current
     _check_expected_version(current, expected_version)
     active_now = now or utc_now()
-    if (status == "completed" and str(current.get("recurrenceRule") or "") == "daily"
+    if (status == "completed" and normalize_recurrence_rule(current.get("recurrenceRule"))
             and current.get("dueAt")):
         return advance_recurring_todo(
             connection,
@@ -862,6 +1515,167 @@ def _task_local_now(task: Mapping[str, Any], now: datetime) -> datetime:
         return now.astimezone()
 
 
+def _all_day_zone(task: Mapping[str, Any]) -> ZoneInfo | timezone:
+    name = str(task.get("timezone") or "").strip()
+    try:
+        return ZoneInfo(name) if name else _local_timezone()
+    except ZoneInfoNotFoundError:
+        return timezone.utc
+
+
+def _all_day_occurs_on(task: Mapping[str, Any], day_text: str) -> bool:
+    """Return whether a recurring all-day task has an occurrence on a date."""
+
+    rule = normalize_recurrence_rule(task.get("recurrenceRule"))
+    if not rule:
+        return True
+    try:
+        day = datetime.fromisoformat(str(day_text)).date()
+    except (TypeError, ValueError):
+        return False
+    zone = _all_day_zone(task)
+    anchor = _task_recurrence_anchor(task)
+    if anchor is None:
+        return False
+    local_anchor = anchor.astimezone(zone)
+    local_target = datetime(day.year, day.month, day.day, tzinfo=zone)
+    occurrence = next_occurrence(
+        rule,
+        anchor=local_anchor,
+        after=local_target - timedelta(microseconds=1),
+    )
+    return occurrence is not None and occurrence.astimezone(zone).date() == day
+
+
+def _next_all_day_occurrence_after(
+    task: Mapping[str, Any], completed_at: datetime,
+) -> datetime | None:
+    rule = normalize_recurrence_rule(task.get("recurrenceRule"))
+    anchor = _task_recurrence_anchor(task)
+    if not rule or anchor is None:
+        return None
+    zone = _all_day_zone(task)
+    local_completed = completed_at.astimezone(zone)
+    after = datetime(
+        local_completed.year, local_completed.month, local_completed.day,
+        23, 59, 59, tzinfo=zone,
+    )
+    return next_occurrence(rule, anchor=anchor.astimezone(zone), after=after)
+
+
+def _all_day_due_date(task: Mapping[str, Any], now: datetime) -> str:
+    """Return the effective local date for an all-day occurrence.
+
+    Recurring all-day tasks coalesce a missed calendar occurrence onto today;
+    one-off tasks retain their original due date so a failed run cannot create
+    a new occurrence every morning.
+    """
+
+    zone = _all_day_zone(task)
+    local_now = now.astimezone(zone)
+    today = local_now.date().isoformat()
+    due_date = str(task.get("dueDate") or "").strip()
+    if due_date and due_date > today:
+        return ""
+    rule = normalize_recurrence_rule(task.get("recurrenceRule"))
+    if not rule:
+        if due_date:
+            return due_date
+        created_at = parse_iso(task.get("createdAt"))
+        return created_at.astimezone(zone).date().isoformat() if created_at else today
+    anchor = _task_recurrence_anchor(task)
+    if anchor is None:
+        return ""
+    local_anchor = anchor.astimezone(zone)
+    first = next_occurrence(
+        rule,
+        anchor=local_anchor,
+        after=local_anchor - timedelta(microseconds=1),
+    )
+    if first is None or first.astimezone(zone).date().isoformat() > today:
+        return ""
+    return today
+
+
+def _task_occurrence_key(task: Mapping[str, Any], now: datetime) -> str:
+    """Stable run key for the task's current timed or all-day occurrence."""
+
+    due = parse_iso(task.get("dueAt"))
+    if due is not None:
+        return iso_utc(due)
+    effective_date = _all_day_due_date(task, now)
+    if not effective_date:
+        return ""
+    zone = _all_day_zone(task)
+    day = datetime.fromisoformat(effective_date).date()
+    return iso_utc(datetime(day.year, day.month, day.day, tzinfo=zone))
+
+
+def _advance_all_day_task_occurrence(
+    connection: sqlite3.Connection,
+    current: Mapping[str, Any],
+    *,
+    occurrence_at: str,
+    now: datetime,
+    event_type: str,
+    expected_version: int,
+) -> dict[str, Any]:
+    """Advance an all-day recurring occurrence without inventing a clock time."""
+
+    task_id = str(current.get("taskId") or "")
+    rule = normalize_recurrence_rule(current.get("recurrenceRule"))
+    anchor = _task_recurrence_anchor(current)
+    if not task_id or not rule or anchor is None:
+        return {}
+    zone = _all_day_zone(current)
+    occurrence = parse_iso(occurrence_at) or now
+    local_occurrence = occurrence.astimezone(zone)
+    after = datetime(
+        local_occurrence.year, local_occurrence.month, local_occurrence.day,
+        23, 59, 59, tzinfo=zone,
+    )
+    next_at = next_occurrence(rule, anchor=anchor.astimezone(zone), after=after)
+    if next_at is None:
+        cursor = connection.execute(
+            """
+            UPDATE todo_items
+            SET status='completed', completed_at=?, snoozed_until='',
+                version=version+1, updated_at=?
+            WHERE task_id=? AND status IN ('pending','in_progress') AND version=?
+            """,
+            (iso_utc(now), iso_utc(now), task_id, int(expected_version)),
+        )
+        if cursor.rowcount != 1:
+            return {}
+        task = read_todo(connection, task_id)
+        _event(connection, task_id, "recurrence_finished", {
+            "previousDueDate": current.get("dueDate"),
+            "occurrenceAt": occurrence_at,
+        }, now=now)
+        rebuild_todo_reminders(connection, task, now=now)
+        return task
+    next_date = next_at.astimezone(zone).date().isoformat()
+    cursor = connection.execute(
+        """
+        UPDATE todo_items
+        SET due_date=?, status='pending', completed_at='', snoozed_until='',
+            version=version+1, updated_at=?
+        WHERE task_id=? AND status IN ('pending','in_progress') AND version=?
+        """,
+        (next_date, iso_utc(now), task_id, int(expected_version)),
+    )
+    if cursor.rowcount != 1:
+        return {}
+    task = read_todo(connection, task_id)
+    _event(connection, task_id, event_type, {
+        "previousDueDate": current.get("dueDate"),
+        "nextDueDate": next_date,
+        "occurrenceAt": occurrence_at,
+    }, now=now)
+    rebuild_todo_reminders(connection, task, now=now)
+    return task
+
+
 def _all_day_overlaps_range(
     task: Mapping[str, Any], after: datetime | None, before: datetime | None,
 ) -> bool:
@@ -879,8 +1693,10 @@ def _all_day_overlaps_range(
                               hour=0, minute=0, second=0, microsecond=0)
     if before is not None and start > before:
         return False
-    if task.get("recurrenceRule") == "daily":
-        # Every day at/after the start date has an occurrence in the range.
+    if task.get("recurrenceRule"):
+        # A recurring all-day task is represented by the date of its next
+        # outstanding occurrence.  The scheduler itself coalesces late timed
+        # occurrences; calendar filtering only needs a deterministic overlap.
         return after is None or before is None or after <= before
     end = start + timedelta(days=1)
     return after is None or end > after
@@ -893,14 +1709,24 @@ def reactivate_daily_all_day_todos(
     active_now = now or utc_now()
     rows = connection.execute(
         "SELECT * FROM todo_items WHERE status='completed' "
-        "AND recurrence_rule='daily' AND due_at='' AND completed_at<>''"
+        "AND recurrence_rule<>'' AND due_at='' AND completed_at<>''"
     ).fetchall()
     for row in rows:
         task = _row_dict(row)
         completed = parse_iso(task["completedAt"])
-        if completed is None or (
-            _task_local_now(task, completed).date() >= _task_local_now(task, active_now).date()
-        ):
+        if completed is None:
+            continue
+        completed_local = _task_local_now(task, completed)
+        active_local = _task_local_now(task, active_now)
+        if completed_local.date() >= active_local.date():
+            continue
+        try:
+            next_occurrence_at = _next_all_day_occurrence_after(task, completed)
+        except ValueError:
+            continue
+        if next_occurrence_at is None or next_occurrence_at.astimezone(
+            _all_day_zone(task)
+        ).date() > active_local.date():
             continue
         cursor = connection.execute(
             "UPDATE todo_items SET status='pending', completed_at='', snoozed_until='', "
@@ -949,6 +1775,13 @@ def prepare_all_day_reminders(
         for task in tasks:
             if task["dueDate"] and task["dueDate"] > today:
                 continue
+            if task["recurrenceRule"]:
+                try:
+                    occurs_today = _all_day_occurs_on(task, today)
+                except ValueError:
+                    occurs_today = False
+                if not occurs_today:
+                    continue
             snoozed = parse_iso(task.get("snoozedUntil"))
             if snoozed and snoozed > active_now:
                 continue
@@ -1017,43 +1850,84 @@ def claim_due_reminder(
         """,
         (timestamp, timestamp, stale_before),
     )
-    row = connection.execute(
+    rows = connection.execute(
         """
         SELECT r.*, i.*
         FROM todo_reminders r
-        JOIN todo_items i ON i.task_id = r.task_id
+        LEFT JOIN todo_items i ON i.task_id = r.task_id
         WHERE r.status='pending'
           AND r.available_at <= ?
           AND r.scheduled_at <= ?
-          AND i.status IN ('pending','in_progress')
-          AND i.version = r.task_version
-        ORDER BY CASE r.reminder_kind WHEN 'all_day' THEN 1 ELSE 0 END,
+          AND (
+                r.reminder_kind='execution'
+                OR (
+                    i.status IN ('pending','in_progress')
+                    AND i.version = r.task_version
+                    AND (i.on_due='' OR r.reminder_kind='upcoming')
+                )
+          )
+        ORDER BY CASE r.reminder_kind WHEN 'execution' THEN 0 WHEN 'all_day' THEN 2 ELSE 1 END,
                  r.scheduled_at ASC, r.created_at ASC
-        LIMIT 1
         """,
         (timestamp, timestamp),
-    ).fetchone()
+    )
+    row = None
+    for candidate in rows:
+        reminder_kind = str(candidate["reminder_kind"] or "")
+        if reminder_kind in {"due", "snoozed", "all_day"}:
+            task = read_todo(connection, str(candidate["task_id"] or ""))
+            if task:
+                try:
+                    occurrence = _task_occurrence_key(task, active_now)
+                except (TypeError, ValueError):
+                    occurrence = ""
+                if occurrence and connection.execute(
+                    "SELECT 1 FROM todo_runs WHERE task_id=? AND occurrence_at=? LIMIT 1",
+                    (str(candidate["task_id"] or ""), occurrence),
+                ).fetchone() is not None:
+                    continue
+        reminder_id = str(candidate["reminder_id"])
+        updated = connection.execute(
+            """
+            UPDATE todo_reminders
+            SET status='claimed', claimed_at=?, attempt_count=attempt_count+1, updated_at=?
+            WHERE reminder_id=? AND status='pending'
+            """,
+            (timestamp, timestamp, reminder_id),
+        )
+        if updated.rowcount == 1:
+            row = candidate
+            break
     if row is None:
         return {}
-    reminder_id = str(row["reminder_id"])
-    updated = connection.execute(
-        """
-        UPDATE todo_reminders
-        SET status='claimed', claimed_at=?, attempt_count=attempt_count+1, updated_at=?
-        WHERE reminder_id=? AND status='pending'
-        """,
-        (timestamp, timestamp, reminder_id),
-    )
-    if updated.rowcount != 1:
-        return {}
     task = read_todo(connection, str(row["task_id"]))
-    return {
+    payload = _run_json(row["payload_json"])
+    if not task and str(row["reminder_kind"] or "") == "execution":
+        snapshot = payload.get("taskSnapshot")
+        task = dict(snapshot) if isinstance(snapshot, Mapping) else {}
+    result = {
         "reminderId": reminder_id,
         "kind": str(row["reminder_kind"]),
         "scheduledAt": str(row["scheduled_at"]),
         "attemptCount": int(row["attempt_count"] or 0) + 1,
         "task": task,
     }
+    if str(row["reminder_kind"] or "") == "execution":
+        snapshot = payload.get("taskSnapshot")
+        if isinstance(snapshot, Mapping):
+            task = dict(snapshot)
+            result["task"] = task
+        execution_result = payload.get("executionResult")
+        if not isinstance(execution_result, Mapping):
+            execution_result = (payload.get("execution") or {}).get("result") or {}
+        result.update({
+            "runId": str(payload.get("runId") or ""),
+            "occurrenceAt": str(payload.get("occurrenceAt") or ""),
+            "executionResult": dict(execution_result) if isinstance(execution_result, Mapping) else {},
+            "taskSnapshot": snapshot or task,
+            "nextTaskSnapshot": payload.get("nextTaskSnapshot") or {},
+        })
+    return result
 
 
 # 领取成功不等于送达：收到结果后才更新 delivered，失败则延后重试并限制次数。
@@ -1073,7 +1947,7 @@ def acknowledge_reminder(
     ).fetchone()
     if row is None:
         return {}
-    if str(row["reminder_kind"]) == "all_day" and str(row["status"]) != "claimed":
+    if str(row["status"]) != "claimed":
         return {"reminderId": str(row["reminder_id"]), "taskId": str(row["task_id"]),
                 "status": str(row["status"]), "ignored": True}
     attempts = int(row["attempt_count"] or 0)
@@ -1108,11 +1982,11 @@ def acknowledge_reminder(
     if (
         delivered
         and str(row["status"] or "") == "claimed"
-        and str(row["reminder_kind"] or "") == "due"
+        and str(row["reminder_kind"] or "") in {"due", "snoozed"}
     ):
         task = read_todo(connection, str(row["task_id"] or ""))
         if (
-            str(task.get("recurrenceRule") or "") == "daily"
+            normalize_recurrence_rule(task.get("recurrenceRule"))
             and int(task.get("version") or 0) == int(row["task_version"] or 0)
         ):
             recurring_task = advance_recurring_todo(
@@ -1132,9 +2006,9 @@ def acknowledge_reminder(
         result["recurrenceAdvanced"] = True
         result["nextDueAt"] = recurring_task.get("dueAt")
         result["task"] = recurring_task
-    elif delivered and str(row["status"]) == "claimed" and str(row["reminder_kind"]) != "upcoming":
+    elif delivered and str(row["status"]) == "claimed" and str(row["reminder_kind"]) not in {"upcoming", "execution"}:
         task = read_todo(connection, str(row["task_id"]))
-        execution_result = (json.loads(row["payload_json"] or "{}").get("execution") or {}).get("result") or {}
+        execution_result = (_run_json(row["payload_json"]).get("execution") or {}).get("result") or {}
         if (task.get("onDue") and not task.get("recurrenceRule")
                 and task.get("version") == int(row["task_version"])
                 and execution_result.get("scheduledExecutionStatus") == "completed"):

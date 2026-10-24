@@ -421,7 +421,7 @@ class ModelToolRequestConstraints:
                 scope = str(args.get("scope") or "all").strip().lower()
                 constrained.append({
                     **request,
-                    "args": {"scope": scope if scope in {"active", "completed", "all"} else "all"},
+                    "args": {"scope": scope if scope in {"active", "paused", "completed", "all"} else "all"},
                 })
             elif name == "todo_manage":
                 safe_args = dict(args)
@@ -465,11 +465,13 @@ class ModelToolRequestConstraints:
                     continue
                 action = str(safe_args.get("action") or "list").strip().lower()
                 if direct_todo_kind == "none" and not model_commit_intent and action not in {
-                    "update", "complete", "reopen", "delete", "snooze",
+                    "update", "complete", "reopen", "delete", "snooze", "pause", "resume",
                 }:
                     continue
                 if bind_recent_todo and not selected_pending_target:
-                    if action not in {"update", "complete", "reopen", "delete", "snooze"}:
+                    if action not in {
+                        "update", "complete", "reopen", "delete", "snooze", "pause", "resume",
+                    }:
                         continue
                     if not recent_todo.get("taskId"):
                         continue

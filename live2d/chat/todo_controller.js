@@ -12,6 +12,35 @@
     return Number.isFinite(number) ? number : 0;
   }
 
+  const RECURRENCE_CUSTOM_VALUE = "__custom__";
+  const KNOWN_RECURRENCE_RULES = Object.freeze([
+    "",
+    "daily",
+    "weekly",
+    "weekdays",
+    "monthly",
+  ]);
+  const KNOWN_RECURRENCE_RULE_SET = new Set(KNOWN_RECURRENCE_RULES);
+
+  function normalizeRecurrenceEditorValue(value) {
+    const recurrenceRule = String(value || "").trim();
+    if (KNOWN_RECURRENCE_RULE_SET.has(recurrenceRule)) {
+      return { selectValue: recurrenceRule, preservedRule: "" };
+    }
+    return {
+      selectValue: recurrenceRule ? RECURRENCE_CUSTOM_VALUE : "",
+      preservedRule: recurrenceRule,
+    };
+  }
+
+  function recurrenceRuleFromEditor(value, preservedRule = "") {
+    const selectValue = String(value || "").trim();
+    if (selectValue === RECURRENCE_CUSTOM_VALUE) {
+      return String(preservedRule || "").trim();
+    }
+    return selectValue;
+  }
+
   function createTodoController(options = {}) {
     const elements = options.elements || {};
     const storage = options.storage || {};
@@ -210,6 +239,7 @@
         dueDate: dueValue ? "" : String(value.dueDate || ""),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
         remindBeforeMinutes: Number(value.remindBeforeMinutes || 0),
+        onDue: String(value.onDue || "").trim(),
         recurrenceRule: String(value.recurrenceRule || ""),
         priority: String(value.priority || "normal"),
       };
@@ -245,6 +275,13 @@
           expectedVersion: numberOrZero(item.version),
           snoozeMinutes: 10,
         });
+      }
+      if (action === "pause" || action === "resume") {
+        void mutate({
+          action,
+          taskId: item.taskId,
+          expectedVersion: numberOrZero(item.version),
+        }, action === "pause" ? "重复任务已暂停" : "重复任务已恢复");
       }
     }
 
@@ -298,5 +335,11 @@
     });
   }
 
-  return Object.freeze({ createTodoController });
+  return Object.freeze({
+    createTodoController,
+    KNOWN_RECURRENCE_RULES,
+    RECURRENCE_CUSTOM_VALUE,
+    normalizeRecurrenceEditorValue,
+    recurrenceRuleFromEditor,
+  });
 }));

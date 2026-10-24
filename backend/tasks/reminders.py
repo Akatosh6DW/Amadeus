@@ -8,7 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from typing import Any, Callable
-from todo_store import prepare_all_day_reminders, claim_due_reminder
+from todo_store import (prepare_all_day_reminders, claim_due_reminder,
+                        claim_due_todo_run, finish_todo_run)
 from backend.chat.reply_fields import SPOKEN_JA_NO_EMOJI_RULE
 
 
@@ -54,6 +55,9 @@ class ReminderService:
         """Lease an authorized reminder independently of unsolicited-chat silence."""
 
         del body
+        # Keep direct API callers working even when the process scheduler has
+        # not started (e.g. embedded hosts). Claims are shared with the runner.
+        self.execute_next_scheduled()
         with self.state.state_database() as connection:
             prepare_all_day_reminders(connection)
             reminder = claim_due_reminder(connection)
@@ -92,8 +96,8 @@ class ReminderService:
             "tension": 0.18,
         }
         settings = self.model.load_settings()
-        if task.get("onDue") and kind != "upcoming":
-            result = self._execute_scheduled(reminder, settings, result)
+        if kind == 'execution' and isinstance(reminder.get('executionResult'), dict):
+            result = dict(reminder['executionResult'])
         elif self.model.configured(settings):
             rule = "\n".join([
                 "你要生成一条 Amadeus 主动任务提醒。只使用输入 JSON 中的任务事实，不联网、不补充外部事实。",
@@ -172,53 +176,46 @@ class ReminderService:
         })
         return result
 
-    def _execute_scheduled(self, reminder: dict[str, Any], settings: dict[str, Any],
-                           fallback: dict[str, Any]) -> dict[str, Any]:
-        """Execute once per occurrence; speech delivery retries reuse the result.
+    def execute_next_scheduled(self) -> dict[str, Any]:
+        """Run one authorized occurrence without depending on UI delivery.
 
-        The existing reminder payload stores a started marker before tool use.
-        A crash with unknown external outcome must not blindly run tools again.
+        The database claim precedes any tool side effects. Finishing persists
+        the result, advances the schedule and queues delivery atomically.
         """
-        ident = reminder["reminderId"]
+        settings = self.model.load_settings()
+        if not self.model.configured(settings) or self.model.execute_scheduled_task is None:
+            return {}
         with self.state.state_database() as connection:
-            row = connection.execute("SELECT payload_json FROM todo_reminders WHERE reminder_id=?", (ident,)).fetchone()
-            payload = json.loads(row["payload_json"] or "{}")
-            execution = payload.get("execution") or {}
-            if execution.get("result"):
-                return dict(execution["result"])
-            if execution.get("status") == "started":
-                return {**fallback, "reply": "这项定时任务已经开始执行，但暂时无法确认结果，我不会重复执行。",
-                        "spokenTextJa": "この予約タスクは実行を開始したけれど、結果を確認できないわ。重複実行はしない。",
-                        "scheduledExecutionStatus": "unknown"}
-            if not self.model.configured(settings) or self.model.execute_scheduled_task is None:
-                return {**fallback, "reply": "定时任务到时间了，但模型尚未配置，暂时无法执行。",
-                        "spokenTextJa": "予約の時間だけれど、モデルが未設定なので実行できないわ。",
-                        "scheduledExecutionStatus": "failed"}
-            payload["execution"] = {"status": "started"}
-            connection.execute("UPDATE todo_reminders SET payload_json=? WHERE reminder_id=?",
-                               (json.dumps(payload, ensure_ascii=False), ident))
-        self.write_log("scheduled_task_started", reminderId=ident, taskId=reminder["task"]["taskId"])
+            occurrence = claim_due_todo_run(connection)
+        if not occurrence:
+            return {}
+        run_id = occurrence['runId']
+        event = {**occurrence, 'reminderId': run_id, 'kind': 'due'}
+        self.write_log('scheduled_task_started', runId=run_id,
+                       taskId=occurrence['task']['taskId'])
         try:
-            result = self.model.execute_scheduled_task(reminder, settings)
-            if not isinstance(result, dict) or not str(result.get("reply") or "").strip():
-                raise ValueError("scheduled_task_empty_reply")
-            # The normal tool loop owns execution/permission/outcome validation.
-            # Only its delivered reply is cached, not private model context.
-            result = {key: value for key, value in result.items() if not key.startswith("_")}
-            result["scheduledExecutionStatus"] = scheduled_delivery_status(
-                result, str(result.get("scheduledExecutionStatus") or "unknown"))
+            result = self.model.execute_scheduled_task(event, settings)
+            if not isinstance(result, dict) or not str(result.get('reply') or '').strip():
+                raise ValueError('scheduled_task_empty_reply')
+            result = {key: value for key, value in result.items() if not key.startswith('_')}
+            status = scheduled_delivery_status(result, str(result.get('scheduledExecutionStatus') or 'unknown'))
+            if status not in {'completed', 'failed', 'unknown'}:
+                status = 'unknown'
         except Exception as error:
-            self.write_log("scheduled_task_failed", reminderId=ident, errorType=type(error).__name__)
-            result = {**fallback, "reply": "定时任务已触发，但执行没有正常结束。可能已有部分操作完成，我不会自动重做。",
-                      "spokenTextJa": "予約タスクは起動したけれど、正常に終了しなかったわ。一部の操作が完了した可能性があるので、自動では繰り返さない。",
-                      "scheduledExecutionStatus": "failed"}
-        # A timed event does not represent the user returning to conversation.
-        result.update(proactiveDirective="none", proactiveDirectiveProvided=False,
-                      requiresUserResponse=False, requiresUserResponseProvided=True, expectedResponseType="")
-        result.pop("proactiveControl", None)
+            self.write_log('scheduled_task_failed', runId=run_id, errorType=type(error).__name__)
+            status = 'failed'
+            result = {'reply': '定时任务已触发，但执行没有正常结束。可能已有部分操作完成，我不会自动重做。',
+                      'spokenTextJa': '予約タスクは起動したけれど、正常に終了しなかったわ。自動では繰り返さない。'}
+        result.update(scheduledExecutionStatus=status, scheduledRunId=run_id,
+                      proactiveDirective='none', proactiveDirectiveProvided=False,
+                      requiresUserResponse=False, requiresUserResponseProvided=True, expectedResponseType='')
+        # Delivery can happen after switching chats or restarting the desktop.
+        # Its conversation binding is established by the ordinary delivery path.
+        for key in ('proactiveControl', 'conversationId', 'contextEpoch', 'turnIdentity',
+                    'turnContextSnapshotId', 'currentUserMessageId', 'replyAnchor'):
+            result.pop(key, None)
         with self.state.state_database() as connection:
-            payload["execution"] = {"status": "finished", "result": result}
-            connection.execute("UPDATE todo_reminders SET payload_json=? WHERE reminder_id=?",
-                               (json.dumps(payload, ensure_ascii=False), ident))
-        self.write_log("scheduled_task_finished", reminderId=ident, status=result["scheduledExecutionStatus"])
-        return result
+            finished = finish_todo_run(connection, run_id, status=status, result=result,
+                                       receipt={'task': occurrence['task']})
+        self.write_log('scheduled_task_finished', runId=run_id, status=status)
+        return finished

@@ -3280,6 +3280,8 @@ body.dev-mode.dev-panel-collapsed .hud {
   padding: 10px;
 }
 
+#modelProfileEditor.hidden { display: none; }
+
 .model-box-head {
   display: flex;
   align-items: center;
@@ -3557,17 +3559,20 @@ body.glitch #stage {
 }
 
 .todo-item.is-completed { opacity: .56; }
+.todo-item.is-paused { border-color: rgba(230, 182, 82, .38); }
 .todo-item.is-completed .todo-item-title { color: rgba(255, 243, 213, .58); }
 .todo-item-check { width: 21px; height: 21px; accent-color: #d5a944; }
+.todo-item-check:disabled { opacity: .55; cursor: not-allowed; }
 .todo-item-main { min-width: 0; cursor: pointer; }
 .todo-item-title { overflow-wrap: anywhere; color: #fff3d5; font-size: 13px; line-height: 1.35; }
-.todo-item-meta { margin-top: 4px; color: rgba(255,255,255,.48); font-size: 10px; }
+.todo-item-meta { margin-top: 4px; color: rgba(255,255,255,.48); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .todo-item-actions {
   display: flex;
   align-items: center;
   gap: 5px;
 }
 .todo-item-snooze { padding: 4px 6px; font-size: 10px; }
+.todo-item-pause { padding: 4px 6px; font-size: 10px; }
 .todo-item-settings {
   display: grid;
   width: 27px;

@@ -248,15 +248,15 @@ def ground_schedule_temporal_precision(
     """Reject an invented wall-clock time without changing schedule intent.
 
     This is a validation boundary, not an intent classifier: it only examines
-    already model-authorized daily commands and can downgrade execution to a
+    already model-authorized recurring commands and can downgrade execution to a
     clarification.  It can never create a schedule activity or authorize a write.
     """
 
-    daily_timed_commands = tuple(
+    recurring_timed_commands = tuple(
         command for command in intent.commands
-        if command.recurrence_rule == "daily" and bool(command.due_at or command.time_spec)
+        if command.recurrence_rule and bool(command.due_at or command.time_spec)
     )
-    if not daily_timed_commands or _EXACT_CLOCK_EVIDENCE.search(
+    if not recurring_timed_commands or _EXACT_CLOCK_EVIDENCE.search(
         str(evidence_text or "")
     ):
         return intent
@@ -285,7 +285,8 @@ SCHEDULE_TRIGGER_RULE = (
     "onDue 在到期时交回正常模型和工具链，不限于念提醒；不要说自己没有定时能力。"
     "本轮认知计划以登记成功为完成标准，到期工作由独立触发执行；登记成功只表示已安排，不代表未来工作已经做完。"
     "‘提醒我做某事’仍是普通提醒，onDue 留空；只有用户明确委托你到点做事才填写。"
-    "应用运行时轮询触发，忙碌会稍后执行；应用关闭或电脑休眠时不能准点执行，不承诺后台常驻。\n"
+    "后端运行时由后台调度触发，无需聊天界面轮询；后端停止或电脑休眠时不能准点执行，"
+    "恢复后合并漏跑，不承诺关机后仍能执行。\n"
 )
 
 SCHEDULE_TIME_PROMPT = SCHEDULE_TRIGGER_RULE + (
@@ -296,6 +297,8 @@ SCHEDULE_TIME_PROMPT = SCHEDULE_TRIGGER_RULE + (
     "按 calendar 保留其日历意思；不要把所有深夜请求都改成今天。确实无法区分才用 clarification 简短确认日期。\n"
     "新建或修改有钟点的提醒优先用 timeSpec，省略 dueAt；它是同一个 todo_manage 调用的参数，无需额外查询工具："
     "{kind:'next_clock',clock:'HH:MM',reason:'简短时间理解依据'} 表示从本轮快照起最近一次该钟点；"
+    "{kind:'next_weekday',weekday:1,clock:'09:00'} 表示最近一次周一九点，weekday 为 ISO 星期一1至星期日7。"
+    "用户按星期指定首次或每周时间时使用 next_weekday，不要手算日期或时差；每周重复再加 recurrenceRule=weekly。"
     "{kind:'calendar',dayOffset:1,clock:'HH:MM'} 表示日历上的明天，或用 date:'YYYY-MM-DD' 指定明确日期；"
     "{kind:'after',seconds:3600} 表示从本轮快照起一小时后；"
     "{kind:'existing_date',clock:'HH:MM'} 表示保留真实目标任务的当地日期，只修改钟点。"
@@ -322,20 +325,28 @@ SCHEDULE_INTENT_PROMPT = (
     "必须结合完整语义和相邻对话判断，不得用‘今天’‘任务’‘完成’等单词直接触发。"
     "用户明确要求新增、修改、完成、恢复、删除或推迟时，kind=mutation、"
     "authorization=explicit；正在补充一个已记录工作流时用 continued。"
+    "修改已有任务的标题、详情、到期执行指令 onDue、时间或重复规则，都使用 update 绑定现有 taskId/targetRef；"
+    "不要因为修改内容或重复方式而创建第二个任务。"
     "用户自然反馈自己的对应待办目标已达成，同样属于明确的完成依据，使用 mutation/explicit 并自主调用 complete，"
     "不要求额外的‘标记完成’命令；到场/开始提醒与完成整项工作要按实际目标区分。"
     "仅讨论、假设、建议方案或让你先规划但没有授权写入时用 proposed，禁止调用写工具；"
     "明确否定写入时用 prohibited。\n"
     "commands 使用 todo_manage 的参数结构；一项真实变更对应一个 command，写操作必须 "
     "commitIntent=true。信息足够时，同一个输出必须同时给出 kind=tool_use 和对应 calls；"
-    "每天重复的任务用 recurrenceRule=daily；未要求重复的任务不设重复规则。"
+    "需要检查某个任务过去的到期执行结果时，使用 todo_search 的 includeHistory=true 和可选 historyLimit（1到20），"
+    "并绑定 taskId 或明确唯一的 targetRef；不要凭旧对话猜测执行是否成功。"
+    "重复任务使用 recurrenceRule 的标准别名 daily、weekly、weekdays、monthly，或使用后端支持的 RFC5545 RRULE；"
+    "未要求重复的任务不设重复规则。不要自行改写 RRULE，也不要用不受支持的自然语言值。"
+    "用户明确要求暂停或恢复已有任务时，使用 todo_manage action=pause 或 action=resume，"
+    "并通过 targetRef/taskId 绑定真实任务；暂停是持久任务状态，不是一次性的 snooze。"
     "只有用户指定具体钟点或上下文已有明确时间时才使用 timeSpec；dueAt 保留兼容明确的带时区 ISO-8601 时间。"
     "没有指定具体钟点（包括只说早上、下午）时，直接建立全天任务，dueAt 为空，"
     "不得猜成8点或午夜，也不要为此追问时间或填写 exactClockTime。"
     "全天任务若指定了日期或开始日期，用 dueDate=YYYY-MM-DD 保留日期，否则 dueDate 为空；"
-    "dueAt 与 dueDate 不能同时填写。全天任务在每天首次打开应用时提醒，"
-    "创建成功后向用户说明首次打开时提醒，不要把原请求里的早上/下午说成已设置的定时提醒。"
-    "每日重复的全天任务完成后当天保持完成，次日重新激活；一次性任务完成后不再激活。"
+    "dueAt 与 dueDate 不能同时填写。全天普通任务在其发生日期的首次打开应用时提醒；"
+    "有 onDue 的全天执行任务在发生日期内由运行中的后端触发，不承诺具体钟点。"
+    "重复规则决定后续发生日期；不要把原请求里的早上/下午说成已设置的定时钟点。"
+    "重复的全天任务完成后保留当天完成状态，在后端计算的下一次发生日期重新激活；一次性任务完成后不再激活。"
     "信息不足时 kind=clarification，missingFields 写最少缺失字段，不得声称已写入。"
     "查询日程时 kind=query 并调用 todo_search/todo_list。"
     "只有后端返回 accepted actionReceipt 才代表真实完成。"

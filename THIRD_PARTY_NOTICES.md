@@ -10,6 +10,13 @@ Amadeus由原创代码和多个独立第三方组件组成。根目录的 MIT �
 
 用于公开网页搜索；其依赖随 Python 环境安装，许可证保留在安装包中。
 
+## APScheduler and python-dateutil
+
+- APScheduler 3.x: <https://github.com/agronholm/apscheduler>, MIT license.
+- python-dateutil 2.9.x: <https://github.com/dateutil/dateutil>, Apache-2.0 and BSD licenses as specified in its distributed LICENSE.
+
+用于后台任务唤醒和 RFC 5545 周期计算；随 Python 环境安装，第三方许可证保留在各发行包中。
+
 ## GPT-SoVITS
 
 - Project: <https://github.com/RVC-Boss/GPT-SoVITS>

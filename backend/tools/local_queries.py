@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
 from agent.todo_architecture import TodoTargetRef
-from todo_store import resolve_task_reference, search_todos, list_todos, todo_change_summary
+from todo_store import resolve_task_reference, search_todos, list_todos, todo_change_summary, list_todo_runs
 from bookmark_store import list_bookmarks
 from backend.tools.todo_actions import public_todo_candidate as _public_todo_candidate
 
@@ -65,6 +65,16 @@ class LocalQueries:
         with self.ports.database() as connection:
             resolution = resolve_task_reference(connection, target.to_dict(), limit=limit)
             candidates = search_todos(connection, target.to_dict(), limit=limit)
+            history = []
+            if options.get('includeHistory'):
+                task = resolution.get('task') or {}
+                task_id = str(task.get('taskId') or target.to_dict().get('taskId') or '')
+                try:
+                    history_limit = max(1, min(20, int(options.get('historyLimit') or 6)))
+                except (TypeError, ValueError):
+                    history_limit = 6
+                if task_id:
+                    history = list_todo_runs(connection, task_id, limit=history_limit)
         return {
             "name": "todo_search",
             "ok": True,
@@ -81,6 +91,7 @@ class LocalQueries:
             "candidates": [_public_todo_candidate(item) for item in candidates],
             "count": len(candidates),
             "source": "local_sqlite",
+            **({'executionHistory': history} if options.get('includeHistory') else {}),
         }
 
 
@@ -100,6 +111,15 @@ class LocalQueries:
             since_revision = 0
         with self.ports.database() as connection:
             items = list_todos(connection, scope=scope)
+            for item in items:
+                runs = list_todo_runs(connection, item['taskId'], limit=1)
+                if runs:
+                    last = runs[0]
+                    item['lastExecution'] = {
+                        'runId': last['runId'], 'status': last['status'],
+                        'finishedAt': last.get('finishedAt', ''),
+                        'reply': str((last.get('result') or {}).get('reply') or '')[:1000],
+                    }
             active_count = (
                 len(items)
                 if scope in {"active", "pending"}

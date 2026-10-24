@@ -58,7 +58,7 @@
       apiConfigurationRevision += 1;
       setVerification("unverified");
       if (elements.apiTestStatus) {
-        elements.apiTestStatus.textContent = "API 设置已更改，请保存后测试连接。";
+        elements.apiTestStatus.textContent = "当前配置已更改，可点击“测试当前使用的配置”验证连接。";
         elements.apiTestStatus.classList.remove("error");
       }
       return true;
@@ -94,6 +94,15 @@
       } catch (error) {
         notify(`API 设置保存失败：${error.message}`);
       }
+    }
+
+    async function saveVisionOptions() {
+      try {
+        await saveSettings({
+          visionEnabled: elements.visionEnabledInput?.checked ?? true,
+          visionApiKey: secretInputValue(elements.visionApiKeyInput),
+        }, "识图选项已保存，当前模型配置未改变");
+      } catch (error) { notify(`识图选项保存失败：${error.message}`); }
     }
 
     async function testConnection() {
@@ -140,6 +149,7 @@
       bindMaskedInput(elements.apiKeyInput);
       bindMaskedInput(elements.visionApiKeyInput);
       elements.saveApiButton?.addEventListener("click", saveFromForm);
+      elements.saveVisionButton?.addEventListener("click", saveVisionOptions);
       elements.testApiButton?.addEventListener("click", testConnection);
     }
 
@@ -150,6 +160,7 @@
       onSettingsSaved,
       observeConnection,
       saveFromForm,
+      saveVisionOptions,
       testConnection,
     });
   }
