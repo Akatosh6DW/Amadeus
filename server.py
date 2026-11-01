@@ -705,7 +705,7 @@ RUNTIME_PATHS: RuntimePaths = resolve_runtime_paths(
 )
 RUNTIME_MODE = RUNTIME_PATHS.mode
 DATA_DIR = RUNTIME_PATHS.root
-APP_BUILD = "1.1.0"
+APP_BUILD = "1.1.1"
 PORT_REGISTRY = {
     "browserDebug": 5173,
     "desktopBackend": 5174,

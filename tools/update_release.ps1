@@ -13,6 +13,8 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $script:ProcessTreeInspectionUnavailable = $false
+$script:ProcessInspectionUnavailable = $false
+$script:UnverifiedExplicitProcessIds = @()
 
 function Write-UpdateLog([string]$Message) {
     $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString("o")), $Message
@@ -107,23 +109,68 @@ function Get-ProcessSnapshot {
             }
         })
     } catch {
+        $script:ProcessInspectionUnavailable = $true
         return @()
     }
 }
 
-function Get-ExplicitProcessSnapshot([string]$Root, [int[]]$Ids) {
+function Get-ExplicitProcessSnapshot([string]$Root, [int[]]$Ids, [object[]]$KnownRecords = @()) {
     $records = @()
+    $knownById = @{}
+    foreach ($known in $KnownRecords) {
+        $knownById[[int]$known.Id] = $known
+    }
     foreach ($id in $Ids) {
         if ($id -le 0) { continue }
+
+        # The full process snapshot is the authoritative handoff capture when
+        # available.  Preserve its parent and creation metadata instead of
+        # replacing it with a Get-Process record that loses both fields.
+        $known = $knownById[[int]$id]
+        if ($null -ne $known -and -not [string]::IsNullOrWhiteSpace([string]$known.Path)) {
+            if (Test-Inside $Root ([string]$known.Path)) {
+                $created = [string]$known.Created
+                if ([string]::IsNullOrWhiteSpace($created)) {
+                    try {
+                        $knownProcess = Get-Process -Id $id -ErrorAction Stop
+                        $created = $knownProcess.StartTime.ToUniversalTime().ToString("o", [Globalization.CultureInfo]::InvariantCulture)
+                    } catch {
+                        # A fallback snapshot may not expose creation metadata;
+                        # the live check will still require the same executable.
+                    }
+                }
+                $records += [pscustomobject]@{
+                    Id = [int]$known.Id
+                    ParentId = [int]$known.ParentId
+                    Path = [string]$known.Path
+                    Created = $created
+                }
+            }
+            continue
+        }
+
         try {
             $process = Get-Process -Id $id -ErrorAction Stop
             $path = [string]$process.Path
+            if ([string]::IsNullOrWhiteSpace($path)) {
+                # A live explicit PID whose executable cannot be inspected is
+                # unsafe to classify as either owned or external.
+                $script:UnverifiedExplicitProcessIds += [int]$process.Id
+                continue
+            }
             if (Test-Inside $Root $path) {
+                $created = ""
+                try {
+                    $created = $process.StartTime.ToUniversalTime().ToString("o", [Globalization.CultureInfo]::InvariantCulture)
+                } catch {
+                    # The later liveness check will reject a reused PID when
+                    # creation metadata cannot be obtained.
+                }
                 $records += [pscustomobject]@{
                     Id = [int]$process.Id
                     ParentId = 0
                     Path = $path
-                    Created = ""
+                    Created = $created
                 }
             }
         } catch {
@@ -179,25 +226,28 @@ function Get-LiveCapturedProcessSnapshot([string]$Root, [object[]]$Captured) {
 
 function Get-OwnProcessSnapshot([string]$Root, [int]$AnchorPid, [int[]]$ExplicitIds) {
     if ($AnchorPid -le 0) { return @() }
+    $script:UnverifiedExplicitProcessIds = @()
     $records = @(Get-ProcessSnapshot)
-    $records += @(Get-ExplicitProcessSnapshot $Root $ExplicitIds)
+    $records += @(Get-ExplicitProcessSnapshot $Root $ExplicitIds $records)
     $byId = @{}
     foreach ($record in $records) { $byId[[int]$record.Id] = $record }
     $anchor = $byId[[int]$AnchorPid]
-    if ($null -eq $anchor -or -not (Test-Inside $Root $anchor.Path)) { return @() }
 
     $ownedIds = New-Object 'System.Collections.Generic.HashSet[int]'
-    $cursor = [int]$AnchorPid
-    while ($cursor -gt 0) {
-        $record = $byId[$cursor]
-        if ($null -eq $record -or -not (Test-Inside $Root $record.Path)) { break }
-        $null = $ownedIds.Add([int]$record.Id)
-        $cursor = [int]$record.ParentId
+    if ($null -ne $anchor -and (Test-Inside $Root $anchor.Path)) {
+        $cursor = [int]$AnchorPid
+        while ($cursor -gt 0) {
+            $record = $byId[$cursor]
+            if ($null -eq $record -or -not (Test-Inside $Root $record.Path)) { break }
+            $null = $ownedIds.Add([int]$record.Id)
+            $cursor = [int]$record.ParentId
+        }
     }
     # Explicit process IDs are supplied by the running application for
     # components whose parent relationship may be unavailable (for example
-    # when WMI process inspection is denied).  They are trusted only after
-    # their executable path has been verified inside this installation.
+    # when the backend exits before this helper takes its ownership snapshot).
+    # They are trusted only after their executable path and, when available,
+    # their creation time have been captured inside this installation.
     foreach ($record in $records) {
         if ($ExplicitIds -contains [int]$record.Id -and (Test-Inside $Root $record.Path)) {
             $null = $ownedIds.Add([int]$record.Id)
@@ -211,6 +261,23 @@ function Get-OwnProcessSnapshot([string]$Root, [int]$AnchorPid, [int[]]$Explicit
             }
         }
     } while ($changed)
+
+    if ($script:UnverifiedExplicitProcessIds.Count -gt 0) {
+        $ids = ($script:UnverifiedExplicitProcessIds | Sort-Object -Unique) -join ","
+        throw "could not verify explicit Amadeus process path for PID(s): $ids"
+    }
+
+    # A process under the installation that is not reachable from the backend
+    # anchor or a validated explicit handoff PID cannot safely be terminated.
+    # Refuse the replacement rather than treating an unrelated process as ours.
+    $unowned = @($byId.Values | Where-Object {
+        (Test-Inside $Root $_.Path) -and -not $ownedIds.Contains([int]$_.Id)
+    } | Sort-Object -Property Id -Unique)
+    if ($unowned) {
+        $ids = ($unowned | ForEach-Object { [int]$_.Id }) -join ","
+        throw "could not verify live Amadeus process ownership for PID(s): $ids"
+    }
+
     return @($records | Where-Object { $ownedIds.Contains([int]$_.Id) })
 }
 
@@ -312,48 +379,62 @@ function Remove-SafeDirectory([string]$Path, [string]$AllowedParent) {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
-$install = FullPath $InstallDirectory
-$staged = FullPath $StagedRelease
-$staging = FullPath $StagingDirectory
-$explicitProcessIds = @(
-    ($ProcessIds -split ",") | ForEach-Object {
-        $text = ([string]$_).Trim()
-        if ($text) {
-            try { [int]$text } catch { }
-        }
-    }
-)
-if ([string]::IsNullOrWhiteSpace($ExecutableName) -or [IO.Path]::GetFileName($ExecutableName) -ne $ExecutableName) {
-    throw "executable name must be a file name"
-}
-Assert-NotDriveRoot $install "install directory"
-Assert-NotDriveRoot $staging "staging directory"
-if (-not (Test-Path -LiteralPath $staging -PathType Container)) { throw "staging directory does not exist" }
-if ((Get-Item -LiteralPath $staging -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-    throw "staging directory may not be a reparse point"
-}
-Assert-Inside $staging $staged "staged release"
-if (-not (Test-Path -LiteralPath $install -PathType Container)) { throw "install directory does not exist" }
-if (-not (Test-Path -LiteralPath $staged -PathType Container)) { throw "staged release does not exist" }
-if ((Get-Item -LiteralPath $install -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-    throw "install directory may not be a reparse point"
-}
-if ([IO.Path]::GetFileName($staged) -ne "AMADEUS") { throw "staged release root must be AMADEUS" }
-Assert-NoReparsePoint $staged
-$newExecutable = Join-Path $staged $ExecutableName
-Assert-Inside $staged $newExecutable "staged executable"
-if (-not (Test-Path -LiteralPath $newExecutable -PathType Leaf)) { throw "staged AMADEUS.exe is missing" }
-
-$parent = Split-Path -Parent $install
-$backup = Join-Path $parent (".amadeus-update-backup-" + [Guid]::NewGuid().ToString("N"))
+$install = $null
+$staged = $null
+$staging = $null
+$parent = $null
+$backup = $null
+$newExecutable = $null
 $movedOld = $false
 $movedNew = $false
-$ownedProcesses = @(Get-OwnProcessSnapshot $install $ParentPid $explicitProcessIds)
-if ($ParentPid -gt 0 -and -not $ownedProcesses) {
-    throw "could not identify the Amadeus process tree for this installation"
-}
+$ownedProcesses = @()
 
 try {
+    $install = FullPath $InstallDirectory
+    $staged = FullPath $StagedRelease
+    $staging = FullPath $StagingDirectory
+    $explicitProcessIds = @(
+        ($ProcessIds -split ",") | ForEach-Object {
+            $text = ([string]$_).Trim()
+            if ($text) {
+                try { [int]$text } catch { }
+            }
+        }
+    )
+    if ([string]::IsNullOrWhiteSpace($ExecutableName) -or [IO.Path]::GetFileName($ExecutableName) -ne $ExecutableName) {
+        throw "executable name must be a file name"
+    }
+    Assert-NotDriveRoot $install "install directory"
+    Assert-NotDriveRoot $staging "staging directory"
+    if (-not (Test-Path -LiteralPath $staging -PathType Container)) { throw "staging directory does not exist" }
+    if ((Get-Item -LiteralPath $staging -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "staging directory may not be a reparse point"
+    }
+    Assert-Inside $staging $staged "staged release"
+    if (-not (Test-Path -LiteralPath $install -PathType Container)) { throw "install directory does not exist" }
+    if (-not (Test-Path -LiteralPath $staged -PathType Container)) { throw "staged release does not exist" }
+    if ((Get-Item -LiteralPath $install -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "install directory may not be a reparse point"
+    }
+    if ([IO.Path]::GetFileName($staged) -ne "AMADEUS") { throw "staged release root must be AMADEUS" }
+    Assert-NoReparsePoint $staged
+    $newExecutable = Join-Path $staged $ExecutableName
+    Assert-Inside $staged $newExecutable "staged executable"
+    if (-not (Test-Path -LiteralPath $newExecutable -PathType Leaf)) { throw "staged AMADEUS.exe is missing" }
+
+    $parent = Split-Path -Parent $install
+    $backup = Join-Path $parent (".amadeus-update-backup-" + [Guid]::NewGuid().ToString("N"))
+    $ownedProcesses = @(Get-OwnProcessSnapshot $install $ParentPid $explicitProcessIds)
+    if ($ParentPid -gt 0 -and -not $ownedProcesses) {
+        if ($script:ProcessInspectionUnavailable) {
+            throw "could not verify whether Amadeus installation processes remain"
+        }
+        if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
+            throw "could not identify the Amadeus process tree for this installation"
+        }
+        Write-UpdateLog "parent process $ParentPid already exited and no installation process remains"
+    }
+
     Write-UpdateLog "waiting for parent process $ParentPid"
     if ($ParentPid -gt 0) {
         for ($attempt = 0; $attempt -lt 120; $attempt++) {
@@ -408,13 +489,15 @@ try {
         # A failed directory move can leave a destination behind even when the
         # move helper did not return successfully.  Remove it before restoring
         # the only backup we own; never touch a sibling outside the parent.
-        if ($movedOld -and (Test-Path -LiteralPath $install)) {
+        if ($movedOld -and $install -and (Test-Path -LiteralPath $install)) {
             Remove-SafeDirectory $install $parent
         }
-        if (Test-Path -LiteralPath $backup) {
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
             Move-WithRetry $backup $install
         }
-        $rollbackSucceeded = Test-Path -LiteralPath (Join-Path $install $ExecutableName) -PathType Leaf
+        if ($install) {
+            $rollbackSucceeded = Test-Path -LiteralPath (Join-Path $install $ExecutableName) -PathType Leaf
+        }
     } catch {
         $rollbackError = $_.Exception.Message
         Write-UpdateLog "rollback failed: $rollbackError"
@@ -428,7 +511,7 @@ try {
     if ($rollbackSucceeded) { Start-RolledBackInstallation $install $ExecutableName }
     throw
 } finally {
-    if (Test-Path -LiteralPath $staging) {
+    if ($staging -and $parent -and (Test-Path -LiteralPath $staging)) {
         try { Remove-SafeDirectory $staging $parent } catch { Write-UpdateLog "staging cleanup deferred: $($_.Exception.Message)" }
     }
 }

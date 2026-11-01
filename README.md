@@ -22,13 +22,13 @@ Amadeus System 是一个《命运石之门》同人项目。桌面上的 Live2D 
 
 ## 安装
 
-1. 从 [v1.1.0 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.1.0) 下载 `AMADEUS-v1.1.0-setup.zip`。
+1. [下载安装器 AMADEUS-v1.1.1-setup.zip](https://github.com/Akatosh6DW/Amadeus/releases/download/v1.1.1/AMADEUS-v1.1.1-setup.zip)（约 17 KB；完整程序由安装器下载）。
 2. 解压后双击 `install-release.cmd`，安装器会自动下载程序、运行环境和声音资源，默认装在 `%USERPROFILE%\Apps\Amadeus`。
 3. 运行 `AMADEUS.exe`，在“设置 → API”里填入你的 API Key。
 
 默认使用 DeepSeek（Endpoint `https://api.deepseek.com/chat/completions`，模型 `deepseek-flash`）。也支持配置其他兼容 OpenAI 接口的服务；看图功能需要模型支持图片输入。
 
-v1.1.0 加入 QQ 代管与独立人格，并修复提醒完成状态、长期偏好保存、历史恢复和语音交付。v1.0.2 用户可在“设置 → 更新”检查并安装新版，继续使用原有配置和聊天记录；更早版本请使用安装器。详见 [发行说明](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.1.0)。
+v1.1.1 整合 QQ 代管与独立人格，以及提醒、记忆、历史和语音修复，并修正自动更新的进程交接。旧版用户请先用本版安装器升级；以后可在“设置 → 更新”检查并安装新版，继续使用原有配置和聊天记录。详见 [发行说明](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.1.1)。
 
 ## 从源码运行
 
@@ -56,7 +56,7 @@ QQ 功能默认关闭。源码首次安装会下载固定版本的 NapCat 接入
 
 地址、密钥和对象设置自动保存在本机。**账号与登录** 可新增账号或切换已保存配置；切换配置后保持暂停，还需登录相同 QQ 号。每个账号的联系人、回复要求和聊天上下文独立，不会因为填写新号码就完成 QQ 登录。
 
-完整步骤、按钮说明、主人远程控制、新账号验收和排错见 [QQ 配置与使用说明](integrations/qq/README.md)。NapCat 官方压缩包约 34.2 MiB，展开约 109.3 MiB；复用 Amadeus 运行环境，不需要安装 AstrBot。v1.1.0 安装包已内置 QQ 接入组件，首次使用仍需你选择账号并扫码登录。
+完整步骤、按钮说明、主人远程控制、新账号验收和排错见 [QQ 配置与使用说明](integrations/qq/README.md)。NapCat 官方压缩包约 34.2 MiB，展开约 109.3 MiB；复用 Amadeus 运行环境，不需要安装 AstrBot。v1.1.1 安装包已内置 QQ 接入组件，首次使用仍需你选择账号并扫码登录。
 
 ### 运行条件
 

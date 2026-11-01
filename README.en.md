@@ -21,13 +21,13 @@ Amadeus System is a *Steins;Gate* fan project. A Live2D character modeled on Kur
 
 ## Install
 
-1. Download `AMADEUS-v1.1.0-setup.zip` from the [v1.1.0 Release](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.1.0).
+1. [Download AMADEUS-v1.1.1-setup.zip](https://github.com/Akatosh6DW/Amadeus/releases/download/v1.1.1/AMADEUS-v1.1.1-setup.zip) (about 17 KB; the installer downloads the full program).
 2. Extract it and double-click `install-release.cmd`. The installer downloads the program, runtimes and voice assets, and installs to `%USERPROFILE%\Apps\Amadeus` by default.
 3. Run `AMADEUS.exe` and enter your API key under Settings → API.
 
 DeepSeek is the default (endpoint `https://api.deepseek.com/chat/completions`, model `deepseek-flash`). Other OpenAI-compatible services can be configured; image features require a model that accepts image input.
 
-v1.1.0 adds QQ delegation and independent personas, and fixes reminder completion, durable preferences, history restoration and speech delivery. v1.0.2 users can upgrade through Settings → Updates while retaining their profile and conversations. See the [release notes](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.1.0) for Gemini configuration and upgrading from older versions.
+v1.1.1 includes QQ delegation and independent personas, reminder, memory, history and speech fixes, and repairs the update process handoff. Use this installer to upgrade older versions; subsequent updates are available through Settings → Updates while retaining the same profile and conversations. See the [release notes](https://github.com/Akatosh6DW/Amadeus/releases/tag/v1.1.1) for installation and upgrade details.
 
 ## Run from source
 
@@ -55,7 +55,7 @@ QQ delegation is off by default. Source setup downloads the pinned NapCat compon
 
 Saved profiles and new account entries are under **Account and login**. Switching a profile pauses replies and requires the matching QQ account to log in; entering a number alone is not a login. Contacts, settings and conversation contexts are account-scoped. Background operation after desktop exit must be explicitly enabled.
 
-See the [QQ setup and usage guide (Chinese)](integrations/qq/README.md) for switching accounts, remote owner commands, group triggers and troubleshooting. The NapCat archive is about 34.2 MiB (109.3 MiB extracted), reusing Amadeus's runtime without AstrBot. The v1.1.0 installer includes the QQ adapter; you still choose an account and scan its QR code before use.
+See the [QQ setup and usage guide (Chinese)](integrations/qq/README.md) for switching accounts, remote owner commands, group triggers and troubleshooting. The NapCat archive is about 34.2 MiB (109.3 MiB extracted), reusing Amadeus's runtime without AstrBot. The v1.1.1 installer includes the QQ adapter; you still choose an account and scan its QR code before use.
 
 ### System requirements
 
