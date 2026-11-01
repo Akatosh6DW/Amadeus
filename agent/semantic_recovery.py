@@ -8,29 +8,18 @@ classifies whether that candidate is safe enough for field-only completion.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import json
 import re
 from typing import Any, Mapping
 
+from backend.providers.errors import classify_provider_response_body
+from backend.providers.reply_protocol import (
+    is_reply_envelope,
+    looks_like_truncated_reply_envelope,
+    parse_json_document,
+    parse_json_mapping,
+    unwrap_reply_envelope,
+)
 
-_PROTOCOL_LEAK = re.compile(
-    r"(?i)(?:"
-    r"\b(?:system|developer|assistant|tool)_prompt\b|"
-    r"\b(?:tool_calls?|toolRequests|function_call|memoryUpdates)\b|"
-    r"\b(?:turn_header|turn_trailer|turn_abort)\b|"
-    r"<\|(?:system|assistant|tool|end)[^>]*\|>|"
-    r"authorization\s*:\s*bearer|"
-    r"\bapi[_ -]?key\b\s*[:=]"
-    r")"
-)
-_PROVIDER_ERROR = re.compile(
-    r"(?i)^\s*(?:error|exception|traceback|http\s*[45]\d\d|"
-    r"service unavailable|rate limit|bad gateway|请求失败|服务不可用|调用失败)\b"
-)
-_OBVIOUS_FRAGMENT = re.compile(
-    r"(?:但是|不过|因为|所以|而且|如果|除非|虽然|以及|然后|换句话说|"
-    r"つまり|だから|けれど|そして|または)\s*[，、,:：]?\s*$"
-)
 _TAG_PATTERN = re.compile(
     r"(?is)<(?P<name>textZh|reply|spokenTextJa|emotion)>\s*"
     r"(?P<value>.*?)\s*</(?P=name)>"
@@ -65,11 +54,7 @@ class SemanticRecoveryResult:
 
 
 def _json_mapping(value: str) -> Mapping[str, Any] | None:
-    try:
-        parsed = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    return parsed if isinstance(parsed, Mapping) else None
+    return parse_json_mapping(value)
 
 
 def _balanced_json_candidates(text: str) -> list[str]:
@@ -138,7 +123,10 @@ def _close_truncated_object(text: str) -> str | None:
 
 
 def _dialogue_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    value = unwrap_reply_envelope(value)
     payload = dict(value.get("payload") or {}) if isinstance(value.get("payload"), Mapping) else dict(value)
+    if isinstance(value.get("payload"), Mapping):
+        payload = {**value, **dict(value["payload"])}
     if isinstance(payload.get("utterances"), list):
         utterances = [item for item in payload["utterances"] if isinstance(item, Mapping)]
         if utterances:
@@ -165,7 +153,13 @@ def _dialogue_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _candidate_risks(payload: Mapping[str, Any], raw: str) -> list[str]:
+def _candidate_risks(
+    payload: Mapping[str, Any],
+    raw: str,
+    *,
+    plain_text_candidate: bool = False,
+    structured_envelope: bool = False,
+) -> list[str]:
     reply = str(payload.get("reply") or payload.get("textZh") or "").strip()
     reasons: list[str] = []
     if not reply:
@@ -173,16 +167,29 @@ def _candidate_risks(payload: Mapping[str, Any], raw: str) -> list[str]:
         return reasons
     if len(reply) > 6000:
         reasons.append("reply_too_large")
-    if _PROTOCOL_LEAK.search(reply) or _PROTOCOL_LEAK.search(raw[:12000]):
-        reasons.append("protocol_or_prompt_leak")
-    if _PROVIDER_ERROR.search(reply):
+    # Once the transport has yielded a complete, recognized envelope, the
+    # visible reply is content.  Adapter error detection belongs to the raw
+    # body/plain-text path; otherwise legitimate prose such as ``Error
+    # handling ...`` would be reclassified after successful parsing.
+    if not structured_envelope and classify_provider_response_body(reply).is_error:
         reasons.append("provider_error_text")
-    if re.search(r"```|^\s*[{[]", reply):
-        reasons.append("structured_dump_as_reply")
-    if _OBVIOUS_FRAGMENT.search(reply):
-        reasons.append("obvious_trailing_fragment")
-    if not re.search(r"[\u3400-\u9fff]", reply):
-        reasons.append("no_chinese_visible_text")
+    # Plain salvage is the legacy Chinese dialogue path.  Keep its transport
+    # sanity check so an arbitrary provider diagnostic (for example
+    # ``provider protocol noise``) cannot become a visible utterance.  This is
+    # deliberately scoped to unstructured salvage; parsed envelopes may carry
+    # English technical prose, code or JSON examples without this gate.
+    # This is salvage transport sanity only; parsed envelopes never use this
+    # language heuristic and technical prose remains visible content.
+    # regex-purpose: protocol
+    if plain_text_candidate and not re.search(r"[\u3400-\u9fff]", reply):
+        complete_plain_artifact = False
+        parsed_artifact = parse_json_document(raw)
+        if isinstance(parsed_artifact, (Mapping, list)) and not is_reply_envelope(parsed_artifact):
+            complete_plain_artifact = True
+        elif raw.strip().startswith("```") and raw.strip().endswith("```"):
+            complete_plain_artifact = True
+        if not complete_plain_artifact:
+            reasons.append("no_chinese_visible_text")
     return reasons
 
 
@@ -204,53 +211,54 @@ def recover_semantic_output(
 
     direct = _json_mapping(raw)
     if direct is not None:
-        payload = _dialogue_payload(direct)
-        risks = _candidate_risks(payload, raw)
-        return SemanticRecoveryResult(
-            "accepted" if not risks else "rejected",
-            "strict_json",
-            payload,
-            tuple(risks),
-            len(raw),
-        )
-
-    for fenced in re.findall(r"(?is)```(?:json)?\s*(.*?)```", raw):
-        parsed = _json_mapping(fenced.strip())
-        if parsed is not None:
-            payload = _dialogue_payload(parsed)
-            risks = _candidate_risks(payload, fenced)
+        normalized = unwrap_reply_envelope(direct)
+        if is_reply_envelope(normalized):
+            payload = _dialogue_payload(normalized)
+            risks = _candidate_risks(payload, raw, structured_envelope=True)
             return SemanticRecoveryResult(
                 "accepted" if not risks else "rejected",
-                "fenced_json",
+                "fenced_json" if raw.startswith("```") else "strict_json",
                 payload,
                 tuple(risks),
                 len(raw),
             )
-
-    for candidate in _balanced_json_candidates(raw):
-        parsed = _json_mapping(candidate)
-        if parsed is not None:
-            payload = _dialogue_payload(parsed)
-            if not str(payload.get("reply") or "").strip():
-                # A tool/protocol fragment embedded in otherwise plain output
-                # is not itself a dialogue candidate. Continue so the whole
-                # response is screened for leaks below.
-                continue
-            risks = _candidate_risks(payload, candidate)
+        provider_classification = classify_provider_response_body(direct)
+        if provider_classification.is_error:
             return SemanticRecoveryResult(
-                "accepted" if not risks else "rejected",
-                "embedded_json",
-                payload,
-                tuple(risks),
-                len(raw),
+                "rejected",
+                provider_classification.category,
+                reasons=(provider_classification.category,),
+                raw_length=len(raw),
             )
+        # A complete JSON object without a visible reply may be a user-requested
+        # code/JSON example.  Preserve it as text when salvage is enabled; never
+        # claim that an arbitrary object was a valid dialogue envelope.
+        if not allow_plain_text:
+            return SemanticRecoveryResult(
+                "rejected",
+                "strict_json",
+                reasons=("missing_visible_reply",),
+                raw_length=len(raw),
+            )
+
+    # ``parse_json_mapping`` already handles a fence that wraps the entire
+    # response.  A fence embedded in surrounding prose is a user-facing code
+    # example and must remain part of that prose; extracting it would violate
+    # the whole-body envelope boundary.
+
+    # A complete envelope is unwrapped only when it is the whole response.
+    # Do not extract a ``{"reply": ...}`` object from ordinary prose: that
+    # object may be a user-facing JSON example, and stripping its surrounding
+    # explanation would lose legitimate content.  ``_balanced_json_candidates``
+    # remains available to compatibility callers, but embedded values stay
+    # plain text here.
 
     closed = _close_truncated_object(raw)
     if closed:
         parsed = _json_mapping(closed)
         if parsed is not None:
             payload = _dialogue_payload(parsed)
-            risks = _candidate_risks(payload, raw)
+            risks = _candidate_risks(payload, raw, structured_envelope=True)
             return SemanticRecoveryResult(
                 "accepted" if not risks else "ambiguous",
                 "closed_partial_json",
@@ -258,6 +266,17 @@ def recover_semantic_output(
                 tuple(risks or ["partial_json_requires_field_completion"]),
                 len(raw),
             )
+
+    if looks_like_truncated_reply_envelope(raw):
+        # Do not fall through to plain-text salvage: a malformed protocol
+        # object must never be shown verbatim.  The bounded closing repair above
+        # is the only permitted salvage path for a complete visible reply.
+        return SemanticRecoveryResult(
+            "rejected",
+            "protocol_invalid",
+            reasons=("malformed_or_truncated_envelope",),
+            raw_length=len(raw),
+        )
 
     tagged: dict[str, Any] = {}
     for match in _TAG_PATTERN.finditer(raw):
@@ -283,15 +302,16 @@ def recover_semantic_output(
             reasons=("plain_text_candidate_requires_enabled_salvage",),
             raw_length=len(raw),
         )
-    if _PROVIDER_ERROR.search(raw):
+    provider_classification = classify_provider_response_body(raw)
+    if provider_classification.is_error:
         return SemanticRecoveryResult(
             "rejected",
             "plain_text",
-            reasons=("provider_error_text",),
+            reasons=(provider_classification.category,),
             raw_length=len(raw),
         )
     payload = {"reply": raw, "textZh": raw}
-    risks = _candidate_risks(payload, raw)
+    risks = _candidate_risks(payload, raw, plain_text_candidate=True)
     return SemanticRecoveryResult(
         "accepted" if not risks else "ambiguous",
         "plain_text",

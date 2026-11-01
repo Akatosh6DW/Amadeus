@@ -261,8 +261,27 @@ def contextual_reference_prompt(resolution: dict[str, Any]) -> str:
                 message_id=ledger.current_message_id,
             ),
         )
+    recent_history = resolution.get("recentHistory")
+    if isinstance(recent_history, list):
+        recent_history = [
+            # regex-purpose: projection
+            re.sub(r"\s+", " ", str(item or "")).strip()[:700]
+            for item in recent_history
+            if str(item or "").strip()
+        ][-8:]
+    else:
+        recent_history = []
+    recent_history_prompt = ""
+    if recent_history:
+        recent_history_prompt = "\n".join([
+            "[有界近期用户原文：仅供模型判断当前问题是否相关]",
+            *(f"- {item}" for item in recent_history),
+            "历史存在不代表当前问题承接旧话题；相关性由模型结合当前原话判断。",
+        ])
     if not resolution.get("active"):
-        return structured_prompt
+        return "\n\n".join(
+            item for item in (structured_prompt, recent_history_prompt) if item
+        )
     evidence = resolution.get("evidence") if isinstance(resolution.get("evidence"), list) else []
     trusted_tool_evidence = (
         resolution.get("trustedToolEvidence")
@@ -285,7 +304,9 @@ def contextual_reference_prompt(resolution: dict[str, Any]) -> str:
         )
         + "不得改谈实验室、长期记忆或其他旧主题，也不要再反问用户指哪一个对象。",
     ])
-    return "\n\n".join(item for item in (structured_prompt, legacy_prompt) if item)
+    return "\n\n".join(
+        item for item in (structured_prompt, recent_history_prompt, legacy_prompt) if item
+    )
 
 
 def visual_relevant_context_prompt(resolution: Mapping[str, Any]) -> str:
@@ -406,6 +427,10 @@ class ReferenceContextService:
         trusted_tool_evidence = self.recent_verified_tool_evidence(limit=4)
         while prior and prior[-1] == re.sub(r"\s+", " ", user_message).strip():
             prior.pop()
+        # The bounded recent history is always retained below as model input.
+        # This deterministic helper may identify an explicit follow-up for the
+        # legacy sports/task projection, but it must not decide whether history
+        # exists or whether a complete current question is related to it.
         needs_context = message_needs_recent_context(user_message)
         if not needs_context and is_external_fact_correction_followup(user_message, messages):
             # A factual correction may be phrased as a complete assertion rather
@@ -413,7 +438,8 @@ class ReferenceContextService:
             # preceding research task when it disputes that answer's lack-of-
             # evidence conclusion.
             needs_context = True
-        nearby = [item for item in prior[-8:] if not is_context_meta_message(item)]
+        recent_history = prior[-8:]
+        nearby = [item for item in recent_history if not is_context_meta_message(item)]
         current_matchup = extract_sports_matchup(user_message)
         current_entities = extract_sports_entities(user_message)
         prediction_request = bool(re.search(
@@ -582,6 +608,7 @@ class ReferenceContextService:
                 "sourceEvidence": (
                     [] if current_is_specific else [*evidence, *trusted_tool_evidence]
                 ),
+                "recentHistory": recent_history,
             }
         if not needs_context or not evidence:
             compact_current = re.sub(r"[\s，。！？?!,.]+", "", user_message)
@@ -590,6 +617,7 @@ class ReferenceContextService:
                 "active": False,
                 "kind": "none",
                 "evidence": [],
+                "recentHistory": recent_history,
                 "clearActiveTask": bool(stored_task and compact_current and not passive_ack),
             }
         return {
@@ -600,6 +628,7 @@ class ReferenceContextService:
             "resolvedQuestion": f"承接上一条用户原文“{evidence[-1][:300]}”：{user_message[:200]}",
             "searchQuery": web_search_query_from_message(" ".join([*evidence[-2:], user_message])),
             "evidence": evidence,
+            "recentHistory": recent_history,
             "trustedToolEvidence": trusted_tool_evidence,
             "requestedAction": "answer_followup",
             "constraints": ["直接承接最近用户原文", "不得让长期记忆覆盖当前追问"],

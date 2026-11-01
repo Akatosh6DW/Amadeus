@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 from agent.cognitive_commit import CognitiveCommitError
 from agent.memory_architecture import new_memory_record, version_memory_record
+from agent.memory_purpose import is_personal_memory
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,8 @@ class MemoryCognitiveProjectionService:
             structured_additions: list[dict[str, Any]] = []
             for raw_operation in operations:
                 if not isinstance(raw_operation, Mapping):
+                    continue
+                if not is_personal_memory(raw_operation):
                     continue
                 operation = str(raw_operation.get("operation") or "").upper()
                 if operation not in {

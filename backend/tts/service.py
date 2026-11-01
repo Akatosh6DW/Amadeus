@@ -157,6 +157,8 @@ class GptSovitsService:
                 self.features().tts_high_confidence_resegment_enabled
             ),
             "coherentReferenceFallback": True,
+            "requestSpeechLanguage": True,
+            "chineseReferenceFreeContext": True,
             "criticalRouteWarmup": True,
             **retry_contract,
         }
@@ -575,7 +577,8 @@ class GptSovitsService:
             ),
             str(effective_settings.get("gptSovitsGptRouteShortMaxChars") or 32),
             str(effective_settings.get("gptSovitsGptRouteLongMinChars") or 60),
-            str(effective_settings.get("gptSovitsTargetLanguage") or "日文"),
+            # Language is carried by each request; both desktop and QQ share
+            # these weights. The capability handshake rejects older engines.
             str(effective_settings.get("gptSovitsPort") or 9881),
         )
 

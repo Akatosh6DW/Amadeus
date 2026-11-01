@@ -37,6 +37,73 @@ class RecoveryPreparationPolicy:
     turn_context_snapshot_owner: object
 
 
+def _attachment_references(body: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Expose bounded attachment handles and failed-read state to rescue.
+
+    The rescue model needs an opaque ID to request a failed read again, but it
+    must not receive extracted document/image content in the compact control
+    snapshot. Successful reads are represented as already available and are
+    therefore not offered as replayable rescue tools.
+    """
+
+    current = body.get("_processedAttachments")
+    if not isinstance(current, list):
+        current = []
+    references: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in current:
+        if not isinstance(item, Mapping):
+            continue
+        attachment_id = str(item.get("id") or item.get("attachmentId") or "").strip()
+        if not attachment_id or attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        kind = str(item.get("kind") or "file").strip().lower()
+        reader = "read_image" if kind == "image" else "read_attachment"
+        content_available = bool(
+            str(item.get("extractedText") or "").strip()
+            or str(item.get("visionCaption") or "").strip()
+            or bool(item.get("directImageInput"))
+        )
+        reference = {
+            "attachmentId": attachment_id,
+            "fileName": str(item.get("name") or "attachment")[:240],
+            "kind": kind,
+            "mimeType": str(item.get("mimeType") or "application/octet-stream")[:160],
+            "reader": reader,
+            "readStatus": "success" if content_available else "failed",
+            "retryable": not content_available,
+        }
+        if not content_available:
+            reference["error"] = str(item.get("visionError") or "attachment_content_unavailable")[:240]
+        references.append(reference)
+
+    # Rescue tool calls from an earlier attempt may refer to an attachment
+    # whose pre-processing record is absent. Preserve the opaque handle and
+    # make the corresponding generic reader discoverable for that failure.
+    for item in body.get("_rescueToolResults") or []:
+        if not isinstance(item, Mapping) or item.get("ok") is True:
+            continue
+        name = str(item.get("name") or "").strip()
+        if name not in {"read_image", "read_file", "read_attachment"}:
+            continue
+        attachment_id = str(item.get("attachmentId") or "").strip()
+        if not attachment_id or attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        reader = "read_image" if name == "read_image" else "read_attachment"
+        references.append({
+            "attachmentId": attachment_id,
+            "fileName": str(item.get("fileName") or "attachment")[:240],
+            "kind": "image" if reader == "read_image" else "file",
+            "reader": reader,
+            "readStatus": "failed",
+            "retryable": True,
+            "error": str(item.get("error") or "attachment_content_unavailable")[:240],
+        })
+    return references
+
+
 def pipeline_rescue_case(
     services: RecoveryPreparationServices,
     body: Mapping[str, Any],
@@ -65,10 +132,17 @@ def pipeline_rescue_case(
         for item in services.state.read_action_receipts()
         if isinstance(item, Mapping) and str(item.get("requestId") or "") == request_id
     ][:12]
+    attachment_references = _attachment_references(body)
+    retryable_attachment_tools = {
+        str(item.get("reader") or "")
+        for item in attachment_references
+        if item.get("retryable") and str(item.get("reader") or "")
+    }
     allowed_tools = []
     for definition in DEFAULT_TOOL_REGISTRY.all():
-        if definition.tool_id in {"read_image", "read_attachment"}:
-            # 附件读取已经预执行，通用执行器不能再次播放同一动作。
+        if definition.tool_id in {"read_image", "read_attachment"} and definition.tool_id not in retryable_attachment_tools:
+            # 成功附件读取已经预执行，通用执行器不能再次播放同一动作。
+            # 失败读取保留为一次有界的补读选择。
             continue
         allowed_tools.append(
             {
@@ -89,14 +163,21 @@ def pipeline_rescue_case(
         for item in (body.get("userMessages") if isinstance(body.get("userMessages"), list) else [])
         if str(item).strip()
     ] or [str(user_message or "").strip()]
-    dialogue = [
-        {
+    dialogue = []
+    for item in messages[-6:]:
+        if not isinstance(item, Mapping) or str(item.get("role") or "") not in {"user", "assistant"}:
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), Mapping) else {}
+        entry = {
             "role": str(item.get("role") or "")[:20],
             "content": str(item.get("content") or item.get("text") or "")[:1000],
         }
-        for item in messages[-6:]
-        if isinstance(item, Mapping) and str(item.get("role") or "") in {"user", "assistant"}
-    ]
+        for key in ("messageId", "conversationId", "turnId", "createdAt"):
+            value = item.get(key) or meta.get(key)
+            if value not in (None, ""):
+                entry[key] = str(value)[:240]
+        if entry["content"]:
+            dialogue.append(entry)
     return {
         "requestId": request_id,
         "route": route_name,
@@ -107,6 +188,7 @@ def pipeline_rescue_case(
         "pendingAction": services.state.current_pending_action(),
         "toolResults": tool_results,
         "actionReceipts": receipts,
+        "attachmentReferences": attachment_references,
         "availableTools": allowed_tools,
         "failure": {
             "type": type(failure).__name__,
@@ -145,7 +227,7 @@ def isolated_context_recovery_case(
     dialogue: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def append_message(message_id: str, role: str, content: str) -> None:
+    def append_message(message_id: str, role: str, content: str, *, created_at: Any = "") -> None:
         normalized_role = str(role or "").strip().lower()
         normalized_content = str(content or "").strip()
         if normalized_role not in {"user", "assistant"} or not normalized_content:
@@ -154,21 +236,19 @@ def isolated_context_recovery_case(
         identity = (
             (normalized_id, normalized_role)
             if normalized_id
-            else (
-                normalized_role,
-                normalized_content,
-            )
+            else (f"entry-{len(dialogue)}", normalized_role)
         )
         if identity in seen:
             return
         seen.add(identity)
-        dialogue.append(
-            {
-                "messageId": normalized_id or f"recent-{len(dialogue) + 1}",
-                "role": normalized_role,
-                "content": normalized_content[:1600],
-            }
-        )
+        entry = {
+            "messageId": normalized_id or f"recent-{len(dialogue) + 1}",
+            "role": normalized_role,
+            "content": normalized_content[:1600],
+        }
+        if created_at not in (None, ""):
+            entry["createdAt"] = str(created_at)[:80]
+        dialogue.append(entry)
 
     for index, turn in enumerate(context.get("recentTurns", []), 1):
         if not isinstance(turn, Mapping):
@@ -178,15 +258,18 @@ def isolated_context_recovery_case(
             str(turn.get("userMessageId") or f"{turn_id}:user"),
             "user",
             str(turn.get("user") or ""),
+            created_at=turn.get("at"),
         )
         append_message(
             str(turn.get("assistantMessageId") or f"{turn_id}:assistant"),
             "assistant",
             str(turn.get("assistant") or ""),
+            created_at=turn.get("at"),
         )
     for index, item in enumerate(messages, 1):
         if not isinstance(item, Mapping):
             continue
+        meta = item.get("meta") if isinstance(item.get("meta"), Mapping) else {}
         append_message(
             str(
                 item.get("messageId")
@@ -196,6 +279,7 @@ def isolated_context_recovery_case(
             ),
             str(item.get("role") or ""),
             str(item.get("content") or item.get("text") or ""),
+            created_at=item.get("createdAt") or item.get("at") or meta.get("createdAt") or meta.get("at"),
         )
 
     current = snapshot.get("currentUser")
@@ -203,7 +287,12 @@ def isolated_context_recovery_case(
     current_message_id = str(
         current.get("messageId") or body.get("currentUserMessageId") or f"{request_id}:user"
     )[:200]
-    append_message(current_message_id, "user", user_message)
+    append_message(
+        current_message_id,
+        "user",
+        user_message,
+        created_at=current.get("createdAt") or current.get("at") or body.get("createdAt"),
+    )
 
     # 保留服务端活跃近期窗口中的全部消息。字符上限用于防止异常客户端提交无界
     # 消息数组；需要裁剪时始终从最旧消息开始。
@@ -269,7 +358,6 @@ def prepare_isolated_context_retry_body(
         "_capabilityEnvelope",
         "_scheduleDecision",
         "_dignityAssessment",
-        "_processedAttachments",
         "_contextPressure",
         "_researchEscalation",
         "_groundingRecoveryAttempted",

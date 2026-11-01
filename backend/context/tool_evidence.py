@@ -22,6 +22,8 @@ from backend.research.source_selection import select_web_sources
 from backend.tools.outcomes import effective_tool_results
 from tools.web_links import compact_web_links
 from tools.web_text import project_web_text
+from tools.web_metadata import page_navigation
+from agent.tool_facts import public_tool_facts
 
 
 # 先移除凭证、路径和原始运行载荷，再把可供模型阅读的事实限制在小范围内。
@@ -71,6 +73,10 @@ def compact_tool_result_for_prompt(
         compacted = compact(item)
     if not isinstance(compacted, dict):
         compacted = {"value": compacted}
+    facts = public_tool_facts(item)
+    if facts:
+        # Configuration is an exact snapshot, independent of generic list/text caps.
+        compacted["toolFacts"] = facts
     envelope = item.get("_toolResultEnvelope") if isinstance(item.get("_toolResultEnvelope"), dict) else {}
     image_artifact = item.get("imageArtifact") if isinstance(item.get("imageArtifact"), dict) else {}
     source_ids = [
@@ -146,6 +152,7 @@ def tool_results_prompt(
                 ).get("receiptProjection", {}),
                 **({"timeFacts": deepcopy(item["timeFacts"])} if item.get("timeFacts") else {}),
                 "evidence_truncated": True,
+                **({"toolFacts": public_tool_facts(item)} if public_tool_facts(item) else {}),
             }
             for item in results[:8]
             if isinstance(item, dict)
@@ -211,6 +218,13 @@ def focused_web_evidence_prompt(
                 "id": source_id,
                 "title": str(source.get("title") or "")[:300],
                 "domain": str(source.get("domain") or "")[:160],
+                "publishedAt": str(source.get("publishedAt") or "")[:80],
+                "publishedTimestamp": str(source.get("publishedTimestamp") or "")[:80],
+                "dateEvidence": str(source.get("dateEvidence") or "")[:120],
+                "dateHint": str(source.get("dateHint") or "")[:80],
+                "dateSource": str(source.get("dateSource") or "")[:80],
+                "providerDate": str(source.get("providerDate") or "")[:80],
+                "providerDateSource": str(source.get("providerDateSource") or "")[:80],
                 "links": compact_web_links(
                     source.get("links"), base_url=str(source.get("url") or ""), max_links=16,
                 ),
@@ -286,6 +300,12 @@ def generic_web_evidence_prompt(
                 "title": str(source.get("title") or "")[:300],
                 "domain": str(source.get("domain") or "")[:160],
                 "publishedAt": str(source.get("publishedAt") or "")[:80],
+                "publishedTimestamp": str(source.get("publishedTimestamp") or "")[:80],
+                "dateEvidence": str(source.get("dateEvidence") or "")[:120],
+                "dateHint": str(source.get("dateHint") or "")[:80],
+                "dateSource": str(source.get("dateSource") or "")[:80],
+                "providerDate": str(source.get("providerDate") or "")[:80],
+                "providerDateSource": str(source.get("providerDateSource") or "")[:80],
                 "links": compact_web_links(
                     source.get("links"), base_url=str(source.get("url") or ""), max_links=16,
                 ),
@@ -341,6 +361,8 @@ def web_final_answer_constraints(*, stable_references: bool) -> list[str]:
         "- 单一事实或简单判断用几句完成。证据缺口通常一句即可；除非用户明确要求排障或下一步，"
         "不要建议用户自行查看官网、联系客服或换关键词，也不要追问是否继续搜索。",
         "- 不得把摘要当作已读正文，不得把未覆盖的细节补成事实；来源事实、推断和仍无法确认的部分要分清。",
+        "- 日期来源保持边界：dateSource=search_title_or_snippet 的 dateHint/dateEvidence 只是标题/摘要线索，不能冒充发布日期；"
+        "只有带 provider 或页面 metadata 来源的 publishedAt/publishedTimestamp 才能作为发布日期候选。",
         reference_rule,
     ]
 
@@ -372,6 +394,7 @@ def web_evidence_synthesis_prompt(
                 continue
             evidence_query = str(
                 source.get("researchQuery")
+                or result.get("researchQuery")
                 or result.get("query")
                 or resolution.get("modelOwnedQuery")
                 or resolution.get("resolvedQuestion")
@@ -393,9 +416,16 @@ def web_evidence_synthesis_prompt(
                 "title": str(source.get("title") or "")[:300],
                 "domain": str(source.get("domain") or "")[:160],
                 "publishedAt": str(source.get("publishedAt") or "")[:80],
+                "publishedTimestamp": str(source.get("publishedTimestamp") or "")[:80],
+                "dateEvidence": str(source.get("dateEvidence") or "")[:120],
+                "dateHint": str(source.get("dateHint") or "")[:80],
+                "dateSource": str(source.get("dateSource") or "")[:80],
+                "providerDate": str(source.get("providerDate") or "")[:80],
+                "providerDateSource": str(source.get("providerDateSource") or "")[:80],
                 "sourceTier": str(source.get("sourceTier") or ""),
                 "sourceType": str(source.get("sourceType") or ""),
                 "fetchStatus": str(source.get("fetchStatus") or ""),
+                "pageNavigation": page_navigation(source),
                 "qualityFlags": source.get("qualityFlags", []),
                 "links": compact_web_links(
                     source.get("links"), base_url=str(source.get("url") or ""), max_links=16,
@@ -406,6 +436,9 @@ def web_evidence_synthesis_prompt(
                 "bodyExcerpt": str(projection.get("bodyExcerpt") or ""),
                 "bodyTruncated": bool(projection.get("bodyTruncated")),
                 "projectionMode": str(projection.get("projectionMode") or "empty"),
+                "readingSummary": {"kind": "derived_summary", "verified": False,
+                                   "text": projection.get("derivedSummary", ""),
+                                   "coverage": projection.get("readingCoverage", {})},
                 "researchQuery": str(source.get("researchQuery") or "")[:240],
                 "researchPurpose": str(source.get("researchPurpose") or "")[:160],
             })
@@ -514,7 +547,10 @@ def tool_context_prompt(
             "成功的操作直接复用回执，不再次调用来确认；失败时根据实际原因和用户授权决定继续还是报告。"
             "对 sourceType=web，正文为空才表示尚未取得网页正文，摘要不能充当已读正文。"
             "若 evidenceChunks 的 text 为空且 textRef=bodyExcerpt，片段正文已包含在同一来源的 bodyExcerpt 中，不代表正文缺失。"
-            "依据用户还未完成的目标决定是否读取其他证据，不能仅因工具已用过就宣称任务完成。",
+            "依据用户还未完成的目标决定是否读取其他证据，不能仅因工具已用过就宣称任务完成。"
+            "pageNavigation 保留原文范围与续读位置；有 hasMore 时可用 read_web_page 的 startChar=nextStartChar、maxChars=14000 续读，"
+            "或用 find 定位方法、实验和局限等章节。rangeExact=false 表示返回的是查询片段而非连续原文。"
+            "搜索结果的 pagination 指示引擎是否支持继续取候选；不支持时改写查询或换可用来源。",
         ]
         if any(item.get("sourceType") == "web" for item in evidence):
             sections.append("\n".join(web_final_answer_constraints(stable_references=True)))
@@ -527,7 +563,8 @@ def tool_context_prompt(
     if not research:
         return tool_results_prompt(results, max_chars=max_chars)
     projections = [
-        compact_tool_result_for_prompt(item, text_limit=220).get("receiptProjection", {})
+        {**compact_tool_result_for_prompt(item, text_limit=220).get("receiptProjection", {}),
+         **({"toolFacts": public_tool_facts(item)} if public_tool_facts(item) else {})}
         for item in results
         if isinstance(item, dict)
     ]

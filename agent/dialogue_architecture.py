@@ -791,11 +791,7 @@ def choose_turn_policy(
         mode: ReplyMode = "deep"
         reason = "file generation needs complete content outside the spoken reply"
     elif _BRIEF_MARKERS.search(text):
-        mode = (
-            "micro"
-            if len(compact) <= 24 and _SOCIAL_MARKERS.search(compact)
-            else "short"
-        )
+        mode = "short"
         reason = "user explicitly asked for a concise answer"
     elif _substantive_detail_request(text, active_interpretation):
         mode = "deep"
@@ -803,14 +799,6 @@ def choose_turn_policy(
     elif multi_part >= 3 or len(compact) >= 360:
         mode = "deep"
         reason = "genuinely multi-part turn"
-    elif active_interpretation.primary_speech_act == "relational_question" and len(compact) <= 48:
-        mode = "micro"
-        reason = "brief relational question still requires a direct stance"
-    elif _ACKNOWLEDGEMENT.fullmatch(compact) or _ACK_SEQUENCE.fullmatch(compact) or (
-        len(compact) <= 24 and _SOCIAL_MARKERS.search(compact)
-    ):
-        mode = "micro"
-        reason = "brief social or acknowledgement turn"
     elif _BRAINSTORM.search(text) or _SUGGESTION_REQUEST.search(text):
         mode = "normal"
         reason = "discussion or design judgment benefits from a little context"
@@ -1111,6 +1099,7 @@ def final_turn_envelope(
     turn_id: str,
     delivery_path: str,
     upstream_finish_reason: str | None = None,
+    delivery_validated: bool = False,
 ) -> FinalTurnEnvelope:
     completed_value = result.get("completedActs")
     completed_items = completed_value if isinstance(completed_value, (list, tuple)) else ()
@@ -1120,7 +1109,7 @@ def final_turn_envelope(
         if str(item)
     )
     missing = tuple(item for item in contract.required_acts if item not in completed)
-    if missing:
+    if missing and not delivery_validated:
         raise ValueError(
             "final_turn_envelope_missing_required_acts:" + ",".join(missing)
         )
@@ -1156,8 +1145,7 @@ def policy_prompt(policy: TurnPolicy) -> str:
         (
             "通常用 "
             f"{policy.preferred_sentence_min}–{policy.preferred_sentence_max} 个完整句子即可。"
-            f"本模式上限为 {policy.max_sentences} 个完整句子；"
-            "若当前任务客观上无法在上限内完整回答，应提高回复模式，而不是漏答、拆碎句子或突然停止。"
+            "这是表达建议，不是硬性句数上限；按完整任务自行调整长度，不要漏答或突然停止。"
             "禁止把句子硬截断。"
         ),
         "这一轮最多选择 action_budget 个真实交流动作，不要把吐槽、解释、关心、总结、建议和追问全套堆在一起。",
@@ -1280,14 +1268,8 @@ def validate_character_reply(
     # A single mildly assistant-like phrase is logged, not rewritten. Rewrite
     # is reserved for visible architecture leakage, severe runaway output, or
     # a cluster that clearly breaks the natural-dialogue contract.
-    needs_rewrite = bool(
-        not text
-        or overflow
-        or internal_hits
-        or repeated
-        or len(forbidden_hits) >= 2
-        or (policy.reply_mode in {"micro", "short"} and bullets >= 3)
-    )
+    # Style diagnostics cannot reject or replace a complete model response.
+    needs_rewrite = not text
     return DialogueValidation(
         sentence_count=sentences,
         character_count=characters,

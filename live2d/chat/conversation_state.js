@@ -38,6 +38,20 @@
     const requestHistory = typeof options.requestHistory === "function"
       ? options.requestHistory
       : (...args) => globalThis.fetch(...args);
+    const requestSync = typeof options.requestSync === "function"
+      ? options.requestSync
+      : requestHistory;
+    const isSyncBusy = typeof options.isSyncBusy === "function"
+      ? options.isSyncBusy
+      : () => false;
+    const syncEventTarget = options.syncEventTarget || globalThis;
+    const syncIntervalMs = Math.max(0, Number(options.syncIntervalMs ?? 3000) || 0);
+    const setSyncTimer = typeof options.setInterval === "function"
+      ? options.setInterval
+      : globalThis.setInterval;
+    const clearSyncTimer = typeof options.clearInterval === "function"
+      ? options.clearInterval
+      : globalThis.clearInterval;
     const renderMessages = typeof options.renderMessages === "function"
       ? options.renderMessages
       : () => {};
@@ -51,6 +65,11 @@
       : () => Boolean(getState()?.waitingForUser);
 
     let hydrateGeneration = 0;
+    let syncTimer;
+    let syncInFlight = false;
+    let syncEpoch = "";
+    const syncRevisions = new Map();
+    const pendingSyncConversations = new Set();
 
     function fallbackState() {
       return {
@@ -115,8 +134,11 @@
       return hydrateGeneration;
     }
 
-    async function hydrate() {
+    async function hydrate(options = {}) {
       const generation = ++hydrateGeneration;
+      const beforeApply = typeof options.beforeApply === "function"
+        ? options.beforeApply
+        : () => true;
       try {
         const response = await requestHistory("/api/conversation/history", { cache: "no-store" });
         const data = await response.json();
@@ -135,7 +157,7 @@
           warn("conversation recovery is active:", data.storageHealth || {});
         }
         const state = getState();
-        if (!state || generation !== hydrateGeneration) return false;
+        if (!state || generation !== hydrateGeneration || !beforeApply(state, data)) return false;
         const previousConversationId = state.conversationId;
         state.contextEpoch = Math.max(
           0,
@@ -245,6 +267,91 @@
       }));
     }
 
+    function emitSyncChange(changes) {
+      if (!changes.length || !syncEventTarget || typeof syncEventTarget.dispatchEvent !== "function") return;
+      const detail = {
+        source: "local-sync",
+        conversationIds: changes.map(item => item.conversationId),
+        revisions: changes.reduce((result, item) => {
+          result[item.conversationId] = item.revision;
+          return result;
+        }, {}),
+      };
+      let event = {type: "amadeus:local-sync", detail};
+      if (typeof syncEventTarget.CustomEvent === "function") {
+        event = new syncEventTarget.CustomEvent("amadeus:local-sync", {detail});
+      } else if (typeof globalThis.CustomEvent === "function") {
+        event = new globalThis.CustomEvent("amadeus:local-sync", {detail});
+      }
+      syncEventTarget.dispatchEvent(event);
+    }
+
+    async function pollSync() {
+      if (syncInFlight) return false;
+      syncInFlight = true;
+      try {
+        const currentConversation = String(getState()?.conversationId || "").trim();
+        const syncHeaders = currentConversation ? {"X-Amadeus-Conversation": currentConversation} : undefined;
+        const response = await requestSync("/api/conversation/sync", {
+          cache: "no-store",
+          ...(syncHeaders ? {headers: syncHeaders} : {}),
+        });
+        const data = await response.json();
+        if (!response.ok || data?.ok === false) return false;
+        const epoch = String(data?.epoch || "").trim();
+        if (epoch && syncEpoch && epoch !== syncEpoch) {
+          syncRevisions.clear();
+          pendingSyncConversations.clear();
+        }
+        if (epoch) syncEpoch = epoch;
+        const changes = [];
+        const conversationId = String(data?.conversationId || currentConversation).trim();
+        const item = data?.change;
+        const revision = Number(item?.revision);
+        if (conversationId && !item) {
+          // An empty first snapshot is a real baseline.  The next revision
+          // must therefore be observable instead of being mistaken for the
+          // controller's first-ever sample.
+          if (!syncRevisions.has(conversationId)) syncRevisions.set(conversationId, 0);
+        } else if (conversationId && Number.isSafeInteger(revision) && revision >= 1) {
+          const previous = syncRevisions.get(conversationId) ?? 0;
+          syncRevisions.set(conversationId, revision);
+          if (revision > previous) {
+            changes.push({conversationId, revision, source: String(item?.source || "local")});
+            pendingSyncConversations.add(conversationId);
+          }
+        }
+        emitSyncChange(changes);
+        const activeConversation = String(getState()?.conversationId || "").trim();
+        if (activeConversation && pendingSyncConversations.has(activeConversation) && !isSyncBusy()) {
+          const expectedConversation = activeConversation;
+          const applied = await hydrate({
+            beforeApply: (state, data) => String(state?.conversationId || "").trim() === expectedConversation
+              && String(data?.conversationId || "").trim() === expectedConversation
+              && !isSyncBusy(),
+          });
+          if (applied) pendingSyncConversations.delete(expectedConversation);
+        }
+        return true;
+      } catch (error) {
+        warn("conversation sync poll failed:", error);
+        return false;
+      } finally {
+        syncInFlight = false;
+      }
+    }
+
+    function startSync() {
+      if (syncTimer || syncIntervalMs <= 0) return;
+      void pollSync();
+      if (typeof setSyncTimer === "function") syncTimer = setSyncTimer(() => void pollSync(), syncIntervalMs);
+    }
+
+    function stopSync() {
+      if (syncTimer && typeof clearSyncTimer === "function") clearSyncTimer(syncTimer);
+      syncTimer = undefined;
+    }
+
     return Object.freeze({
       load,
       persist,
@@ -252,6 +359,9 @@
       invalidateHydration,
       cleanHistoryForModel,
       pruneStaleFallbacks,
+      pollSync,
+      startSync,
+      stopSync,
       messageHistorySignature,
       getState: () => ({ hydrateGeneration }),
     });

@@ -38,47 +38,6 @@ STABLE_FOUNDATIONAL_TERMS = frozenset({
     "PYTORCH", "LIVE2D", "OPENGL", "WEBGL", "ADAM",
 })
 
-_EXPLICIT_WEB = re.compile(
-    r"联网|上网|在线(?:查|搜|搜索|查询)|网络搜索|网页搜索|网上(?:查|搜|找)|"
-    r"搜索一下|搜一下|帮我搜|查一下|查查|核实|查证|验证|确认一下|"
-    r"来源|出处|引用|证据|链接",
-    re.I,
-)
-_FORBID_WEB = re.compile(
-    r"(?:不要|不用|无需|禁止|别)(?:再)?(?:联网|上网|在线查询|网络搜索|网页搜索|"
-    r"查网|查网页|查外部资料|搜索外部资料)|"
-    r"只(?:用|根据)(?:当前|本轮|这段)?(?:对话|上下文|已提供材料|附件内容)|"
-    r"(?:离线|不联网)(?:回答|分析|处理)",
-    re.I,
-)
-_CURRENT_FACT = re.compile(
-    r"今天|今日|现在|当前|刚刚|实时|最新|本周|本月|今年|目前|截至|"
-    r"价格|股价|汇率|天气|气温|比分|赛程|新闻|现任|在任|版本号|"
-    r"营业时间|开放时间|政策|法规|航班|列车",
-    re.I,
-)
-_HIGH_STAKES = re.compile(
-    r"法律|法规|政策|签证|移民|税务|诊断|治疗|药物|药品|剂量|"
-    r"投资|股票|汇率|贷款|利率",
-    re.I,
-)
-_PURE_NON_RESEARCH = re.compile(
-    r"翻译|改写|润色|续写|写(?:一首|一段|一篇)|角色扮演|陪我|安慰我|"
-    r"总结(?:这段|上文|附件|我发的)|根据(?:上文|这段|附件|我提供的)",
-    re.I,
-)
-_EXTERNAL_ENTITY_CLASS = re.compile(
-    r"网站|网页|站点|平台|软件|应用|APP|项目|产品|公司|机构|组织|"
-    r"论文|研究|模型|API|SDK|仓库|repo|repository|service|website|site",
-    re.I,
-)
-_ENTITY_IDENTITY_OR_PURPOSE = re.compile(
-    r"是什么|是干什么|做什么|干嘛的|用途|作用|提供什么|有哪些内容|"
-    r"靠谱吗|谁做的|属于谁|what is|what does|purpose|about",
-    re.I,
-)
-
-
 def _script_kind(char: str) -> str:
     if not char:
         return "other"
@@ -635,6 +594,11 @@ class CapabilityEnvelope:
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
+        # Kept on the dataclass for older stored envelopes, but no longer an
+        # execution limit. Advertising it to the model would make it stop early
+        # even though the shared tool loop permits further dependent calls.
+        value.pop("max_tool_rounds", None)
+        value["tool_loop_policy"] = "continue_until_goal_or_resource_budget"
         value["allowed_tools"] = list(self.allowed_tools)
         value["required_tools"] = list(self.required_tools)
         value["candidate_tool_families"] = list(self.candidate_tool_families)

@@ -12,6 +12,8 @@ from typing import Any, Callable, Mapping
 
 from agent.multimodal_chat import native_visual_chat_enabled
 from backend.chat.recovery import finalize_with_recovery
+from backend.chat.preparation_cache import resumes_stream_preparation
+from backend.chat.turn_serialization import ConversationTurnSerializer
 from backend.common.values import safe_nonnegative_int
 from backend.runtime.requests import RequestValidationError
 
@@ -22,6 +24,7 @@ class RequestOperations:
     chat_request_cancelled: Callable[[str], bool]
     update_progress: Callable[[str, str, str], None]
     wall_time: Callable[[], float]
+    current_conversation_id: Callable[[], str] = lambda: ""
 
 
 @dataclass(frozen=True)
@@ -87,11 +90,14 @@ class ChatRequestPipeline:
         preparation: PreparationOperations,
         generation: GenerationOperations,
         finalization: FinalizationOperations,
+        *,
+        turn_serializer: ConversationTurnSerializer | None = None,
     ) -> None:
         self.requests = requests
         self.preparation = preparation
         self.generation = generation
         self.finalization = finalization
+        self.turn_serializer = turn_serializer or ConversationTurnSerializer()
 
     def run(
         self,
@@ -106,6 +112,46 @@ class ChatRequestPipeline:
         persona_snapshot: Any | None = None,
     ) -> dict[str, Any]:
         """校验请求、准备冻结输入、选择生成路径并提交最终化。"""
+
+        with self.turn_serializer.scope(
+            body,
+            request_id=request_id,
+            current_conversation_id=self.requests.current_conversation_id,
+            cancelled=lambda: self.requests.chat_request_cancelled(request_id),
+            on_wait=lambda: self.requests.update_progress(
+                request_id,
+                "turn-queued",
+                "同一会话上一轮仍在处理，当前轮排队中",
+            ),
+            cancel_error=lambda: RequestValidationError(
+                "request_cancelled",
+                "这轮回答已被用户终止。",
+            ),
+        ):
+            return self._run_serialized(
+                body,
+                settings,
+                request_id=request_id,
+                started_at=started_at,
+                preflight=preflight,
+                stream_preamble=stream_preamble,
+                progress_callback=progress_callback,
+                persona_snapshot=persona_snapshot,
+            )
+
+    def _run_serialized(
+        self,
+        body: dict[str, Any],
+        settings: dict[str, Any],
+        *,
+        request_id: str,
+        started_at: float,
+        preflight: dict[str, Any] | None = None,
+        stream_preamble: dict[str, Any] | None = None,
+        progress_callback: Any | None = None,
+        persona_snapshot: Any | None = None,
+    ) -> dict[str, Any]:
+        """执行已取得会话 turn lease 的完整流程。"""
 
         active_settings = {
             **settings,
@@ -128,7 +174,7 @@ class ChatRequestPipeline:
         self._apply_dignity(result, prepared, request_id=request_id)
         self._attach_metadata(result, prepared)
         self._raise_if_cancelled(request_id)
-        if result.get("silentLocked"):
+        if result.get("silentLocked") and prepared.preflight.get('action') == 'locked':
             result.update({
                 "ok": True,
                 "requestId": request_id,
@@ -138,7 +184,8 @@ class ChatRequestPipeline:
                     or "close_companion"
                 ),
             })
-            return result
+            from backend.chat.delivery import HostSilentDelivery
+            return HostSilentDelivery(result)
         return self._finalize(
             body,
             result,
@@ -172,7 +219,14 @@ class ChatRequestPipeline:
         preflight: dict[str, Any] | None,
         persona_snapshot: Any | None,
     ) -> PreparedRequest:
-        if body.get("_backendSingleTurnRecoveryAttempted"):
+        resuming = resumes_stream_preparation(body, settings)
+        handoff = bool(body.get("_toolEscalation") or body.get("_researchEscalation"))
+        if handoff:
+            self.requests.update_progress(
+                request_id, "tool-escalation",
+                "沿用本轮上下文，接续模型请求的工具" if resuming else "更新本轮准备信息，接续模型请求的工具",
+            )
+        elif body.get("_backendSingleTurnRecoveryAttempted"):
             self.requests.update_progress(
                 request_id,
                 "model-generating",
@@ -183,15 +237,18 @@ class ChatRequestPipeline:
                 request_id, "attachments", "正在读取消息与本轮附件"
             )
         user_message, _ = self.preparation.streaming_user_message(body)
-        self.preparation.ensure_turn_context_snapshot(
-            body, request_id=request_id, user_message=user_message
-        )
-        self.preparation.ensure_context_control(
-            body, user_message=user_message, settings=settings
-        )
-        self.preparation.resolve_recent_artifact_task_context(
-            body, settings, user_message, request_id=request_id
-        )
+        if not resuming:
+            self.preparation.ensure_turn_context_snapshot(
+                body, request_id=request_id, user_message=user_message
+            )
+            self.preparation.ensure_context_control(
+                body, user_message=user_message, settings=settings
+            )
+            self.preparation.resolve_recent_artifact_task_context(
+                body, settings, user_message, request_id=request_id
+            )
+        else:
+            self.finalization.write_log("stream_preparation_reused", requestId=request_id)
         processed_attachments = self.preparation.process_chat_attachments(body, settings)
         processed_attachments.extend(
             self.preparation.refresh_continued_artifacts(body, settings, user_message)

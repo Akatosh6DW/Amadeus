@@ -1,7 +1,7 @@
 """日语发声的本地风格/内容检查与字段修复预算，均为纯规则。"""
 from __future__ import annotations
 import re
-from typing import Any
+
 
 def _spoken_ja_alias_present(text: str, alias: str) -> bool:
     if re.search(r"[A-Za-z]", alias):
@@ -35,23 +35,15 @@ def spoken_japanese_content_needs_repair(text: str) -> bool:
 
 
 def soften_spoken_japanese_style(text: str) -> str:
-    value = str(text or "")
-    replacements = (
-        (r"君", "あなた"),
-        (r"お前", "あなた"),
-        (r"だぜ", "よ"),
-        (r"だぞ", "よ"),
-        (r"かよ", "なの"),
-        (r"からだよ", "からよ"),
-        (r"はずだ(?=[。！？!?]|$)", "はずよ"),
-        (r"選べ(?=[。！？!?]|$)", "選んで"),
-        (r"しろ(?=[。！？!?]|$)", "して"),
-        (r"黙れ(?=[。！？!?]|$)", "黙って"),
-        (r"やれ(?=[。！？!?]|$)", "やって"),
-    )
-    for pattern, replacement in replacements:
-        value = re.sub(pattern, replacement, value)
-    return value
+    """Compatibility hook that preserves the canonical Japanese line.
+
+    Earlier versions rewrote pronouns and sentence endings here.  That made
+    the accepted roleplay text depend on a fixed house style and could alter
+    names, quotations, or intentional characterization.  Style checks remain
+    available through :func:`spoken_japanese_style_needs_repair`; callers that
+    need a lossy track should use the speech projection instead.
+    """
+    return str(text or "")
 
 
 def dialogue_field_repair_token_budget(

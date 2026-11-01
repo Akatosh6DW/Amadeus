@@ -12,6 +12,7 @@ from backend.chat.presentation import (
     normalize_speech_language,
     normalize_voice_intensity,
     normalize_voice_tone,
+    speech_projection_text,
     resolve_voice_intensity,
 )
 from backend.common.values import clamp_float
@@ -210,8 +211,16 @@ def speech_unit_contract_for_result(
     speech_language = normalize_speech_language(updated.get("speechLanguage"))
     # speechText 只是兼容投影，不是第二份事实来源；后续翻译、改写或边界路径
     # 可能替换任一语言轨道，因此每次都从当前冻结轨道重建。
-    updated["speechText"] = str(updated.get("reply") or updated.get("textZh") or "") if speech_language == "zh-CN" else str(updated.get("spokenTextJa") or "")
-    if not reply or (speech_language == "ja-JP" and not spoken):
+    speech_source = (
+        str(updated.get("reply") or updated.get("textZh") or "")
+        if speech_language == "zh-CN"
+        else str(updated.get("spokenTextJa") or "")
+    )
+    updated["speechText"], projected_directions = speech_projection_text(speech_source)
+    if projected_directions:
+        updated["speechStageDirectionsProjected"] = True
+    partial_delivery = bool(updated.get("speechPartialDelivery")) and bool(spoken)
+    if not reply or (speech_language == "ja-JP" and not spoken and not partial_delivery):
         updated["speechUnits"] = []
         updated["speechUnitContract"] = {
             "schemaVersion": 2,
@@ -239,7 +248,11 @@ def speech_unit_contract_for_result(
             spoken_ja = re.sub(
                 r"\s+", " ", str(item.get("spokenTextJa") or item.get("ja") or "")
             ).strip()
-            if not text_zh or (speech_language == "ja-JP" and not spoken_ja):
+            if not text_zh or (
+                speech_language == "ja-JP"
+                and not spoken_ja
+                and not (partial_delivery and bool(item.get("textOnlyDelivery")))
+            ):
                 candidates = []
                 break
             candidates.append({**item, "textZh": text_zh, "spokenTextJa": spoken_ja})
@@ -250,7 +263,11 @@ def speech_unit_contract_for_result(
         speech_language != "ja-JP"
         or (
             bool(candidates)
-            and compact("".join(str(item["spokenTextJa"]) for item in candidates))
+            and compact("".join(
+                str(item["spokenTextJa"])
+                for item in candidates
+                if str(item["spokenTextJa"] or "").strip()
+            ))
             == compact(spoken)
         )
     )
@@ -282,7 +299,8 @@ def speech_unit_contract_for_result(
             "spokenTextJa": spoken_ja,
             "normalizedTextFingerprint": text_fingerprint,
             "deliveryRequired": True,
-            "unitComplete": True,
+            "unitComplete": not bool(candidate.get("textOnlyDelivery"))
+            and (speech_language != "ja-JP" or bool(spoken_ja)),
             "boundaryAfter": (
                 str(candidate.get("boundaryAfter") or "continue")
                 if str(candidate.get("boundaryAfter") or "continue")
@@ -290,6 +308,23 @@ def speech_unit_contract_for_result(
                 else "continue"
             ),
         }
+        unit["speechText"], unit_directions = speech_projection_text(
+            text_zh if speech_language == "zh-CN" else spoken_ja
+        )
+        if unit_directions:
+            unit["speechStageDirectionsProjected"] = True
+        if unit["unitComplete"] is False:
+            unit["textOnlyDelivery"] = True
+            unit["speechUnavailableReason"] = str(
+                candidate.get("speechUnavailableReason")
+                or "spoken_alignment_failed"
+            )
+            unit["ttsUnavailableReason"] = str(
+                candidate.get("ttsUnavailableReason")
+                or unit["speechUnavailableReason"]
+            )
+        else:
+            unit["textOnlyDelivery"] = False
         for key in (
             "emotion", "emotionIntensity", "voiceStyle", "voiceTone",
             "voiceIntensity", "speechPace", "speechSpeed", "originalAudio",
@@ -326,10 +361,12 @@ def speech_unit_contract_for_result(
         length=32,
     )
     updated["speechUnits"] = units
-    updated["speechUnitContract"] = {
+    contract = {
         "schemaVersion": 2,
         "expectedUnitCount": len(units),
-        "allUnitsComplete": bool(units),
+        "allUnitsComplete": bool(units) and all(
+            bool(item.get("unitComplete")) for item in units
+        ),
         "tailOmitted": False,
         "segmentationSource": segmentation_source,
         "punctuationBoundaryInference": (
@@ -337,6 +374,18 @@ def speech_unit_contract_for_result(
         ),
         "contractFingerprint": contract_fingerprint,
     }
+    if partial_delivery and any(not item.get("unitComplete") for item in units):
+        failed_indexes = [
+            index
+            for index, item in enumerate(units)
+            if not item.get("unitComplete")
+        ]
+        contract["partialDelivery"] = True
+        contract["failedUnitIndexes"] = failed_indexes
+        updated["speechPartialDelivery"] = True
+        updated["speechPartialFailureUnitIndexes"] = failed_indexes
+        updated["textOnlyDelivery"] = False
+    updated["speechUnitContract"] = contract
     updated["visibleSegmentationSource"] = segmentation_source
     updated["speechSegmentCount"] = len(units)
     return updated

@@ -789,6 +789,7 @@ def build_memory_projection_payload(
             "beliefId": new_belief_id,
             "memoryId": text_from(new_belief, "memoryId"),
             "scope": text_from(new_belief, "scope") or "session",
+            "memoryPurpose": text_from(new_belief, "memoryPurpose") or "personal",
             "content": content,
             "domain": text_from(value, "domain", "beliefDomain") or text_from(raw_patch, "domain"),
             "sourceSpan": source_span,

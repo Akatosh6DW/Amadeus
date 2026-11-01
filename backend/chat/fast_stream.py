@@ -22,12 +22,16 @@ from agent.research_architecture import (
 )
 from agent.semantic_recovery import recover_semantic_output
 from agent.turn_execution_plan import TurnExecutionPlan, execution_plan_from_dict
+from agent.tool_architecture import normalize_capability_query
 from backend.chat.fast_candidate import FastCandidateContext, FastCandidateFinalizer
+from backend.chat.delivery import require_delivery
 from backend.common.text import unique_strings
 from backend.common.values import clamp_float
 from backend.providers.errors import UpstreamProtocolError
 from backend.runtime.requests import RequestValidationError
 from backend.tools.validation import normalize_tool_authorization
+from backend.chat.preparation_cache import resolve_turn_references
+from backend.chat.presentation import speech_language_profile
 from backend.tts.delivery import enforce_turn_emotion_envelope
 
 
@@ -183,6 +187,103 @@ class FastStreamRunner:
         self.runtime = runtime
         self.candidate_finalizer = candidate_finalizer
 
+    @staticmethod
+    def _compact_speech_text(value: Any) -> str:
+        return "".join(str(value or "").split())
+
+    def _synchronize_buffered_speech_units(
+        self,
+        ctx: FastStreamContext,
+        state: FastRunState,
+        result: Mapping[str, Any],
+    ) -> None:
+        """Apply repaired final speech fields to buffered stream units once.
+
+        Fast delivery buffers accepted units until the final evidence gate.  The
+        finalizer may fill a missing Japanese field after that unit was accepted;
+        update the buffered payload in place so the client receives the repaired
+        unit exactly once.  Text tracks are checked by ordinal and remain frozen.
+        """
+
+        units = result.get("speechUnits")
+        buffered = state.buffered_utterance_events
+        if not isinstance(units, list) or not units or len(units) != len(buffered):
+            return
+        for index, (_, payload) in enumerate(buffered):
+            unit = units[index]
+            if not isinstance(unit, Mapping) or self._compact_speech_text(
+                payload.get("textZh")
+            ) != self._compact_speech_text(unit.get("textZh")):
+                self.runtime.write_log(
+                    "fast_stream_speech_unit_sync_skipped",
+                    requestId=ctx.execution.request_id,
+                    reason="final_speech_units_do_not_match_buffered_text",
+                    unitIndex=index,
+                )
+                return
+
+        partial_delivery = bool(result.get("speechPartialDelivery"))
+        global_text_only = bool(result.get("textOnlyDelivery")) and not partial_delivery
+        updated_events: list[tuple[int, dict[str, Any]]] = []
+        for index, (sequence, payload) in enumerate(buffered):
+            unit = units[index]
+            merged = dict(payload)
+            spoken = str(unit.get("spokenTextJa") or "").strip()
+            merged["spokenTextJa"] = spoken
+            speech_text = str(unit.get("speechText") or "").strip()
+            if speech_text:
+                merged["speechText"] = speech_text
+            for key in (
+                "speechPace", "speechSpeed", "voiceStyle", "voiceTone",
+                "voiceIntensity", "emotion", "emotionIntensity", "boundaryAfter",
+            ):
+                value = unit.get(key)
+                if value is None:
+                    value = result.get(key)
+                if value is not None:
+                    merged[key] = value
+            if unit.get("unitId"):
+                merged["unitId"] = str(unit["unitId"])
+            for key in (
+                "textOnlyDelivery", "speechUnavailableReason", "ttsUnavailableReason",
+            ):
+                if key in unit:
+                    merged[key] = unit.get(key)
+            speech_language = speech_language_profile(ctx.execution.settings)["speechLanguage"]
+            requires_japanese_track = speech_language == "ja-JP"
+            if not requires_japanese_track and not speech_text:
+                speech_text = str(unit.get("textZh") or payload.get("textZh") or "").strip()
+                if speech_text:
+                    merged["speechText"] = speech_text
+            # A repaired Japanese unit must override the stale text-only flag
+            # from the initial stream event.  For Chinese speech, the actual
+            # speechText/textZh track is the playable source and there is no
+            # Japanese field to require.
+            speech_available = bool(spoken) if requires_japanese_track else bool(speech_text)
+            if bool(unit.get("textOnlyDelivery")) or global_text_only:
+                speech_available = False
+            merged["textOnlyDelivery"] = not speech_available
+            if speech_available:
+                merged["speechUnavailableReason"] = ""
+                merged["ttsUnavailableReason"] = ""
+            else:
+                merged["speechUnavailableReason"] = str(
+                    merged.get("speechUnavailableReason")
+                    or result.get("speechUnavailableReason")
+                    or ("spoken_alignment_failed" if requires_japanese_track else "speech_unavailable")
+                )
+                merged["ttsUnavailableReason"] = str(
+                    merged.get("ttsUnavailableReason")
+                    or result.get("ttsUnavailableReason")
+                    or ("spoken_alignment_failed" if requires_japanese_track else "speech_unavailable")
+                )
+            updated_events.append((sequence, merged))
+
+        state.buffered_utterance_events[:] = updated_events
+        for index, (_, merged) in enumerate(updated_events):
+            if index < len(ctx.session.candidate_utterances):
+                ctx.session.candidate_utterances[index].update(merged)
+
     def run(self, ctx: FastStreamContext) -> None:
         execution = ctx.execution
         body = execution.body
@@ -213,7 +314,8 @@ class FastStreamRunner:
         persona_snapshot = self.preparation.build_persona_context_snapshot(
             user_message,
             messages,
-            self.preparation.contextual_reference_resolution(
+            resolve_turn_references(
+                body, self.preparation.contextual_reference_resolution,
                 user_message,
                 messages,
                 request_id=request_id,
@@ -295,6 +397,7 @@ class FastStreamRunner:
             reserved_output_tokens=max_tokens,
             request_id=execution.request_id,
             stage="fast_stream_primary",
+            source_metadata=execution.messages,
         )
         execution.body["_contextPressure"] = pressure
         payload: dict[str, Any] = {
@@ -317,36 +420,20 @@ class FastStreamRunner:
     ) -> list[dict[str, Any]]:
         if not any(item.get("emotionMissingFromModel") for item in utterances):
             return utterances
-        execution = ctx.execution
-        try:
-            self.requests.progress(
-                execution.request_id,
-                "repairing-emotion",
-                "正文已冻结，正在补齐表情与语音情绪",
-            )
-            return self.model.repair_frozen_utterance_emotions_once(
-                execution.settings,
-                utterances,
-                user_message=execution.user_message,
-                recent_messages=execution.messages,
-                relationship_state=state.relationship_state,
-                request_id=execution.request_id,
-            )
-        except Exception as error:
-            self.runtime.write_log(
-                "stream_emotion_label_recovery_failed",
-                requestId=execution.request_id,
-                errorType=type(error).__name__,
-                error=str(error)[:500],
-            )
-            return [
-                {
-                    **item,
-                    "emotionResolvedLocally": True,
-                    "emotionUnavailableReason": "emotion_label_recovery_failed",
-                }
-                for item in utterances
-            ]
+        # Emotion is presentation metadata.  Resolve the missing label locally
+        # so a visible candidate never spends another model call or changes its
+        # frozen text and speech tracks.
+        return [
+            {
+                **item,
+                "emotion": str(item.get("emotion") or "neutral"),
+                "emotionMissingFromModel": False,
+                "emotionResolvedLocally": True,
+                "emotionUnavailableReason": "model_emotion_missing",
+                "emotionLabelRecoverySource": "local_default_without_model_call",
+            }
+            for item in utterances
+        ]
 
     def _apply_emotion_envelope(
         self,
@@ -574,10 +661,26 @@ class FastStreamRunner:
         }:
             target_domain = "unknown_visual"
         raw_tool_requests = self.projection.normalize_tool_requests({
-            "toolRequests": payload.get("toolRequests")
+            "toolRequests": payload.get("toolRequests"),
+            "calls": payload.get("calls"),
         })
-        capability_query = str(payload.get("capabilityQuery") or "").strip()[:300]
-        if not raw_tool_requests and not capability_query:
+        raw_capability_query: Any = payload.get("capabilityQuery")
+        if not isinstance(raw_capability_query, Mapping):
+            raw_capability_query = {
+                "query": raw_capability_query,
+                "families": payload.get("capabilityFamilies"),
+                "cursor": payload.get("capabilityCursor"),
+                "limit": payload.get("capabilityLimit"),
+                "action": payload.get("capabilityAction"),
+            }
+        capability_query_request = normalize_capability_query(raw_capability_query)
+        capability_query = capability_query_request["query"]
+        has_structured_directory_request = bool(
+            capability_query_request["families"]
+            or capability_query_request["cursor"]
+            or capability_query_request["action"]
+        )
+        if not raw_tool_requests and not capability_query and not has_structured_directory_request:
             raise UpstreamProtocolError(
                 "tool escalation omitted both tool requests and capability query"
             )
@@ -594,6 +697,10 @@ class FastStreamRunner:
                 payload.get("toolAuthorization")
             ),
             "capabilityQuery": capability_query,
+            "capabilityFamilies": list(capability_query_request["families"]),
+            "capabilityCursor": capability_query_request["cursor"],
+            "capabilityLimit": capability_query_request["limit"],
+            "capabilityAction": capability_query_request["action"],
             "toolRequests": raw_tool_requests,
             "confidence": clamp_float(payload.get("confidence"), 0.0, 1.0, 0.5),
             "origin": "fast_stream_model",
@@ -767,47 +874,21 @@ class FastStreamRunner:
             planId=active_plan.plan_id,
             planRevision=active_plan.revision,
             decision=gate.to_dict(),
+            deliveryOnly=True,
         )
-        if gate.status == "RESEARCH_ESCALATION":
-            state.research_escalation = {
-                "reason": "evidence_gate_rejected_unverified_external_claim",
-                "queries": [],
-                "unknownEntities": list(active_plan.unknown_entities),
-                "verificationTargets": list(
-                    gate.missing_verification_targets
-                    or active_plan.verification_targets
-                    or ("unsupported external claims",)
-                ),
-                "confidence": min(float(active_plan.confidence), 0.5),
-                "origin": "fast_stream_evidence_gate",
-            }
-            state.research_escalation_sequence = (
-                state.buffered_utterance_events[0][0]
-                if state.buffered_utterance_events
-                else sequence
-            )
-            execution.body["_researchEscalation"] = dict(
-                state.research_escalation
-            )
-            accepted = session.emit(
-                "tool_status",
-                state.research_escalation_sequence,
-                {
-                    "stage": "research-escalation",
-                    "displayText": "回答涉及尚未核实的外部事实，正在补充证据",
-                    "speakable": False,
-                    "voiceGate": "not_required",
-                },
-            )
-            self.runtime.write_log(
-                "evidence_gate_rejected_fast_final",
-                requestId=execution.request_id,
-                unknownEntities=list(active_plan.unknown_entities),
-                gateDecision=gate.to_dict(),
-            )
-            return accepted
-
         combined = self._combined(ctx, state, payload)
+        combined["groundingGateDiagnostic"] = gate.to_dict()
+        if gate.status != "PASS":
+            combined["researchEscalationSuppressed"] = True
+            combined["webEvidenceLimited"] = True
+        delivered_combined = require_delivery(
+            combined,
+            settings=execution.settings,
+            logger=self.runtime.write_log,
+            request_id=execution.request_id,
+        )
+        combined.clear()
+        combined.update(delivered_combined)
         result, recovery_route = self._finalize_candidate(ctx, state, combined)
         delivery_route = (
             recovery_route
@@ -815,12 +896,10 @@ class FastStreamRunner:
             else "reference_rewrite"
             if result.get("referenceAttributionRepaired")
             else execution.route_name
-            if gate.status == "PASS"
-            and not result.get("groundingGateRewrittenByModel")
-            else "grounding_rewrite"
         )
         connection_open = True
         if delivery_route == execution.route_name:
+            self._synchronize_buffered_speech_units(ctx, state, result)
             for buffered_sequence, buffered_payload in state.buffered_utterance_events:
                 if not session.emit_answer(buffered_sequence, buffered_payload):
                     connection_open = False
@@ -1089,8 +1168,6 @@ class FastStreamRunner:
             if recovery_route != route_name
             else "reference_rewrite"
             if result.get("referenceAttributionRepaired")
-            else "grounding_rewrite"
-            if result.get("groundingGateRewrittenByModel")
             else route_name
         )
 
@@ -1126,6 +1203,7 @@ class FastStreamRunner:
         self.requests.finish(execution.request_id, result)
         delivery_route = self._delivery_route(ctx, result, recovery_route)
         if delivery_route == execution.route_name:
+            self._synchronize_buffered_speech_units(ctx, state, result)
             for sequence, utterance in state.buffered_utterance_events:
                 if not session.emit_answer(sequence, utterance):
                     return False
@@ -1296,6 +1374,7 @@ class FastStreamRunner:
         self.requests.finish(execution.request_id, result)
         delivery_route = self._delivery_route(ctx, result, recovery_route)
         if delivery_route == execution.route_name:
+            self._synchronize_buffered_speech_units(ctx, state, result)
             for sequence, utterance in state.buffered_utterance_events:
                 if not session.emit_answer(sequence, utterance):
                     return

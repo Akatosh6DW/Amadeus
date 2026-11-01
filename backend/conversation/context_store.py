@@ -26,8 +26,29 @@ from agent.dialogue_waiting import refresh_waiting_context
 from agent.discourse_reference import DiscourseLedger
 from agent.turn_context import conversation_id_for_epoch
 from backend.common.values import safe_nonnegative_int
-from backend.context.conversation import turn_conversation_id
+from backend.context.conversation import (
+    rebind_restored_context,
+    restore_conversation_snapshot,
+    turn_conversation_id,
+)
 from backend.runtime.requests import RequestValidationError
+
+
+_ARCHIVE_RECOVERY_CACHE: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+
+
+def _bounded_archive_candidates(
+    archive_turns: list[dict[str, Any]], *, conversation_id: str, recent_limit: int,
+) -> list[dict[str, Any]]:
+    """Keep only the scoped archive suffix needed for one working-set merge."""
+
+    bounded_limit = max(1, int(recent_limit))
+    candidates = [
+        deepcopy(dict(turn))
+        for turn in archive_turns
+        if isinstance(turn, Mapping) and turn_conversation_id(turn) == conversation_id
+    ]
+    return candidates[-bounded_limit:]
 
 
 @dataclass(frozen=True)
@@ -149,11 +170,13 @@ class ConversationContextStore:
             "conversation_context", conversation_id=conversation_id, latest_only=True,
         )
         candidate = pending[0].get("context") if pending else None
+        pending_context_adopted = False
         if (isinstance(candidate, dict) and candidate.get("conversationId") == conversation_id
                 and safe_nonnegative_int(candidate.get("conversationEpoch")) == epoch
                 and safe_nonnegative_int(candidate.get("archiveCount")) > safe_nonnegative_int(value.get("archiveCount"))):
             check_context_version(candidate, self.ports.default_context()["version"])
             value = candidate
+            pending_context_adopted = True
         defaults = self.ports.default_context()
         for key, fallback in defaults.items():
             value.setdefault(key, fallback)
@@ -242,6 +265,35 @@ class ConversationContextStore:
             value.get("referenceLedger")
             if isinstance(value.get("referenceLedger"), Mapping) else None
         ).to_dict()
+        # A pending context payload is the committed working-set projection for
+        # this turn.  Its archive counterpart can still be pending, so merging
+        # both here would re-add a DB-only archive row to an already complete
+        # context.  Archive recovery remains for file-only/stale snapshots.
+        if not pending_context_adopted:
+            recovery_key = (
+                str(self.ports.context_path().resolve()),
+                str(value.get("conversationId") or ""),
+                safe_nonnegative_int(value.get("conversationEpoch")),
+            )
+            archive_candidates = _ARCHIVE_RECOVERY_CACHE.get(recovery_key)
+            if archive_candidates is None:
+                with self.ports.lock:
+                    archive_candidates = _ARCHIVE_RECOVERY_CACHE.get(recovery_key)
+                    if archive_candidates is None:
+                        archive_turns = self.ports.read_archive_turns()
+                        archive_candidates = _bounded_archive_candidates(
+                            archive_turns,
+                            conversation_id=recovery_key[1],
+                            recent_limit=self.ports.recent_limit,
+                        )
+                        _ARCHIVE_RECOVERY_CACHE[recovery_key] = archive_candidates
+            value["recentTurns"] = restore_conversation_snapshot(
+                value,
+                archive_candidates,
+                conversation_id=recovery_key[1],
+                conversation_epoch=recovery_key[2],
+                recent_limit=self.ports.recent_limit,
+            )
         return refresh_waiting_context(value, now=self.ports.now_utc(), session_id=self.ports.session_id())
 
     def read_session_snapshots(self) -> dict[str, dict[str, Any]]:
@@ -369,7 +421,8 @@ class ConversationContextStore:
                 return current
             self.ports.save_session_snapshot(current)
             sessions = self.ports.read_session_snapshots()
-            turns = [turn for turn in self.ports.read_archive_turns() if turn_conversation_id(turn) == requested_id]
+            archive_turns = self.ports.read_archive_turns()
+            turns = [turn for turn in archive_turns if turn_conversation_id(turn) == requested_id]
             snapshot = sessions.get(requested_id)
             if not isinstance(snapshot, dict) and not turns:
                 raise RequestValidationError("conversation_not_found", "这个历史对话不存在或还没有保存消息。")
@@ -378,11 +431,21 @@ class ConversationContextStore:
             defaults = self.ports.default_context()
             for key, fallback in defaults.items():
                 restored.setdefault(key, deepcopy(fallback))
-            if not isinstance(snapshot, dict):
-                restored["recentTurns"] = turns[-self.ports.recent_limit:]
+            restored = rebind_restored_context(
+                restored,
+                conversation_id=requested_id,
+                conversation_epoch=activation_epoch,
+            )
+            restored["recentTurns"] = restore_conversation_snapshot(
+                snapshot,
+                archive_turns,
+                conversation_id=requested_id,
+                conversation_epoch=activation_epoch,
+                recent_limit=self.ports.recent_limit,
+            )
             restored["archiveCount"] = max(
                 safe_nonnegative_int(current.get("archiveCount")),
-                len(self.ports.read_archive_turns()),
+                len(archive_turns),
             )
             restored["conversationEpoch"] = activation_epoch
             restored["conversationId"] = requested_id
@@ -398,6 +461,16 @@ class ConversationContextStore:
             restored["conversationState"]["currentContextEpoch"] = activation_epoch
             self.ports.clear_transient_records()
             restored = self.ports.write_context(restored)
+            recovery_key = (
+                str(self.ports.context_path().resolve()),
+                requested_id,
+                activation_epoch,
+            )
+            _ARCHIVE_RECOVERY_CACHE[recovery_key] = _bounded_archive_candidates(
+                archive_turns,
+                conversation_id=requested_id,
+                recent_limit=self.ports.recent_limit,
+            )
         self.ports.write_log(
             "conversation_switched",
             conversationId=requested_id,

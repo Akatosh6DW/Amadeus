@@ -39,6 +39,11 @@ def synchronize_response_waiting(value: Mapping[str, Any]) -> dict[str, Any]:
                       semanticKind="clarification")
         if result.get("expectedResponseType") not in {"free_text", "confirmation", "browser_target", "choice"}:
             result["expectedResponseType"] = "free_text"
+        if status == "needs_input":
+            # This marks the request for missing information, not completion
+            # of the underlying task; its outcome remains ``needs_input``.
+            result["completedActs"] = ["request_missing_input"]
+            result["completedActsProvided"] = True
     elif status == "failed":
         result.update(requiresUserResponse=False, requiresUserResponseProvided=True,
                       expectedResponseType="")
@@ -127,6 +132,48 @@ def related_task_patch(directive: Mapping, context: Mapping, task: Mapping) -> d
     return {"operation": operation, "targetId": task["taskId"]}
 
 
+def _question_source_fields(
+    result: Mapping[str, Any],
+    context: Mapping[str, Any],
+    turn: Mapping[str, Any],
+) -> dict[str, str]:
+    """Copy only structured question provenance into the waiting packet."""
+
+    source = result.get("questionSource") or result.get("question_source")
+    if not isinstance(source, Mapping):
+        return {}
+    known_ids: set[str] = set()
+    for item in [turn, *(context.get("recentTurns") or [])]:
+        if not isinstance(item, Mapping):
+            continue
+        for key in (
+            "turnId", "requestId", "messageId", "userMessageId", "assistantMessageId",
+            "sourceTurnId", "sourceMessageId",
+        ):
+            value = str(item.get(key) or "").strip()
+            if value:
+                known_ids.add(value)
+    fields: dict[str, str] = {}
+    for output, keys in {
+        "sourceMessageId": ("sourceMessageId", "source_message_id"),
+        "sourceTurnId": ("sourceTurnId", "source_turn_id"),
+        "sourceRole": ("sourceRole", "source_role", "role", "speaker"),
+        "sourceType": ("sourceType", "source_type", "origin"),
+    }.items():
+        for key in keys:
+            value = str(source.get(key) or "").strip()
+            if value:
+                if output in {"sourceMessageId", "sourceTurnId"} and value not in known_ids:
+                    # Model output may only echo an ID that the host supplied
+                    # in the current/recent turn set.  Keep the waiting
+                    # question itself for legacy compatibility, but never
+                    # persist an unbound source identifier.
+                    break
+                fields[output] = value[:160]
+                break
+    return fields
+
+
 def update_waiting_after_turn(context: dict, *, turn: Mapping, result: Mapping,
                               question: str, now: datetime, session_id: str, task_id: str = "") -> None:
     refresh_waiting_context(context, now=now, session_id=session_id)
@@ -148,8 +195,14 @@ def update_waiting_after_turn(context: dict, *, turn: Mapping, result: Mapping,
             remember_wait(context, old, status, relation["relation"], now)
     if question:
         context["waitingForUser"] = True
-        context["pendingAssistantQuestion"] = {
-            "questionId": str(turn["turnId"]), "sourceTurnId": str(turn["turnId"]),
+        question_id = str(turn["turnId"])
+        source_fields = _question_source_fields(result, context, turn)
+        pending = {
+            # questionId remains the host-created assistant turn ID used by
+            # questionRelation.  Real source IDs are retained separately;
+            # never replace them with a request hash or invent a source row.
+            "questionId": question_id,
+            "sourceTurnId": source_fields.get("sourceTurnId") or question_id,
             "text": question, "askedAt": str(turn["at"]), "sessionId": session_id,
             "expiresAt": (now + timedelta(seconds=WAIT_TTL_SECONDS)).isoformat(),
             "status": "waiting", "origin": str(turn.get("origin") or "chat"),
@@ -159,5 +212,11 @@ def update_waiting_after_turn(context: dict, *, turn: Mapping, result: Mapping,
             **({"clarificationActionId": result["clarificationActionId"]} if result.get("clarificationActionId") else {}),
             **({"proactiveEventId": turn["proactiveEventId"]} if turn.get("proactiveEventId") else {}),
         }
+        if source_fields.get("sourceMessageId"):
+            pending["sourceMessageId"] = source_fields["sourceMessageId"]
+        for key in ("sourceRole", "sourceType"):
+            if source_fields.get(key):
+                pending[key] = source_fields[key]
+        context["pendingAssistantQuestion"] = pending
     context.setdefault("conversationState", {})["pendingAssistantQuestionId"] = str(
         (context.get("pendingAssistantQuestion") or {}).get("questionId") or "")

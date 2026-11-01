@@ -4,6 +4,7 @@
 当前关系状态。旧草稿必须被整体替换，不能在其后再拼接一份答案。
 """
 from __future__ import annotations
+from backend.context.reply_layers import independent_persona
 from dataclasses import dataclass
 from typing import Any, Callable
 import json
@@ -78,7 +79,8 @@ class EvidenceSynthesis:
             "messages": [
                 *self.ports.persona_prefix(persona_snapshot, legacy_system_prompt=True),
                 {"role": "system", "content": self.ports.reply_rule()},
-                {"role": "system", "content": self.ports.relationship_prompt(relationship_state)},
+                *([] if independent_persona(persona_snapshot) else
+                  [{"role": "system", "content": self.ports.relationship_prompt(relationship_state)}]),
                 {"role": "system", "content": (
                     "[证据有限时的最佳努力回答]\n"
                     "联网检索已经尝试，但结果可能不完整、相关性不足或线路失败。你仍然必须直接回答用户真正的问题，"

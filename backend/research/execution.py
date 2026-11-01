@@ -90,8 +90,10 @@ class ResearchExecution:
                             if not key.startswith("_cognitive") and key != "toolCallId"}
         executor = self.ports.web_search if name == "web_search" else self.ports.read_page
         try:
-            result = executor(settings, {**args, **request["args"]})
+            result = executor(settings, {**args, **request["args"], "requestId": request_id})
         except Exception as error:
+            if getattr(error, "code", "") in {"request_cancelled", "request_superseded"}:
+                raise
             result = {"name": name, "ok": False, "error": "tool_execution_exception",
                       "errorType": type(error).__name__, "message": str(error)[:500], "attempted": True}
         if cognitive_body is not None and state:

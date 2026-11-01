@@ -26,6 +26,7 @@ import tempfile
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -273,6 +274,16 @@ def language_from_locale(locale: str, fallback: str = "日文") -> str:
 def is_chinese_target_language(language: str) -> bool:
     value = str(language or "").strip().lower().replace("_", "-")
     return value in {"中文", "中英混合", "zh", "zh-cn", "zh-hans", "chinese"}
+
+
+def request_target_language(value: Any) -> str:
+    """Resolve the two supported speech languages without guessing from text."""
+    language = str(value or "").strip().lower().replace("_", "-")
+    if language in {"中文", "中英混合", "chinese"} or language == "zh" or language.startswith("zh-"):
+        return "中文"
+    if language in {"日文", "日语", "japanese"} or language == "ja" or language.startswith("ja-"):
+        return "日文"
+    raise ValueError("speechLanguage must be zh-CN or ja-JP")
 
 
 def target_language_for_text(configured_language: str, text: str) -> str:
@@ -1135,6 +1146,29 @@ def split_tts_segments(
     return result
 
 
+def chinese_context_segments(chunks: list[str], max_chars: int) -> list[str]:
+    """Keep short Chinese clauses with their continuation, within one speech unit."""
+    result: list[str] = []
+    index = 0
+    while index < len(chunks):
+        current = chunks[index]
+        index += 1
+        # regex-purpose: projection
+        if len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", current)) <= 8:
+            while (
+                index < len(chunks)
+                    # regex-purpose: projection
+                and len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", current)) < 12
+                # regex-purpose: projection
+                and not re.search(r"[。！？!?][\s\"'’”）)]*$", current)
+                and len(current + chunks[index]) <= max_chars
+            ):
+                current += chunks[index]
+                index += 1
+        result.append(current)
+    return result
+
+
 def synthesis_segments(
     text: str,
     max_chars: int = DEFAULT_MAX_SYNTHESIS_CHARS,
@@ -1158,12 +1192,15 @@ def synthesis_segments(
         return units
     chunks: list[str] = []
     for unit in units:
-        chunks.extend(split_tts_segments(
+        unit_chunks = split_tts_segments(
             unit,
             max_chars=max_chars,
             locale=locale,
             prosody_profile=prosody_profile,
-        ))
+        )
+        if is_chinese_speech_locale(locale):
+            unit_chunks = chinese_context_segments(unit_chunks, max_chars)
+        chunks.extend(unit_chunks)
     return chunks
 
 
@@ -1195,6 +1232,8 @@ def tts_runtime_capabilities() -> dict[str, Any]:
         "boundedRetry": bounded_retry,
         "highConfidenceResegment": tts_high_confidence_resegment_enabled(),
         "coherentReferenceFallback": True,
+        "requestSpeechLanguage": True,
+        "chineseReferenceFreeContext": True,
         "maxNormalAttempts": MAX_NORMAL_ATTEMPTS,
         "maxConservativeAttempts": MAX_CONSERVATIVE_ATTEMPTS,
     }
@@ -2399,6 +2438,39 @@ def summarize_semantic_decodes(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class GPTSoVITSEngine:
+    @property
+    def target_language(self) -> str:
+        context = getattr(self, "_request_target_language", None)
+        requested = context.get() if context is not None else None
+        return requested or getattr(self, "default_target_language", "日文")
+
+    @target_language.setter
+    def target_language(self, value: str) -> None:
+        # Set once at construction. Requests use ContextVar tokens, never mutate
+        # this shared default while another synthesis/alignment is running.
+        self.default_target_language = value
+        if not hasattr(self, "_request_target_language"):
+            self._request_target_language: ContextVar[str | None] = ContextVar(
+                "gpt_sovits_request_target_language", default=None,
+            )
+
+    def bind_request_language(self, language: str) -> Token:
+        target = request_target_language(language)
+        if not hasattr(self, "_request_target_language"):
+            self.target_language = self.target_language
+        return self._request_target_language.set(target)
+
+    def reset_request_language(self, token: Token) -> None:
+        self._request_target_language.reset(token)
+
+    @contextmanager
+    def request_language(self, language: str):
+        token = self.bind_request_language(language)
+        try:
+            yield
+        finally:
+            self.reset_request_language(token)
+
     def __init__(
         self,
         root: Path,
@@ -2504,7 +2576,7 @@ class GPTSoVITSEngine:
         self.get_tts_wav = get_tts_wav
         self.inference_webui = inference_webui
         self.change_gpt_weights(str(self.gpt_model))
-        next(self.change_sovits_weights(str(self.sovits_model), self.i18n(ref_language), self.i18n(target_language)))
+        self._load_sovits_model()
         self._gpt_runtime_models: dict[str, dict[str, Any]] = {}
         self._active_gpt_route = "default"
         self._capture_gpt_runtime("default", self.gpt_model)
@@ -2516,6 +2588,15 @@ class GPTSoVITSEngine:
         self._activate_gpt_runtime("default")
         self._install_semantic_decode_observers()
         self._warm_up_runtime()
+
+    def _load_sovits_model(self) -> None:
+        # Upstream yields UI updates before loading weights. Consume the full
+        # generator so the configured model and the running model agree.
+        for _ in self.change_sovits_weights(
+            str(self.sovits_model), self.i18n(self.ref_language),
+            self.i18n(self.default_target_language),
+        ):
+            pass
 
     def begin_request(self, request_id: Any) -> None:
         normalized = str(request_id or "").strip()[:160]
@@ -2846,13 +2927,15 @@ class GPTSoVITSEngine:
 
     def _warm_up_reference(self, audio_path: Path, text_path: Path, seed: int) -> None:
         self.inference_webui.set_seed(seed)
-        warmup_text = "准备完成。" if is_chinese_target_language(self.target_language) else "準備完了。"
+        warmup_language = self.default_target_language
+        warmup_text = "准备完成。" if is_chinese_target_language(warmup_language) else "準備完了。"
         generated = list(self.get_tts_wav(
             ref_wav_path=str(audio_path),
             prompt_text=text_path.read_text(encoding="utf-8-sig").strip(),
             prompt_language=self.i18n(self.ref_language),
             text=warmup_text,
-            text_language=self.i18n(self.target_language),
+            text_language=self.i18n(warmup_language),
+            ref_free=is_chinese_target_language(warmup_language),
             top_p=0.65,
             temperature=0.55,
             speed=1.0,
@@ -3095,6 +3178,7 @@ class GPTSoVITSEngine:
                     ref_wav_path=str(audio_path), prompt_text=prompt,
                     prompt_language=self.i18n(self.ref_language), text=segment,
                     text_language=self.i18n(segment_target_language), top_p=top_p,
+                    ref_free=is_chinese_target_language(segment_target_language),
                     temperature=temperature,
                     speed=speed,
                 )
@@ -3999,6 +4083,7 @@ class GPTSoVITSEngine:
             "emojiFilteredForSpeech": emoji_filtered_for_speech,
             "speechProsody": prosody_profile,
             "segmentTargetLanguages": segment_target_languages,
+            "referenceFree": is_chinese_target_language(self.target_language),
         }
         output = io.BytesIO()
         # Float32 is preserved through the full processing chain. Quantization
@@ -4613,7 +4698,7 @@ class GPTSoVITSEngine:
 
         threading.Thread(
             target=self._run_deferred_alignment,
-            args=(alignment_id, audio, text, align_model),
+            args=(alignment_id, audio, text, align_model, self.target_language),
             daemon=True,
             name=f"tts-align-{alignment_id[:8]}",
         ).start()
@@ -4646,10 +4731,16 @@ class GPTSoVITSEngine:
                 "error": str(job.get("error") or ""),
             }
 
-    def _run_deferred_alignment(self, alignment_id: str, audio: bytes, text: str, align_model: str) -> None:
+    def _run_deferred_alignment(
+        self, alignment_id: str, audio: bytes, text: str, align_model: str,
+        target_language: str,
+    ) -> None:
         started = time.perf_counter()
         try:
-            alignment = self.fast_align_audio(audio, text) if align_model == "fast" else self.align_audio(audio, text, align_model)
+            # Threads do not inherit request ContextVars. Bind the language of
+            # the exact WAV even after the HTTP handler has reset its context.
+            with self.request_language(target_language):
+                alignment = self.fast_align_audio(audio, text) if align_model == "fast" else self.align_audio(audio, text, align_model)
             update = {
                 "status": "ready",
                 "alignment": alignment,
@@ -4969,9 +5060,9 @@ def make_handler(engine: GPTSoVITSEngine):
                     "bootstrapGptModel": engine.bootstrap_gpt_model.name,
                     "bootstrapSovitsModel": engine.bootstrap_sovits_model.name,
                     "refLanguage": engine.ref_language,
-                    "targetLanguage": engine.target_language,
+                    "targetLanguage": engine.default_target_language,
                     "speechLanguage": (
-                        "zh-CN" if is_chinese_target_language(engine.target_language) else "ja-JP"
+                        "zh-CN" if is_chinese_target_language(engine.default_target_language) else "ja-JP"
                     ),
                     "criticalWarmup": {
                         "ready": bool(getattr(engine, "critical_warmup_routes", [])),
@@ -5023,6 +5114,7 @@ def make_handler(engine: GPTSoVITSEngine):
             if not self.path.startswith(("/tts_prepare", "/tts_alignment", "/tts_timed", "/tts")):
                 self.send_error(404)
                 return
+            language_token = None
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -5030,21 +5122,6 @@ def make_handler(engine: GPTSoVITSEngine):
                 if not text:
                     if not self.path.startswith("/tts_alignment"):
                         raise ValueError("text is empty")
-                expected_speech_language = (
-                    "zh-CN" if is_chinese_target_language(engine.target_language) else "ja-JP"
-                )
-                requested_speech_language = str(
-                    body.get("speechLanguage") or body.get("locale") or expected_speech_language
-                ).strip().lower().replace("_", "-")
-                requested_speech_language = (
-                    "zh-CN"
-                    if requested_speech_language.startswith("zh") or "中文" in requested_speech_language
-                    else "ja-JP"
-                )
-                if requested_speech_language != expected_speech_language:
-                    raise ValueError(
-                        "request speechLanguage does not match the running GPT-SoVITS target language"
-                    )
                 if self.path.startswith("/tts_alignment"):
                     payload = engine.deferred_alignment_result(str(body.get("alignmentId") or ""))
                     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -5054,6 +5131,12 @@ def make_handler(engine: GPTSoVITSEngine):
                     self.end_headers()
                     self.wfile.write(data)
                     return
+                language_token = engine.bind_request_language(
+                    body.get("speechLanguage") or body.get("locale") or engine.default_target_language
+                )
+                # One canonical locale drives normalization, segmentation and
+                # G2P together, including requests with only speechLanguage.
+                locale = "zh-CN" if is_chinese_target_language(engine.target_language) else "ja-JP"
                 if self.path.startswith("/tts_prepare"):
                     engine.begin_request(body.get("requestId"))
                     try:
@@ -5062,7 +5145,7 @@ def make_handler(engine: GPTSoVITSEngine):
                             style=str(body.get("voiceTone") or body.get("voiceStyle") or "calm"),
                             fallback_style=str(body.get("voiceStyle") or "calm"),
                             intensity=str(body.get("voiceIntensity") or "normal"),
-                            locale=str(body.get("locale") or "ja-JP"),
+                            locale=locale,
                             align_model=str(body.get("alignModel") or "fast"),
                             speech_speed=float(body.get("speechSpeed") or 1.0),
                             segment_mode=str(body.get("segmentMode") or "auto"),
@@ -5089,7 +5172,7 @@ def make_handler(engine: GPTSoVITSEngine):
                             style=str(body.get("voiceTone") or body.get("voiceStyle") or "calm"),
                             fallback_style=str(body.get("voiceStyle") or "calm"),
                             intensity=str(body.get("voiceIntensity") or "normal"),
-                            locale=str(body.get("locale") or "ja-JP"),
+                            locale=locale,
                             align_model=str(body.get("alignModel") or "small"),
                             speech_speed=float(body.get("speechSpeed") or 1.0),
                             segment_mode=str(body.get("segmentMode") or "auto"),
@@ -5115,7 +5198,7 @@ def make_handler(engine: GPTSoVITSEngine):
                         style=str(body.get("voiceTone") or body.get("voiceStyle") or "calm"),
                         fallback_style=str(body.get("voiceStyle") or "calm"),
                         intensity=str(body.get("voiceIntensity") or "normal"),
-                        locale=str(body.get("locale") or "ja-JP"),
+                        locale=locale,
                         speech_speed=float(body.get("speechSpeed") or 1.0),
                         segment_mode=str(body.get("segmentMode") or "auto"),
                         semantic_units=body.get("semanticUnits"),
@@ -5179,6 +5262,10 @@ def make_handler(engine: GPTSoVITSEngine):
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
+
+            finally:
+                if language_token is not None:
+                    engine.reset_request_language(language_token)
 
         def log_message(self, format: str, *args: Any) -> None:
             print("%s - %s" % (self.address_string(), format % args))

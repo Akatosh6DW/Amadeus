@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from backend.conversation_sync import conversation_sync_snapshot
+
 
 class RuntimeResponse(Protocol):
     def send_json(self, payload: dict[str, Any], status: int = 200) -> bool: ...
@@ -26,6 +28,11 @@ class RuntimeOperations:
     start_gpt_sovits: Callable[[dict[str, Any]], dict[str, Any]]
     stop_gpt_sovits: Callable[[], dict[str, Any]]
     public_settings: Callable[[], dict[str, Any]]
+    qq_activity: Callable[[], dict[str, Any]] | None = None
+    qq_setup_status: Callable[[], dict[str, Any]] | None = None
+    qq_setup_update: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    qq_presence: Callable[[Any, bool], None] | None = None
+    conversation_sync: Callable[[str | None], dict[str, Any]] = conversation_sync_snapshot
 
 
 class RuntimeRoutes:
@@ -44,6 +51,18 @@ class RuntimeRoutes:
         return True
 
     def get_status(self, response: RuntimeResponse, path: str, server_address: Any) -> bool:
+        if path == "/api/conversation/sync":
+            headers = getattr(response, "headers", None)
+            conversation_id = headers.get("X-Amadeus-Conversation") if headers is not None else None
+            response.send_json(self.operations.conversation_sync(conversation_id))
+            return True
+        if path == "/api/qq/setup" and self.operations.qq_setup_status is not None:
+            response.send_json(self.operations.qq_setup_status())
+            return True
+        if path == "/api/qq/activity" and self.operations.qq_activity is not None:
+            result = self.operations.qq_activity()
+            response.send_json(result, 403 if result.get("error") == "permission_denied" else 200)
+            return True
         if path == "/api/health":
             response.send_json(self.operations.model_status(server_address))
             return True
@@ -58,15 +77,25 @@ class RuntimeRoutes:
     def post_before_release(self, response: RuntimeResponse, path: str, body: dict[str, Any]) -> bool:
         if path in {"/api/runtime/client/register", "/api/runtime/client/heartbeat"}:
             lease = self.operations.touch_runtime_client(body.get("clientId"), body.get("mode"))
+            # This callback only queues state; acknowledge after enqueueing so
+            # a subsequent desktop request cannot overtake this update.
+            if self.operations.qq_presence:
+                self.operations.qq_presence(body.get("clientId"), True)
             response.send_json({"ok": True, **lease})
             return True
         if path == "/api/runtime/client/unregister":
             count = self.operations.remove_runtime_client(body.get("clientId"))
+            if self.operations.qq_presence:
+                self.operations.qq_presence(body.get("clientId"), False)
             response.send_json({"ok": True, "activeClients": count})
             return True
         return False
 
     def post_after_release(self, response: RuntimeResponse, path: str, body: dict[str, Any]) -> bool:
+        if path == "/api/qq/setup" and self.operations.qq_setup_update is not None:
+            result = self.operations.qq_setup_update(body)
+            response.send_json(result, 200 if result.get("ok") else 400)
+            return True
         if path == "/api/gpt-sovits/start":
             incoming = body.get("settings") if isinstance(body.get("settings"), dict) else {}
             status = self.operations.start_gpt_sovits(incoming)

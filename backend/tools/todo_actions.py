@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 from contextlib import nullcontext
 import json
@@ -19,7 +19,12 @@ import uuid
 from agent.cognitive_tools import canonical_tool_arguments
 from agent.fingerprints import legacy_persistent_fingerprint
 from agent.schedule_time import resolve_time_spec, schedule_time_facts
-from agent.todo_architecture import TodoCommand
+from agent.todo_architecture import (
+    TodoCommand,
+    normalize_completion_mode,
+    normalize_delivery_target,
+)
+from agent.task_instructions import normalize_instruction_changes, task_instruction_text
 from todo_store import (
     TodoResultMismatch,
     TodoVersionConflict,
@@ -48,19 +53,36 @@ class TodoActionPorts:
     now_local: Callable[[], datetime]
     now_utc: Callable[[], datetime]
     write_log: Callable[..., Any]
+    owner_delivery_target: Callable[[], Mapping[str, Any]] = lambda: {}
 
 
 def public_todo_candidate(value: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        delivery_target = normalize_delivery_target(value.get("deliveryTarget", {}))
+    except ValueError:
+        delivery_target = {}
+    try:
+        completion_mode = normalize_completion_mode(
+            value.get("completionMode"), default="manual"
+        )
+    except ValueError:
+        completion_mode = "manual"
+    if completion_mode == "legacy":
+        # ``legacy`` is a storage migration marker, not a model-facing choice.
+        completion_mode = "manual"
     return {
         "taskId": str(value.get("taskId") or "")[:100],
         "title": str(value.get("title") or "")[:240],
         "details": str(value.get("details") or "")[:500],
-        "onDue": str(value.get("onDue") or "")[:4000],
+        "onDue": str(value.get("onDue") or ""),
+        "instructions": task_instruction_text(value),
         "status": str(value.get("status") or "")[:40],
         "dueAt": str(value.get("dueAt") or "")[:80],
         "dueDate": str(value.get("dueDate") or "")[:10],
         "allDay": not bool(value.get("dueAt")),
         "timezone": str(value.get("timezone") or "")[:80],
+        "deliveryTarget": delivery_target,
+        "completionMode": completion_mode,
         "recurrenceRule": str(value.get("recurrenceRule") or ""),
         "version": max(0, int(value.get("version") or 0)),
         "matchType": str(value.get("matchType") or "")[:40],
@@ -179,8 +201,29 @@ class TodoActionService:
 
         anchor = (_time_anchor or self.ports.now_local()) if settings.get("permissionReadSystemTime") else None
         raw = dict(args) if isinstance(args, dict) else {}
+        # A trusted owner transport may supply a verified QQ destination for a
+        # create request whose model payload omitted deliveryTarget.  Keep this
+        # structural inheritance at the tool boundary: prose never selects a
+        # channel, updates never overwrite an existing target implicitly, and
+        # an explicit desktop/empty object remains authoritative.
+        if (
+            str(raw.get("action") or "list").strip().lower() == "create"
+            and "deliveryTarget" not in raw
+            and "delivery_target" not in raw
+        ):
+            from backend.tools.trust_context import authenticated_owner_delivery_target
+            inherited_target = authenticated_owner_delivery_target()
+            if isinstance(inherited_target, Mapping) and inherited_target:
+                raw["deliveryTarget"] = dict(inherited_target)
         try:
             command = TodoCommand.from_mapping(raw)
+            if command.delivery_target.get('recipient') == 'owner':
+                target = normalize_delivery_target(self.ports.owner_delivery_target())
+                if not target or target.get('channel') != 'qq':
+                    return {'name': 'todo_manage', 'ok': False, 'attempted': False,
+                            'error': 'todo_owner_target_unresolved',
+                            'message': '未配置唯一主人 QQ；请通过 qq_status 查看主人列表，确定收件人后再创建。'}
+                command = replace(command, delivery_target=target)
         except ValueError as error:
             return {"name": "todo_manage", "ok": False, "error": str(error)}
         if command.action == "list":
@@ -254,7 +297,10 @@ class TodoActionService:
                     expected_state = {"title": command.title, "details": command.details, "onDue": command.on_due,
                         "dueAt": command.due_at, "dueDate": command.due_date if not command.due_at else "",
                         "timezone": command.timezone_name, "remindBeforeMinutes": command.remind_before_minutes,
+                        "deliveryTarget": dict(command.delivery_target),
+                        "completionMode": command.completion_mode,
                         "priority": command.priority, "recurrenceRule": command.recurrence_rule, "status": "pending"}
+                    expected_state = normalize_instruction_changes({}, expected_state)
                     task = create_todo(
                         connection,
                         title=command.title,
@@ -263,6 +309,8 @@ class TodoActionService:
                         due_at=command.due_at,
                         due_date=command.due_date,
                         timezone_name=command.timezone_name,
+                        delivery_target=command.delivery_target,
+                        completion_mode=command.completion_mode,
                         remind_before_minutes=command.remind_before_minutes,
                         priority=command.priority,
                         recurrence_rule=command.recurrence_rule,
@@ -311,6 +359,10 @@ class TodoActionService:
                             "due_date": ("dueDate", command.due_date),
                             "timezone": ("timezone", command.timezone_name),
                             "timezoneName": ("timezone", command.timezone_name),
+                            "deliveryTarget": ("deliveryTarget", dict(command.delivery_target)),
+                            "delivery_target": ("deliveryTarget", dict(command.delivery_target)),
+                            "completionMode": ("completionMode", command.completion_mode),
+                            "completion_mode": ("completionMode", command.completion_mode),
                             "remindBeforeMinutes": (
                                 "remindBeforeMinutes", command.remind_before_minutes
                             ),
@@ -338,6 +390,7 @@ class TodoActionService:
                                 "name": "todo_manage", "ok": False,
                                 "error": "todo_no_changes",
                             }
+                        changes = normalize_instruction_changes(before_task, changes)
                         expected_state = dict(changes)
                         if changes.get("dueAt"):
                             expected_state["dueDate"] = ""

@@ -28,6 +28,7 @@ class DeferredPersistenceFinalizer(Protocol):
         interpretation: UtteranceInterpretation,
         chat_metrics: dict[str, Any],
         cold_shoulder_short_circuit: bool,
+        source_messages: Any = None,
     ) -> tuple[dict[str, Any], list[str]]: ...
 
 
@@ -65,6 +66,7 @@ def complete_deferred_chat_persistence(
             if isinstance(deferred.get("chatMetrics"), dict) else {}
         ),
         cold_shoulder_short_circuit=bool(deferred.get("coldShoulderShortCircuit")),
+        source_messages=deferred.get('sourceMessages'),
     )
     existing_warnings = [
         str(item) for item in persisted.get("pipelineWarnings", [])

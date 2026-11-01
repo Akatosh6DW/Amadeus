@@ -1,10 +1,14 @@
 // 普通聊天控制器独占请求代次、Abort、流事件、待交付助手消息和当前请求。
 // 页面只通过明确的传输、播放、会话和反馈端口协作；上下文切换先取消旧代次，再交给新回合。
 (function attachChatController(root, factory) {
-  const api = factory();
+  const deliveryProjection = root.AmadeusDeliveryProjection
+    || (typeof module === "object" && module.exports
+      ? require("./delivery_projection.js")
+      : null);
+  const api = factory(deliveryProjection);
   if (typeof module === "object" && module.exports) module.exports = api;
   root.AmadeusChatController = api;
-}(typeof globalThis !== "undefined" ? globalThis : this, function createChatControllerApi() {
+}(typeof globalThis !== "undefined" ? globalThis : this, function createChatControllerApi(deliveryProjection) {
   "use strict";
 
   const STREAM_CANCELLATION_TYPES = new Set([
@@ -161,19 +165,19 @@
     function validateFinalTurnEnvelope(result, requestId) {
       const envelope = result?.finalTurnEnvelope;
       const expectedTurnId = `${requestId}:turn`;
-      const required = Array.isArray(envelope?.required_acts) ? envelope.required_acts.map(String) : [];
-      const completed = new Set(Array.isArray(envelope?.completed_acts)
-        ? envelope.completed_acts.map(String) : []);
+      // The backend owns content validation and task/receipt verification.
+      // This boundary only checks whether the response belongs to this turn
+      // and can stand alone. An incomplete task can still have a valid reply;
+      // completed_acts must not become a second semantic delivery gate here.
       const valid = Boolean(
         envelope && typeof envelope === "object"
         && String(envelope.turn_id || "") === expectedTurnId
         && envelope.turn_complete === true
         && envelope.standalone === true
-        && envelope.depends_on_undelivered_prefix === false
-        && required.every(item => completed.has(item)),
+        && envelope.depends_on_undelivered_prefix === false,
       );
       if (!valid) {
-        const error = new Error("最终回答信封与当前请求或必答合同不一致");
+        const error = new Error("最终回答与当前请求不匹配，或交付数据不完整");
         error.streamFallbackAllowed = false;
         error.streamErrorType = "invalid_final_turn_envelope";
         error.streamErrorStage = "client_delivery_validation";
@@ -204,6 +208,24 @@
       let route = "";
       let hadUtterance = false;
       let hadAnswerUtterance = false;
+      let toolRoundObserved = false;
+      // The backend emits accepted answer utterances before the terminal
+      // trailer, while the receipt and model outcome needed to classify a
+      // pure QQ acknowledgement arrive in that trailer.  Only a tool-routed
+      // turn is held; normal fast-chat answers keep their original immediate
+      // per-utterance delivery. Progress utterances stay immediate so
+      // tool-gate release is not blocked.
+      let pendingAnswerUtterances = [];
+      const toolRoundRoutes = new Set(["tool_gated", "tool_query_loop", "research_loop"]);
+      const markToolRound = value => {
+        const candidate = String(value || "").trim().toLowerCase();
+        if (toolRoundRoutes.has(candidate)) toolRoundObserved = true;
+      };
+      const flushAnswerUtterances = () => {
+        const pending = pendingAnswerUtterances;
+        pendingAnswerUtterances = [];
+        pending.forEach(item => playback.enqueue(item));
+      };
       while (true) {
         const { value, done } = await reader.read();
         buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
@@ -227,6 +249,7 @@
           const eventPayload = event.payload && typeof event.payload === "object" ? event.payload : {};
           if (eventType === "turn_header") {
             route = String(eventPayload.route || route);
+            markToolRound(route);
             feedback.updateThinkingStage?.(
               route === "fast_chat" ? "model-generating" : "context",
               route === "fast_chat" ? "快路径已建立，等待第一条完整语句" : "已完成请求分流",
@@ -234,11 +257,15 @@
           } else if (eventType === "utterance") {
             hadUtterance = true;
             hadAnswerUtterance = true;
-            playback.enqueue(eventPayload);
+            if (toolRoundObserved) pendingAnswerUtterances.push(eventPayload);
+            else playback.enqueue(eventPayload);
           } else if (eventType === "progress_utterance") {
             hadUtterance = true;
             playback.enqueue({ ...eventPayload, progressOnly: true });
           } else if (eventType === "tool_status") {
+            // Existing stream protocol marks tool rounds with a structured
+            // tool_status event; its stage/name is metadata, never prose.
+            toolRoundObserved = true;
             feedback.updateThinkingStage?.(
               String(eventPayload.stage || "tool-executing"),
               String(eventPayload.displayText || "正在执行工具"),
@@ -249,7 +276,15 @@
             if (finalResult) {
               validateFinalTurnEnvelope(finalResult, requestId);
               finalEnvelopeValidated = true;
-              if (!hadAnswerUtterance) playback.enqueueFinal(finalResult);
+              const silentQqConfirmation = deliveryProjection?.isPureQqSendConfirmation?.(finalResult) === true;
+              if (silentQqConfirmation && toolRoundObserved) {
+                // Do not let an already received utterance become a spoken or
+                // visible success notice after a confirmed QQ send.
+                pendingAnswerUtterances = [];
+              } else {
+                flushAnswerUtterances();
+                if (!hadAnswerUtterance) playback.enqueueFinal(finalResult);
+              }
             }
           } else if (eventType === "turn_abort") {
             const error = new Error(String(eventPayload.message || eventPayload.reason || "流式回答中断"));
@@ -259,6 +294,9 @@
             error.streamErrorStage = String(eventPayload.stage || "stream");
             error.connectionFailure = Boolean(eventPayload.connectionFailure);
             error.completedTools = Array.isArray(eventPayload.completedTools) ? eventPayload.completedTools : [];
+            error.completedToolReceipts = Array.isArray(eventPayload.completedToolReceipts)
+              ? eventPayload.completedToolReceipts
+              : [];
             error.streamCancelled = Boolean(eventPayload.cancelled) || isStreamCancellation(error);
             throw error;
           }

@@ -20,6 +20,7 @@ PUBLIC_DEFAULTS_PATH = Path(__file__).resolve().parent / "configs" / "public_def
 PUBLIC_DEFAULT_KEYS = frozenset({
     "alignSpokenJa",
     "alwaysOnTop",
+    "apiContextCompactThreshold",
     "apiContextLimit",
     "apiEndpoint",
     "apiModel",
@@ -73,6 +74,7 @@ PUBLIC_DEFAULT_KEYS = frozenset({
     "webRequestTimeout",
     "webSearchMaxResults",
     "webSearchProvider",
+    "webSearchFallbackProvider",
     "windowHeight",
     "windowWidth",
 })

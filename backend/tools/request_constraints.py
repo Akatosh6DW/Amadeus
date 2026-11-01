@@ -11,7 +11,6 @@ from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
 from agent.todo_architecture import (
     TodoCommand, TodoTargetRef, classify_todo_request, classify_todo_request_with_context,
     recent_todo_action_context, recent_todo_task_ids, todo_request_targets_recent_receipt,
-    todo_mutation_prohibited,
 )
 from agent.cognitive_runtime import task_tool_violations
 from agent.cognitive_tools import canonical_tool_arguments, tool_step_binding
@@ -20,7 +19,14 @@ from agent.action_identity import browser_retry_identity
 from backend.research.query import web_search_freshness
 from backend.research.intent import extract_public_web_url, web_research_explicitly_disabled
 from backend.research.planning import fallback_web_research_query, safe_planned_web_query
-from backend.tools.validation import structured_tool_authorization, structured_browser_authorized
+from backend.tools.validation import (
+    canonical_model_tool_call,
+    canonical_model_authorization_allows,
+    commit_intent_is_true,
+    schedule_policy_allows_todo_write,
+    structured_tool_authorization,
+    structured_browser_authorized,
+)
 from bookmark_store import resolve_bookmark
 from tools.safe_web import SafeWebError, canonicalize_public_url, validate_public_url
 
@@ -66,14 +72,7 @@ def cognitive_readonly_file_plan_authorized(
 
 @dataclass(frozen=True)
 class BrowserOperations:
-    browser_action_args: Callable[..., Any]
-    browser_named_target_phrase: Callable[..., Any]
-    browser_url_site_identity: Callable[..., Any]
-    grounded_model_browser_url: Callable[..., Any]
-    is_agent_file_action_query: Callable[..., Any]
-    is_open_browser_query: Callable[..., Any]
     known_browser_destination: Callable[..., Any]
-    pending_browser_action_continuation: Callable[..., Any]
 
 
 @dataclass(frozen=True)
@@ -159,6 +158,23 @@ class ModelToolRequestConstraints:
         for request in requests:
             name = str(request.get("name") or "")
             args = request.get("args") if isinstance(request.get("args"), dict) else {}
+            if canonical_model_tool_call(request) and name in {"todo_manage", "todo_list"}:
+                # The current call is the operation; do not silently discard
+                # it using a second interpretation of the user's wording.
+                # Execution returns permissions, version and argument errors
+                # to the model beside the exact rejected call.
+                normalized_args = dict(args)
+                if "commitIntent" not in normalized_args and "commit_intent" in normalized_args:
+                    normalized_args["commitIntent"] = normalized_args["commit_intent"]
+                constrained.append({**request, "args": normalized_args})
+                continue
+            if (
+                name == "todo_manage"
+                and isinstance(schedule_decision, Mapping)
+                and schedule_decision
+                and not schedule_policy_allows_todo_write(schedule_decision)
+            ):
+                continue
             if name == "todo_manage" and schedule_authoritative and (
                 str(semantic_policy.get("action") or "") != "execute"
                 or not bool(semantic_policy.get("allowed"))
@@ -171,34 +187,41 @@ class ModelToolRequestConstraints:
                 # may deny deletion or completion while authorizing an update;
                 # a whole-sentence lexical veto cannot represent that distinction.
                 if name == "todo_manage":
-                    if structured_tool_authorization(request) != "write" or not bool(args.get("commitIntent") or args.get("commit_intent")):
+                    if (
+                        not commit_intent_is_true(args)
+                        or (
+                            isinstance(request.get("selection"), Mapping)
+                            and structured_tool_authorization(request) != "write"
+                        )
+                    ):
                         continue
+                    normalized_args = dict(args)
+                    if normalized_args.get("commit_intent") is True:
+                        normalized_args["commitIntent"] = True
                     try:
-                        command = TodoCommand.from_mapping(args)
+                        command = TodoCommand.from_mapping(normalized_args)
                     except ValueError:
                         continue
                     if command.action != "list":
                         # The executor deserializes TodoCommand too. Expanding
                         # defaults here would make arguments differ from the
                         # model's already-bound task step before execution.
-                        constrained.append({**request, "args": dict(args)})
+                        constrained.append({**request, "args": normalized_args})
                 else:
                     constrained.append({**request, "args": dict(args)})
                 continue
-            if cognitive_state and name == "open_browser":
-                if task_tool_violations(cognitive_state, [request], DEFAULT_TOOL_REGISTRY):
-                    continue
+            if name == "open_browser":
                 # The cognitive plan owns target interpretation, including aliases
                 # and conversational references. Do not replace its URL with a
                 # lexical resolver's search/confirmation operation after planning.
-                # Explicit user URLs retain precedence; execution still checks the
-                # plan, browser permission and public URL validity.
+                # A canonical call can be a newly selected operation while the
+                # persisted plan is still stale. Keep it for the cognitive
+                # planner's plan-sync path; execution still checks task state,
+                # browser permission and public URL validity.
                 browser_args = {
                     key: value for key, value in args.items()
                     if not key.startswith("_") and key not in {"actionId", "actionGroupId"}
                 }
-                if user_url:
-                    browser_args = {"url": user_url}
                 if isinstance(browser_args.get("url"), str):
                     try:
                         browser_args["url"] = canonicalize_public_url(browser_args["url"])
@@ -264,112 +287,6 @@ class ModelToolRequestConstraints:
                 used_page_tool = True
             elif name == "capture_screen" and not cognitive_state and self.screen_history_mode(user_message) == "history_only":
                 continue
-            elif name == "open_browser":
-                structured_navigation = structured_browser_authorized(request)
-                resolved_browser_args = self.browser.browser_action_args(user_message, messages)
-                saved_bookmark_navigation = bool(resolved_browser_args.get("bookmarkId"))
-                if not (
-                    self.browser.is_open_browser_query(user_message)
-                    or self.browser.pending_browser_action_continuation(user_message)
-                    or structured_navigation
-                    or saved_bookmark_navigation
-                ):
-                    continue
-                proposed_model_url = str(args.get("url") or "").strip()
-                grounded_proposed_url = (
-                    self.browser.grounded_model_browser_url(
-                        proposed_model_url,
-                        user_message,
-                        str(resolution.get("resolvedQuestion") or "")
-                        if resolution.get("active") else "",
-                    )
-                    if structured_navigation and proposed_model_url
-                    else ""
-                )
-                browser_target_still_unresolved = bool(
-                    not resolved_browser_args
-                    or resolved_browser_args.get("needsConfirmation")
-                    or (
-                        resolved_browser_args.get("resolveQuery")
-                        and not resolved_browser_args.get("url")
-                    )
-                )
-                explicit_user_url = extract_public_web_url(user_message)
-                same_resolved_site = bool(
-                    grounded_proposed_url
-                    and self.browser.browser_url_site_identity(resolved_browser_args.get("url"))
-                    == self.browser.browser_url_site_identity(grounded_proposed_url)
-                )
-                if grounded_proposed_url and not explicit_user_url and (browser_target_still_unresolved or same_resolved_site):
-                    # The current user named a site and the model supplied a URL
-                    # whose site identity is the same target. Preserve its chosen
-                    # documentation/subpage rather than replacing it with a root
-                    # alias; an explicit user URL still takes precedence.
-                    grounded_alias = self.browser.browser_named_target_phrase(user_message)
-                    resolved_browser_args = {
-                        "url": grounded_proposed_url,
-                        **(
-                            {"sourceTitle": grounded_alias, "matchedAlias": grounded_alias}
-                            if grounded_alias else {}
-                        ),
-                    }
-                    self.write_log(
-                        "browser_model_target_grounded",
-                        requestedTarget=self.browser.browser_named_target_phrase(user_message),
-                        resolvedTarget=self.browser.browser_named_target_phrase(
-                            str(resolution.get("resolvedQuestion") or "")
-                        ),
-                        proposedHost=urllib.parse.urlsplit(grounded_proposed_url).hostname or "",
-                    )
-                elif (
-                    structured_navigation
-                    and proposed_model_url
-                    and browser_target_still_unresolved
-                ):
-                    self.write_log(
-                        "browser_model_target_rejected",
-                        requestedTarget=self.browser.browser_named_target_phrase(user_message),
-                        proposedHost=(
-                            urllib.parse.urlsplit(proposed_model_url).hostname or ""
-                        )[:240],
-                        reason="proposed_url_not_grounded_in_current_named_target",
-                    )
-                if structured_navigation and not resolved_browser_args:
-                    current_url = extract_public_web_url(user_message)
-                    known_destination = self.browser.known_browser_destination(user_message)
-                    if current_url:
-                        resolved_browser_args = {"url": current_url}
-                    elif known_destination:
-                        resolved_browser_args = {
-                            "url": known_destination["url"],
-                            "destinationId": known_destination["id"],
-                            "sourceTitle": known_destination["title"],
-                            "matchedAlias": known_destination["matchedAlias"],
-                        }
-                    else:
-                        grounded_query = safe_planned_web_query(
-                            str(args.get("query") or args.get("resolveQuery") or ""),
-                            user_message,
-                            str(resolution.get("resolvedQuestion") or ""),
-                            require_overlap=True,
-                        )
-                        if grounded_query:
-                            resolved_browser_args = {"resolveQuery": grounded_query}
-                if not resolved_browser_args:
-                    self.write_log(
-                        "browser_model_request_omitted",
-                        requestedTarget=self.browser.browser_named_target_phrase(user_message),
-                        reason="no_grounded_or_resolvable_browser_target",
-                    )
-                    continue
-                constrained_request: dict[str, Any] = {
-                    **request,
-                    "name": name,
-                    "args": {**resolved_browser_args, **browser_retry_identity(request, evidence or {})},
-                }
-                if isinstance(request.get("selection"), Mapping):
-                    constrained_request["selection"] = dict(request["selection"])
-                constrained.append(constrained_request)
             elif name in {"list_directory", "read_text_file", "create_directory", "write_text_file"}:
                 authorization = structured_tool_authorization(request)
                 structured_file_authorized = (
@@ -382,7 +299,7 @@ class ModelToolRequestConstraints:
                     and cognitive_readonly_file_plan_authorized(cognitive_state, request)
                 )
                 if not (
-                    self.browser.is_agent_file_action_query(user_message)
+                    canonical_model_tool_call(request)
                     or structured_file_authorized
                     or cognitive_read_plan_authorized
                 ):
@@ -391,9 +308,6 @@ class ModelToolRequestConstraints:
                     constrained.append({**request, "args": dict(args)})
                     continue  # Execution will report the argument error without touching the filesystem.
                 safe_args = canonical_tool_arguments(name, args)
-                safe_args["path"] = safe_args["path"][:1000]
-                if name == "write_text_file":
-                    safe_args["content"] = safe_args["content"][:self.file_max_bytes()]
                 constrained_request = {**request, "args": safe_args}
                 if isinstance(request.get("selection"), Mapping):
                     constrained_request["selection"] = dict(request["selection"])
@@ -413,7 +327,10 @@ class ModelToolRequestConstraints:
                     "args": {**canonical_tool_arguments(name, args), "targetRef": target},
                 })
             elif name == "todo_list":
-                if todo_kind == "none" or (
+                if (
+                    not canonical_model_tool_call(request)
+                    and todo_kind == "none"
+                ) or (
                     schedule_authoritative
                     and str(semantic_policy.get("action") or "") != "read"
                 ):
@@ -456,18 +373,16 @@ class ModelToolRequestConstraints:
                         or not bool(semantic_policy.get("allowed"))
                     ):
                         continue
-                elif todo_mutation_prohibited(user_message):
-                    continue
-                model_commit_intent = bool(
-                    safe_args.get("commitIntent") or safe_args.get("commit_intent")
-                )
+                model_commit_intent = commit_intent_is_true(safe_args)
                 if todo_kind != "mutation" and not model_commit_intent:
-                    continue
+                    if not canonical_model_tool_call(request):
+                        continue
                 action = str(safe_args.get("action") or "list").strip().lower()
                 if direct_todo_kind == "none" and not model_commit_intent and action not in {
                     "update", "complete", "reopen", "delete", "snooze", "pause", "resume",
                 }:
-                    continue
+                    if not canonical_model_tool_call(request):
+                        continue
                 if bind_recent_todo and not selected_pending_target:
                     if action not in {
                         "update", "complete", "reopen", "delete", "snooze", "pause", "resume",
@@ -497,9 +412,25 @@ class ModelToolRequestConstraints:
                     constrained_request["selection"] = dict(request["selection"])
                 constrained.append(constrained_request)
             elif name == "bookmark_manage":
-                if structured_tool_authorization(request) != "write":
+                if canonical_model_tool_call(request):
+                    bookmark_args = dict(args)
+                    if "commitIntent" not in bookmark_args and "commit_intent" in bookmark_args:
+                        bookmark_args["commitIntent"] = bookmark_args["commit_intent"]
+                    if not bookmark_args.get("url") and bookmark_args.get("name"):
+                        with self.state.state_database() as connection:
+                            destination = resolve_bookmark(connection, str(bookmark_args["name"]))
+                        destination = destination or self.browser.known_browser_destination(
+                            f"打开 {bookmark_args['name']}") or {}
+                        if destination.get("url"):
+                            bookmark_args["url"] = destination["url"]
+                    constrained.append({**request, "args": bookmark_args})
                     continue
-                if not bool(args.get("commitIntent") or args.get("commit_intent")):
+                if not commit_intent_is_true(args):
+                    continue
+                if (
+                    not canonical_model_authorization_allows(request, "write")
+                    and structured_tool_authorization(request) != "write"
+                ):
                     continue
                 action = str(args.get("action") or "create").strip().lower()
                 if action == "save":

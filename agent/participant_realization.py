@@ -8,6 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from string import Template
 from typing import Any, Mapping
+from agent.dialogue_task import current_dialogue_task
 
 
 PARTICIPANT_REALIZATION_RULE = """[人物身份与台词生成]
@@ -43,9 +44,14 @@ _TEXT_FIELDS = {"zh": "zh", "textZh": "zh", "reply": "zh",
 class ParticipantTemplateError(ValueError):
     def to_dict(self) -> dict[str, str]:
         return {"code": "participant_reference_invalid",
-                "repair": "Use only ⟦USER⟧/⟦ASSISTANT⟧ for the current participants; "
+                "repair": "Use only the participant tokens defined by the current dialogue contract; "
                           "third parties use their names. Escape a literal ⟦ as ⟦⟦. "
                           "Keep the intended actions and return the complete speechUnits response."}
+
+
+def participant_realization_rule() -> str:
+    task = current_dialogue_task()
+    return task.speech_rule if task else PARTICIPANT_REALIZATION_RULE
 
 
 def strip_participant_realization_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -63,7 +69,9 @@ def strip_participant_realization_metadata(value: Mapping[str, Any]) -> dict[str
 
 def realize_participant_text(value: str, language: str) -> str:
     try:
-        return _ParticipantTemplate(value).substitute(_REFERENTS[language])
+        task = current_dialogue_task()
+        referents = task.referents if task else _REFERENTS
+        return _ParticipantTemplate(value).substitute(referents[language])
     except (KeyError, ValueError) as error:
         raise ParticipantTemplateError("participant_reference_invalid") from error
 

@@ -295,6 +295,8 @@ class ConversationHistoryService:
                         turn.get("assistantContentHash") or message_content_hash(assistant)
                     ),
                 }
+                if isinstance(turn.get('galleryMedia'), list):
+                    assistant_meta['galleryMedia'] = turn['galleryMedia'][:2]
                 if isinstance(turn.get("dialoguePolicy"), dict):
                     assistant_meta["dialoguePolicy"] = dict(turn["dialoguePolicy"])
                 if isinstance(turn.get("dialogueValidation"), dict):
@@ -308,6 +310,9 @@ class ConversationHistoryService:
                             "resolvedTarget", "adapter", "error", "timestamp", "action",
                             "taskId", "taskVersionBefore", "taskVersionAfter",
                             "bookmarkId", "name", "versionBefore", "versionAfter", "requestId", "timeFacts", "timeSpec",
+                            "operation", "outcome", "deliveryState", "messageId", "draftId",
+                            "sent", "sentPartCount", "totalParts", "remainingPartCount",
+                            "targetType", "targetId", "account",
                         )
                         if receipt.get(key) not in (None, "")
                     }
@@ -317,6 +322,23 @@ class ConversationHistoryService:
                         for receipt in turn["actionReceipts"][:12]
                         if isinstance(receipt, dict)
                     ]
+                if isinstance(turn.get("deliveryReceipts"), list):
+                    assistant_meta["deliveryReceipts"] = [
+                        dict(receipt)
+                        for receipt in turn["deliveryReceipts"][:32]
+                        if isinstance(receipt, dict)
+                    ]
+                if isinstance(turn.get("finalTurnEnvelope"), dict):
+                    assistant_meta["finalTurnEnvelope"] = {
+                        key: turn["finalTurnEnvelope"].get(key)
+                        for key in (
+                            "turn_id", "contract_id", "required_acts", "completed_acts",
+                            "depends_on_undelivered_prefix", "standalone", "turn_complete",
+                            "upstream_finish_reason", "delivery_path",
+                        )
+                    }
+                if isinstance(turn.get("outcome"), dict):
+                    assistant_meta["outcome"] = dict(turn["outcome"])
                 if isinstance(turn.get("todoContext"), dict):
                     assistant_meta["todoContext"] = dict(turn["todoContext"])
                 if isinstance(turn.get("sources"), list):

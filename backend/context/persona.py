@@ -6,7 +6,7 @@ Hybrid 检索算法仍由 agent.persona_context 持有；本模块只决定何�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import re
@@ -14,6 +14,8 @@ import threading
 from typing import Any, Callable, Mapping
 
 from agent.fingerprints import runtime_fingerprint
+from agent.dialogue_task import current_dialogue_task
+from agent.reply_prompt_layers import ReplyPromptLayers, read_override_sections
 from agent.persona_context import (
     PersonaContextMode,
     PersonaContextRuntime,
@@ -156,6 +158,9 @@ class PersonaContextService:
         self.monitor = PersonaSkillMonitor()
 
     def read_system_prompt(self) -> str:
+        task = current_dialogue_task()
+        if task:
+            return task.reply_layers.persona if task.reply_layers else task.system_prompt
         env = self.environment()
         parts: list[str] = []
         try:
@@ -174,10 +179,7 @@ class PersonaContextService:
         env = self.environment()
         if env.release_mode:
             return ""
-        try:
-            text = env.override_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return ""
+        text = read_override_sections(env.override_path)['persona']
         return "[Developer Persona Override]\n" + text if text else ""
 
     def source_documents(self) -> dict[str, Any]:
@@ -270,8 +272,46 @@ class PersonaContextService:
         legacy_builder: Callable[..., tuple[str, list[str]]] | None = None,
         system_prompt_reader: Callable[[], str] | None = None,
         runtime_provider: Callable[[], PersonaContextRuntime] | None = None,
+        reply_media_prompt: str = '',
+        reply_example_prompt: str = '',
     ) -> PersonaContextSnapshot:
         """ON 不访问旧选择器；OFF 不初始化检索 runtime；SHADOW 仍计算旧 payload。"""
+        task = current_dialogue_task()
+        if task:
+            layers = task.reply_layers
+            snapshot = build_off_persona_context_snapshot(
+                current_user_message=user_message, messages=messages, resolution=resolution,
+                relationship_generation=0, legacy_system_prompt=layers.persona if layers else task.system_prompt,
+                legacy_persona_prompt="", legacy_module_ids=[],
+                provider_mode=layers.mode if layers else 'off',
+            )
+            if layers:
+                layers = replace(layers, engineering=layers.engineering + reply_media_prompt)
+                snapshot = replace(snapshot, reply_layers=layers,
+                    snapshot_id=runtime_fingerprint((snapshot.snapshot_id, layers), length=32))
+            self.diagnostics.log("delegated_dialogue_snapshot_built", snapshotId=snapshot.snapshot_id)
+            return snapshot
+        if cognitive_body is not None and cognitive_body.get('_qqReplyStyle') in {'tieba', 'kangba'}:
+            from integrations.qq.persona_style import qq_reply_layers, read_shared_style
+            style = str(cognitive_body['_qqReplyStyle'])
+            # The owner bridge runs in the desktop process, but an explicit
+            # QQ persona must not inherit its Kurisu Kernel/skills/patch.
+            layers = qq_reply_layers(str(cognitive_body.get('_qqReplyInstructions') or ''),
+                reply_style=style, compact_reply=cognitive_body.get('_qqCompactReply', True),
+                owner_control=True, engineering=reply_media_prompt, examples=reply_example_prompt,
+                shared_style=read_shared_style(self.environment().override_path)
+                             if style not in {'tieba', 'kangba'} else '')
+            snapshot = build_off_persona_context_snapshot(
+                current_user_message=user_message, messages=messages, resolution=resolution,
+                relationship_generation=0,
+                legacy_system_prompt=layers.persona,
+                legacy_persona_prompt='', legacy_module_ids=[],
+                provider_mode=style, retrieval_context_source=f'{style}_corpus',
+            )
+            snapshot = replace(snapshot, reply_layers=layers,
+                snapshot_id=runtime_fingerprint((snapshot.snapshot_id, layers), length=32))
+            self.record_snapshot(snapshot, cognitive_body)
+            return snapshot
         env = self.environment()
         mode = PersonaContextMode.parse(env.context_mode, release_mode=env.release_mode)
         if cognitive_body is not None and mode is PersonaContextMode.ON:
@@ -315,14 +355,36 @@ class PersonaContextService:
                 system_prompt_suffix=self.read_override_prompt() if mode is PersonaContextMode.ON else "",
             )
         )
+        override = read_override_sections(env.override_path) if not env.release_mode else {}
+        layers = ReplyPromptLayers(mode='game',
+            engineering=override.get('engineering', '') + reply_media_prompt,
+            persona=snapshot.system_prompt, persona_context=snapshot.prompt_text,
+            expression=env.natural_dialogue_style() + '\n' + override.get('expression', ''),
+            examples=reply_example_prompt)
+        if cognitive_body is not None and cognitive_body.get('_qqReplyStyle'):
+            from integrations.qq.persona_style import qq_reply_layers
+            qq_layers = qq_reply_layers(str(cognitive_body.get('_qqReplyInstructions') or ''),
+                reply_style=str(cognitive_body['_qqReplyStyle']),
+                compact_reply=cognitive_body.get('_qqCompactReply', True), owner_control=True,
+                engineering=layers.engineering, shared_style=override.get('expression', ''),
+                examples=reply_example_prompt)
+            # The default owner conversation keeps its complete Kurisu skills;
+            # only explicitly independent forum personas replace them.
+            layers = replace(qq_layers, persona=snapshot.system_prompt,
+                             persona_context=snapshot.prompt_text)
+        snapshot = replace(snapshot, reply_layers=layers,
+            snapshot_id=runtime_fingerprint((snapshot.snapshot_id, layers), length=32))
+        self.record_snapshot(snapshot, cognitive_body)
+        return snapshot
+
+    def record_snapshot(self, snapshot: PersonaContextSnapshot, cognitive_body: Mapping[str, Any] | None) -> None:
         self.diagnostics.log("persona_context_snapshot_built", **snapshot.safe_diagnostic())
-        if isinstance(cognitive_body, dict) and not env.release_mode:
+        if isinstance(cognitive_body, dict) and not self.environment().release_mode:
             cognitive_body["_personaSkillDiagnostic"] = {
                 "snapshot": snapshot.safe_diagnostic(),
                 "promptFingerprint": runtime_fingerprint(snapshot.prompt_text),
                 "kernelFingerprint": runtime_fingerprint(snapshot.system_prompt),
             }
-        return snapshot
 
     def begin_record(self, body: dict[str, Any]) -> None:
         if self.environment().release_mode:
@@ -368,6 +430,11 @@ class PersonaContextService:
         legacy_system_prompt: bool,
         system_prompt_reader: Callable[[], str] | None = None,
     ) -> list[dict[str, str]]:
+        if snapshot is not None and snapshot.reply_layers:
+            from agent.reply_prompt_layers import EXPRESSION_EMOTION_RULE
+            return snapshot.reply_layers.messages() + (
+                [{'role': 'system', 'content': EXPRESSION_EMOTION_RULE}]
+                if snapshot.reply_layers.independent else [])
         if snapshot is not None and snapshot.uses_hybrid_provider_context:
             return [
                 {"role": "system", "content": snapshot.system_prompt},
@@ -402,6 +469,26 @@ class PersonaContextService:
             cognitive_body=body,
         )
         env = self.environment()
+        task = current_dialogue_task()
+        if active.reply_layers and (task or body.get('_qqReplyStyle')):
+            facts = task.facts_prompt if task else ''
+            from agent.reply_prompt_layers import EXPRESSION_EMOTION_RULE
+            messages = active.reply_layers.messages()
+            if active.reply_layers.independent:
+                messages.append({'role': 'system', 'content': EXPRESSION_EMOTION_RULE})
+            if facts:
+                messages.append({'role': 'system', 'content': facts})
+            context = {'snapshotId': active.snapshot_id, 'factsPrompt': facts, 'messages': messages,
+                       'personaMode': active.reply_layers.mode,
+                       'independentPersona': active.reply_layers.independent}
+            body["_turnPersonaContext"] = context
+            return context
+        if task:
+            context = {'snapshotId': active.snapshot_id, 'factsPrompt': task.facts_prompt,
+                       'messages': [{'role': 'system', 'content': text} for text in
+                                    (active.system_prompt, task.style_prompt, task.facts_prompt) if text]}
+            body['_turnPersonaContext'] = context
+            return context
         profile = self.documents.read_json(env.profile_path, {})
         identity = profile.get("identity", {}) if isinstance(profile, dict) else {}
         facts = (
@@ -422,6 +509,10 @@ class PersonaContextService:
                 facts,
             ) if content],
         }
+        if active.reply_layers:
+            context['messages'] = active.reply_layers.messages() + [
+                {'role': 'system', 'content': content}
+                for content in (self.turn.relationship_prompt(relationship), facts) if content]
         body["_turnPersonaContext"] = context
         return context
 

@@ -185,6 +185,7 @@ def run_isolated_context_recovery(
     route_name: str,
     failure: Exception,
     started_at: float,
+    persona_snapshot=None,
 ) -> dict[str, Any] | None:
     """无人格重建当前任务，再以筛选后的同一请求重入常规流水线。"""
 
@@ -256,7 +257,7 @@ def run_isolated_context_recovery(
             request_id=request_id,
             started_at=started_at,
             preflight=None,
-            persona_snapshot=None,
+            persona_snapshot=persona_snapshot,
         )
         result.update(
             {
@@ -288,6 +289,7 @@ def request_pipeline_rescue_plan(
     *,
     request_id: str,
     finalize: bool = False,
+    persona_snapshot=None,
 ) -> PipelineRescuePlan | None:
     """请求一次受限救援计划或执行后的最终合成。"""
 
@@ -296,6 +298,8 @@ def request_pipeline_rescue_plan(
         "temperature": 0.0,
         "max_tokens": 900 if finalize else 1100,
         "messages": [
+            *(persona_snapshot.reply_layers.messages()
+              if persona_snapshot is not None and persona_snapshot.reply_layers else []),
             {
                 "role": "system",
                 "content": (
@@ -332,6 +336,7 @@ def pipeline_rescue_result_from_plan(
     request_id: str,
     failure: Exception,
     tool_results: Sequence[Mapping[str, Any]] = (),
+    persona_snapshot=None,
 ) -> dict[str, Any] | None:
     """把救援计划和真实工具回执投影为统一恢复结果。"""
 
@@ -356,6 +361,7 @@ def pipeline_rescue_result_from_plan(
             "source": "model-pipeline-rescue",
         },
         settings=settings,
+        persona_snapshot=persona_snapshot,
     )
     normalized_results = [dict(item) for item in tool_results if isinstance(item, Mapping)]
     if normalized_results:
@@ -407,6 +413,7 @@ def run_model_pipeline_rescue(
     request_id: str,
     route_name: str,
     failure: Exception,
+    persona_snapshot=None,
 ) -> dict[str, Any] | None:
     """执行一次有界的规划、工具和最终合成救援循环。"""
 
@@ -442,6 +449,7 @@ def run_model_pipeline_rescue(
             settings,
             case,
             request_id=request_id,
+            persona_snapshot=persona_snapshot,
         )
         if plan is None:
             raise UpstreamProtocolError("pipeline rescue returned no valid plan")
@@ -460,6 +468,7 @@ def run_model_pipeline_rescue(
                 user_message,
                 request_id=request_id,
                 failure=failure,
+                persona_snapshot=persona_snapshot,
             )
 
         raw_requests = services.tools.normalize_tool_requests(
@@ -499,6 +508,7 @@ def run_model_pipeline_rescue(
                 cognitive_state=execution_state,
                 schedule_decision=body.get("_scheduleDecision"),
                 time_context=services.tools.turn_time_context(body, settings),
+                evidence_context=body,
             )
             if constrained
             else [
@@ -526,6 +536,7 @@ def run_model_pipeline_rescue(
             final_case,
             request_id=request_id,
             finalize=True,
+            persona_snapshot=persona_snapshot,
         )
         if final_plan is None or final_plan.decision == "execute_tools":
             raise UpstreamProtocolError("pipeline rescue finalizer returned no final answer")
@@ -537,6 +548,7 @@ def run_model_pipeline_rescue(
             request_id=request_id,
             failure=failure,
             tool_results=tool_results,
+            persona_snapshot=persona_snapshot,
         )
     except Exception as rescue_error:
         services.runtime.write_log(

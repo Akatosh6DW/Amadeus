@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable, Mapping
 from backend.chat.reply_fields import SPOKEN_JA_NO_EMOJI_RULE
 from backend.interaction.touch_catalog import TOUCH_AGENT_PERSONA
+from backend.providers.reply_protocol import parse_json_mapping
 from backend.tts.contract import semantic_unit_has_weak_boundary
 
 STARTUP_GREETING_JSON_RULE = (
@@ -20,7 +21,8 @@ STARTUP_GREETING_JSON_RULE = (
     "每项 speechUnits 必须包含 zh、ja、boundaryAfter；所有 zh/ja 依次拼接后必须分别与完整稿一致。"
     "每项都必须是可独立朗读的完整语义单元，日语单项不超过 36 个非空白字符，"
     "不得以 、，逗号、分号或冒号结束。省略号只表示单元内部停顿，不能据此切分。"
-    "可选输出 gesture、voiceStyle、voiceTone、voiceIntensity、emotionIntensity、speechPace。"
+    "可选输出 gesture、voiceStyle、voiceTone、voiceIntensity、emotionIntensity、speechPace、speechSpeed；"
+    "speechSpeed 限定在 0.62 到 1.45，未提供时保留当前配置。"
     "格式示例："
     '{"reply":"连接恢复。今天先做什么？","spokenTextJa":"接続は戻ったわ。今日は何から始める？",'
     '"emotion":"amused","speechUnits":['
@@ -220,7 +222,12 @@ class StartupGreetingService:
         if "deepseek.com" in settings["apiEndpoint"]:
             payload["thinking"] = {"type": "disabled"}
         content = self.model.send_upstream_chat_payload(settings, payload, timeout=18)
-        result = self.model.normalize_model_reply(content, settings=settings)
+        # This endpoint requested a greeting object. A JSON object containing
+        # only metadata is an empty greeting, not a JSON example to speak aloud.
+        greeting = parse_json_mapping(content)
+        result = self.model.normalize_model_reply(
+            dict(greeting) if greeting is not None else content, settings=settings,
+        )
         startup_source = "api"
         if result.get("emptyReply"):
             # The generic empty-chat fallback asks the user for a clearer question,

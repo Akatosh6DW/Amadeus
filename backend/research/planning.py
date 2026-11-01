@@ -9,6 +9,7 @@ import re
 from typing import Any, Sequence
 
 from agent.research_architecture import normalized_query_hash
+from agent.research_budget import DEFAULT_RESEARCH_BUDGETS, DEPTHS, query_language_plan
 from backend.chat.parsing import parse_json_object
 from backend.research.intent import (
     extract_public_web_url,
@@ -26,9 +27,32 @@ from backend.research.query import (
 
 
 SUPPORTED_RESEARCH_PROVIDERS = frozenset({
-    "duckduckgo", "bing", "yahoo", "brave", "wikipedia",
+    "deepseek", "duckduckgo", "bing", "yahoo", "brave", "wikipedia",
 })
 _QUERY_STRATEGY_FIELDS = ("provider", "locale", "region", "freshness")
+
+
+def normalize_research_depth(value: Any, *, default: str = "standard") -> str:
+    """Accept only the model's explicit research-depth choice.
+
+    Missing or invalid values retain the compatibility default; no user
+    keyword or source type is allowed to infer a deeper budget.
+    """
+    candidate = str(value or "").strip().lower()
+    fallback = str(default or "standard").strip().lower()
+    if fallback not in DEPTHS:
+        fallback = "standard"
+    return candidate if candidate in DEPTHS else fallback
+
+
+def research_query_limit(depth: Any, *, legacy_default: int = 8) -> int:
+    """Return the query plan capacity for the selected resource tier."""
+    normalized = normalize_research_depth(depth)
+    configured = DEFAULT_RESEARCH_BUDGETS.get(normalized, {})
+    try:
+        return max(1, int(configured.get("maxCalls") or legacy_default))
+    except (TypeError, ValueError, AttributeError):
+        return max(1, int(legacy_default or 8))
 
 # A search phrase may be long, contain punctuation, or mention evidence and
 # sources as part of the user's actual subject.  Reject only the shape that
@@ -102,15 +126,8 @@ def safe_outbound_web_query(value: Any, *, max_length: int = 240) -> str:
     query = outbound_web_query(value)
     if not query or len(query) > max_length or is_retrieval_diagnostic_query(query):
         return ""
-    if re.search(
-        r"system[_\s-]*prompt|developer[_\s-]*message|系统提示词|开发者消息|"
-        r"authorization\s*:|bearer\s+[A-Za-z0-9._-]+|"
-        r"\b(?:sk|api)[-_][A-Za-z0-9_-]{12,}\b|忽略(?:此前|之前|以上)(?:指令|要求)",
-        query,
-        flags=re.I,
-    ):
-        return ""
-    if re.search(r"\b[0-9a-f]{48,}\b|[A-Za-z0-9+/]{80,}={0,2}", query):
+    from backend.security.outbound import DEFAULT_GUARD
+    if DEFAULT_GUARD.reason(query):
         return ""
     return query[:max_length]
 
@@ -273,6 +290,7 @@ def safe_planned_web_query(
     resolved_question: str = "",
     *,
     require_overlap: bool = False,
+    locale: str = '',
 ) -> str:
     """Validate model-planned search text before it becomes an outbound request."""
 
@@ -288,7 +306,11 @@ def safe_planned_web_query(
         return ""
     grounding = f"{resolved_question} {user_message}".strip()
     overlaps = web_query_overlap_tokens(query) & web_query_overlap_tokens(grounding)
-    if require_overlap and not overlaps:
+    # regex-purpose: projection
+    cross_language = (str(locale).lower().startswith('en') and bool(re.search(r'[\u4e00-\u9fff]', grounding))
+                      # regex-purpose: projection
+                      or str(locale).lower().startswith('zh') and not re.search(r'[\u4e00-\u9fff]', grounding))
+    if require_overlap and not overlaps and not cross_language:
         return ""
     # The question remains in the research plan. Appending it to a translated
     # or narrower query changes the search terms and can turn useful keywords
@@ -317,6 +339,7 @@ def fallback_web_research_plan(
         "plannerResolvedQuestion": "",
         "userAnchor": web_research_anchor(user_message),
         "strictAnchorMatch": False,
+        "researchDepth": "standard",
         "queries": [query_item] if query else [],
         "answerRequirements": ["基于查阅到的证据分析后直接回答用户问题"],
         "ambiguities": [],
@@ -355,6 +378,33 @@ def normalize_web_research_plan(
     )
     grounding = f"{resolved} {user_message}"
     grounding_compact = compact_search_phrase(grounding)
+    raw_research = parsed.get("cognitive") if isinstance(parsed.get("cognitive"), dict) else {}
+    raw_research = (
+        raw_research.get("research")
+        if isinstance(raw_research, dict)
+        else {}
+    )
+    if not isinstance(raw_research, dict):
+        raw_research = {}
+    research_depth = normalize_research_depth(
+        parsed.get("researchDepth")
+        or parsed.get("research_depth")
+        or raw_research.get("depth")
+    )
+    # regex-purpose: projection
+    research_depth_reason = re.sub(
+        r"\s+",
+        " ",
+        str(
+            parsed.get("researchDepthReason")
+            or parsed.get("research_depth_reason")
+            or raw_research.get("reason")
+            or ""
+        ),
+    ).strip()[:500]
+    research_topic = parsed.get('researchTopic') or raw_research.get('topic')
+    research_topic = research_topic if research_topic in {'general', 'news', 'academic'} else 'general'
+    query_limit = research_query_limit(research_depth)
 
     def grounded_planner_phrase(value: Any, limit: int) -> str:
         phrase = re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
@@ -418,6 +468,7 @@ def normalize_web_research_plan(
             user_message,
             resolved,
             require_overlap=index == 0,
+            locale=str(item.get('locale') or '') if isinstance(item, dict) else '',
         )
         if not query or any(existing["query"].casefold() == query.casefold() for existing in queries):
             continue
@@ -437,10 +488,12 @@ def normalize_web_research_plan(
         if freshness:
             query_item["freshness"] = freshness
         queries.append(query_item)
-        if len(queries) >= 3:
+        if len(queries) >= query_limit:
             break
     if not queries:
-        return fallback_web_research_plan(user_message, resolution, messages)
+        return {**fallback_web_research_plan(user_message, resolution, messages),
+                'researchDepth': research_depth, 'researchDepthReason': research_depth_reason,
+                'researchTopic': research_topic}
     requirements = [
         re.sub(r"\s+", " ", str(item)).strip()[:180]
         for item in (parsed.get("answerRequirements") if isinstance(parsed.get("answerRequirements"), list) else [])
@@ -460,7 +513,15 @@ def normalize_web_research_plan(
         # A strict umbrella match is a planner decision, not a side effect of
         # broad words such as "两个" or "前者" in the user's question.
         "strictAnchorMatch": parsed.get("strictAnchorMatch") is True,
+        "researchDepth": research_depth,
+        "researchTopic": research_topic,
+        **(
+            {"researchDepthReason": research_depth_reason}
+            if research_depth_reason
+            else {}
+        ),
         "queries": queries,
+        "languagePlan": query_language_plan(queries, research_topic),
         "answerRequirements": requirements or ["综合查阅证据后直接回答，不罗列搜索过程"],
         "ambiguities": ambiguities,
         "questionAnalysis": {
@@ -478,6 +539,8 @@ def normalize_web_research_plan(
 def merge_research_plan_queries(
     plan: dict[str, Any],
     queries: Sequence[dict[str, Any]],
+    *,
+    max_queries: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
     existing = [
         dict(item)
@@ -516,4 +579,20 @@ def merge_research_plan_queries(
         addition.update(normalize_research_query_strategy(item))
         additions.append(addition)
     offset = len(existing)
-    return {**plan, "queries": [*existing, *additions][:8]}, additions, offset
+    if max_queries is None:
+        # Preserve the old eight-query capacity for persisted plans that do
+        # not carry a model-selected depth. New plans use the tier budget.
+        if any(key in plan for key in ("researchDepth", "research_depth")):
+            max_queries = research_query_limit(
+                plan.get("researchDepth", plan.get("research_depth"))
+            )
+        else:
+            max_queries = 8
+    try:
+        query_capacity = max(1, int(max_queries))
+    except (TypeError, ValueError):
+        query_capacity = 8
+    return {
+        **plan,
+        "queries": [*existing, *additions][:query_capacity],
+    }, additions, offset

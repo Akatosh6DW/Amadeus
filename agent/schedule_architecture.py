@@ -9,7 +9,6 @@ prose.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any, Literal, Mapping, Sequence
 
 from agent.todo_architecture import TodoCommand
@@ -123,28 +122,35 @@ class ScheduleIntent:
         """
 
         data = payload if isinstance(payload, Mapping) else {}
-        raw_intent = data.get("scheduleIntent") or data.get("schedule_intent")
-        if isinstance(raw_intent, Mapping):
-            return cls.from_mapping(raw_intent, source="model")
-
         raw_calls = (
             data.get("toolRequests") or data.get("tool_requests")
             or data.get("calls") or ()
         )
-        if not isinstance(raw_calls, Sequence) or isinstance(raw_calls, (str, bytes)):
-            return cls.none(source="missing")
         commands: list[TodoCommand] = []
         has_read = False
-        for call in raw_calls[:16]:
-            if not isinstance(call, Mapping):
-                continue
-            name = str(call.get("name") or call.get("tool") or "").strip()
-            args = call.get("args") if isinstance(call.get("args"), Mapping) else {}
-            if name in {"todo_search", "todo_list"}:
-                has_read = True
-            elif name == "todo_manage":
-                commands.append(TodoCommand.from_mapping(args))
+        if isinstance(raw_calls, Sequence) and not isinstance(raw_calls, (str, bytes)):
+            for call in raw_calls[:16]:
+                if not isinstance(call, Mapping):
+                    continue
+                name = str(call.get("name") or call.get("tool") or "").strip()
+                args = call.get("args") if isinstance(call.get("args"), Mapping) else {}
+                if name in {"todo_search", "todo_list"}:
+                    has_read = True
+                elif name == "todo_manage":
+                    # A trusted structured tool call is already the model's
+                    # executable plan.  Older model payloads omitted the
+                    # optional write marker; preserve explicit false while
+                    # defaulting an absent marker to the existing authorized
+                    # tool-call behavior.
+                    command_args = dict(args)
+                    if "commitIntent" not in command_args and "commit_intent" not in command_args:
+                        command_args["commitIntent"] = True
+                    commands.append(TodoCommand.from_mapping(command_args))
         if commands:
+            # The tool plan is the executable model decision.  Prefer it over
+            # an incomplete scheduleIntent (for example one that reports an
+            # optional field as missing) while retaining commitIntent as the
+            # write-authorization boundary below.
             return cls(
                 kind="mutation",
                 relation="new",
@@ -164,6 +170,10 @@ class ScheduleIntent:
                 confidence=0.7,
                 source="structured_tool_calls",
             )
+
+        raw_intent = data.get("scheduleIntent") or data.get("schedule_intent")
+        if isinstance(raw_intent, Mapping):
+            return cls.from_mapping(raw_intent, source="model")
         return cls.none(source="missing")
 
     def to_dict(self) -> dict[str, Any]:
@@ -232,59 +242,44 @@ def decide_schedule_policy(intent: ScheduleIntent) -> SchedulePolicyDecision:
     return SchedulePolicyDecision("execute", True, reason="schedule_write_authorized")
 
 
-_EXACT_CLOCK_EVIDENCE = re.compile(
-    r"(?:[01]?\d|2[0-3])\s*[:：]\s*[0-5]\d|"
-    r"(?:[01]?\d|2[0-3]|[零〇一二两三四五六七八九十]{1,3})\s*(?:点|时)"
-    r"(?:\s*(?:半|一刻|三刻|[0-5]?\d\s*分))?|"
-    r"\d+\s*(?:分钟|小时)后|(?:正午|中午十二点|午夜|零点)",
-    re.I,
-)
-
 
 def ground_schedule_temporal_precision(
     intent: ScheduleIntent,
-    evidence_text: str,
+    evidence_text: str | Mapping[str, Any],
+    *,
+    time_source: Mapping[str, Any] | None = None,
+    source_messages: Any = None,
+    current_message: Mapping[str, Any] | None = None,
 ) -> ScheduleIntent:
-    """Reject an invented wall-clock time without changing schedule intent.
+    """Keep a model-selected, typed schedule timing intact.
 
-    This is a validation boundary, not an intent classifier: it only examines
-    already model-authorized recurring commands and can downgrade execution to a
-    clarification.  It can never create a schedule activity or authorize a write.
+    ``TodoCommand.from_mapping`` already validates ISO timestamps, dates, time
+    specifications, and recurrence fields.  Once that structure exists, the
+    model's ``dueAt``/``timeSpec`` is the execution plan.  A verbatim
+    ``timeSource.quote`` remains available to callers for provenance diagnostics,
+    but this helper must not reinterpret it or turn a valid clock into an
+    all-day/clarification result because a local regex cannot parse the phrase.
+    The keyword arguments remain for API compatibility with existing callers.
     """
 
-    recurring_timed_commands = tuple(
-        command for command in intent.commands
-        if command.recurrence_rule and bool(command.due_at or command.time_spec)
-    )
-    if not recurring_timed_commands or _EXACT_CLOCK_EVIDENCE.search(
-        str(evidence_text or "")
-    ):
-        return intent
-    return ScheduleIntent(
-        kind="clarification",
-        relation=intent.relation,
-        authorization=intent.authorization,
-        commands=(),
-        missing_fields=tuple(dict.fromkeys((
-            *intent.missing_fields,
-            "exactClockTime",
-        ))),
-        source_spans=intent.source_spans,
-        summary=intent.summary,
-        confidence=intent.confidence,
-        source="temporal_grounding_guard",
-    )
+    del evidence_text, time_source, source_messages, current_message
+    return intent
 
 
 SCHEDULE_TRIGGER_RULE = (
     "[可组合的延迟执行能力]\n"
     "系统有持久化定时触发：todo_manage 的 timeSpec.kind=after 可安排若干秒后，"
     "不需要用户到时再发消息。用户让你稍后说话、查询、总结或执行已有能力时，"
-    "自主组合创建任务与到点执行：onDue 保存完整的执行指令（内容、次数、目标等），"
-    "title/details 给人看的任务说明；不要现在执行，也不要把要求退化成提醒用户自己做。"
+    "自主组合创建任务与到点执行：onDue 保存完整任务要求（内容、次数、目标等），"
+    "title 是短标题；自动执行任务的 details 与 onDue 是同一份要求的兼容字段，不要分别撰写两套内容。"
+    "修改时基于候选 instructions 完整更新 onDue 或 details 中一个即可，保留仍然有效的要求。"
+    "不要现在执行，也不要把要求退化成提醒用户自己做。"
     "onDue 在到期时交回正常模型和工具链，不限于念提醒；不要说自己没有定时能力。"
     "本轮认知计划以登记成功为完成标准，到期工作由独立触发执行；登记成功只表示已安排，不代表未来工作已经做完。"
     "‘提醒我做某事’仍是普通提醒，onDue 留空；只有用户明确委托你到点做事才填写。"
+    "对纯一次性提醒（成功送达本身就是这项提醒的结果）设置 completionMode=delivery；"
+    "对需要主人在提醒后亲自完成的待办设置 completionMode=manual。不要依据标题或关键词猜测，"
+    "重复任务始终保留 recurring occurrence 并推进下一次。"
     "后端运行时由后台调度触发，无需聊天界面轮询；后端停止或电脑休眠时不能准点执行，"
     "恢复后合并漏跑，不承诺关机后仍能执行。\n"
 )
@@ -297,13 +292,18 @@ SCHEDULE_TIME_PROMPT = SCHEDULE_TRIGGER_RULE + (
     "按 calendar 保留其日历意思；不要把所有深夜请求都改成今天。确实无法区分才用 clarification 简短确认日期。\n"
     "新建或修改有钟点的提醒优先用 timeSpec，省略 dueAt；它是同一个 todo_manage 调用的参数，无需额外查询工具："
     "{kind:'next_clock',clock:'HH:MM',reason:'简短时间理解依据'} 表示从本轮快照起最近一次该钟点；"
+    "没有上午/下午/晚上限定的‘八点四十’属于 12 小时歧义，不能自行改成 20:40。"
+    "此时用 {kind:'next_clock_12h',clock:'08:40',meridiem:'unspecified',reason:'未指明上午或下午'}；"
+    "兼容调用也可用 kind:'next_clock' 加 meridiem:'unspecified'。后端以冻结锚点选择今天或次日最近的 08:40/20:40。"
+    "用户明确说早上、晚上或给出 24 小时钟点时，直接传对应的 08:40/20:40，不填 unspecified。"
     "{kind:'next_weekday',weekday:1,clock:'09:00'} 表示最近一次周一九点，weekday 为 ISO 星期一1至星期日7。"
     "用户按星期指定首次或每周时间时使用 next_weekday，不要手算日期或时差；每周重复再加 recurrenceRule=weekly。"
     "{kind:'calendar',dayOffset:1,clock:'HH:MM'} 表示日历上的明天，或用 date:'YYYY-MM-DD' 指定明确日期；"
     "{kind:'after',seconds:3600} 表示从本轮快照起一小时后；"
-    "{kind:'existing_date',clock:'HH:MM'} 表示保留真实目标任务的当地日期，只修改钟点。"
+    "{kind:'existing_date',clock:'HH:MM'} 表示保留真实目标任务的当地日期，只修改钟点；真实目标即使是全天任务，也以它的 dueDate 作为当地日期。"
     "timezone 沿用任务/本轮本地时区，用户明确要求其他时区才改变；reason 只简述依据，不写推理过程。\n"
-    "用户说‘改成九点’等只改钟点时用 existing_date，禁止从今天重新计算原任务的‘明天’；"
+    "已有任务出现 dueAt 或 dueDate 时，用户说‘改成九点’、‘把明天那项改到九点’、‘只改时间/日期不要动’等更新语义，优先用 existing_date 保留该任务当地日期；不要因为九点未写上午/下午就改用 next_clock_12h。"
+    "next_clock/next_clock_12h 只用于新建任务或用户明确要求重新选择从当前锚点起的下一次发生；它们不能覆盖更新请求中的已有任务日期。"
     "用户纠正日期或给出新的时间关系时重新选择 calendar/next_clock/after。"
     "没有指定钟点的任务继续用 dueDate 或无日期的全天任务，不填 timeSpec，不猜默认钟点。"
     "scheduleIntent.commands、认知计划与 calls 必须使用同一个 timeSpec；不要再手算另一个 dueAt。\n"
@@ -315,7 +315,8 @@ SCHEDULE_TIME_PROMPT = SCHEDULE_TRIGGER_RULE + (
 
 SCHEDULE_INTENT_PROMPT = (
     "[统一日程语义协议：模型判断，后端授权和执行]\n"
-    "每次输出顶层 scheduleIntent。普通无关对话必须是 "
+    "scheduleIntent 是兼容旧调用的可选语义字段；具体 calls 存在时，以 calls 作为实际执行计划，"
+    "不要因为 scheduleIntent 缺省或只写了可选字段就覆盖、拒绝或重复登记 calls。普通无关对话若输出 scheduleIntent，必须是 "
     '{"kind":"none","relation":"unrelated","authorization":"none",'
     '"commands":[],"missingFields":[],"sourceSpans":[],"summary":"",'
     '"confidence":0.0}。'
@@ -326,13 +327,20 @@ SCHEDULE_INTENT_PROMPT = (
     "用户明确要求新增、修改、完成、恢复、删除或推迟时，kind=mutation、"
     "authorization=explicit；正在补充一个已记录工作流时用 continued。"
     "修改已有任务的标题、详情、到期执行指令 onDue、时间或重复规则，都使用 update 绑定现有 taskId/targetRef；"
+    "到期需要联网、发送消息等动作时，onDue 保存完整执行要求，不能只写到 details 后留空 onDue。"
+    "提醒的渠道另用 deliveryTarget 保存：桌面用 {channel:desktop}，QQ 用 "
+    "{channel:qq,accountId:实际登录账号,targetType:private或group,targetId:实际收件人或群号}。"
+    "用户说通过QQ提醒我时，直接用 {channel:qq,recipient:owner}；宿主根据已认证入口或唯一主人配置解析并保存账号，模型无需抄写号码。"
+    "通过 QQ 主人入口创建提醒且未指定其他渠道时，默认回主人的私聊；明确要求桌面时选 desktop。"
+    "QQ 账号与目标来自可信入口或 qq_status/qq_identity，不凭昵称猜号码。"
     "不要因为修改内容或重复方式而创建第二个任务。"
     "用户自然反馈自己的对应待办目标已达成，同样属于明确的完成依据，使用 mutation/explicit 并自主调用 complete，"
     "不要求额外的‘标记完成’命令；到场/开始提醒与完成整项工作要按实际目标区分。"
     "仅讨论、假设、建议方案或让你先规划但没有授权写入时用 proposed，禁止调用写工具；"
     "明确否定写入时用 prohibited。\n"
-    "commands 使用 todo_manage 的参数结构；一项真实变更对应一个 command，写操作必须 "
-    "commitIntent=true。信息足够时，同一个输出必须同时给出 kind=tool_use 和对应 calls；"
+    "commands 使用 todo_manage 的参数结构；一项真实变更对应一个 command。信息足够时直接给出对应 calls，"
+    "无需为了登记语义再额外生成一份重复 command。commitIntent 可由模型省略，可信宿主在 calls 边界将缺省值填为 true；"
+    "显式 commitIntent=false 表示只提出方案，不执行写入。具体 calls 才是执行决定，scheduleIntent 只作兼容语义描述；"
     "需要检查某个任务过去的到期执行结果时，使用 todo_search 的 includeHistory=true 和可选 historyLimit（1到20），"
     "并绑定 taskId 或明确唯一的 targetRef；不要凭旧对话猜测执行是否成功。"
     "重复任务使用 recurrenceRule 的标准别名 daily、weekly、weekdays、monthly，或使用后端支持的 RFC5545 RRULE；"
@@ -340,8 +348,14 @@ SCHEDULE_INTENT_PROMPT = (
     "用户明确要求暂停或恢复已有任务时，使用 todo_manage action=pause 或 action=resume，"
     "并通过 targetRef/taskId 绑定真实任务；暂停是持久任务状态，不是一次性的 snooze。"
     "只有用户指定具体钟点或上下文已有明确时间时才使用 timeSpec；dueAt 保留兼容明确的带时区 ISO-8601 时间。"
-    "没有指定具体钟点（包括只说早上、下午）时，直接建立全天任务，dueAt 为空，"
-    "不得猜成8点或午夜，也不要为此追问时间或填写 exactClockTime。"
+    "裸的 1 至 12 点数字即使有分钟也可能是 12 小时歧义；新建或重新选择下一次发生时必须用 next_clock_12h（或 next_clock + meridiem:'unspecified'），"
+    "clock 传 01:00 至 12:59 的规范值；不要根据当前时刻、中文‘今天’或个人习惯暗选上午/下午。"
+    "若这是已有任务的更新且用户要求保留日期，先按上面的 existing_date 规则保留该任务日期；不要把更新误当成下一次发生。"
+    "若使用了具体钟点，timeSource 可附带 quote、sourceMessageId 和 parsedClock（HH:MM）供溯源诊断；"
+    "quote 只记录模型判断所依据的原话，不是执行门禁。即使本地无法解析 quote、来源片段不完整或解析值不一致，"
+    "只要 dueAt/timeSpec 已是合法的结构化时间，就保持模型给出的时间，不得改成全天或强行追问。"
+    "没有指定具体钟点时，由模型依据语义决定全天任务或仍需澄清的必要字段；不得按关键词擅自补成8点、午夜，"
+    "也不要把模型已经给出的合法 dueAt/timeSpec 改写成全天。"
     "全天任务若指定了日期或开始日期，用 dueDate=YYYY-MM-DD 保留日期，否则 dueDate 为空；"
     "dueAt 与 dueDate 不能同时填写。全天普通任务在其发生日期的首次打开应用时提醒；"
     "有 onDue 的全天执行任务在发生日期内由运行中的后端触发，不承诺具体钟点。"

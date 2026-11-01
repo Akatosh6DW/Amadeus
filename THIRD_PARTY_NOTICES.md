@@ -2,6 +2,15 @@
 
 Amadeus由原创代码和多个独立第三方组件组成。根目录的 MIT 许可证（`LICENSE`）只适用于项目维护者有权授权的原创部分。
 
+## NapCat QQ
+
+- Project and source: <https://github.com/NapNeko/NapCatQQ>
+- Bundled version: v4.18.41, official `NapCat.Shell.zip` (unmodified code).
+- Copyright © 2024 Mlikiowa.
+- License: Limited Redistribution License for NapCat. Full text: [assets/vendor/napcat/LICENSE.txt](assets/vendor/napcat/LICENSE.txt).
+
+QQ 接入组件默认随下一版程序分发，功能需用户自行启用；不包含 QQ 客户端。NapCat 不适用本项目的 MIT 许可，其许可证限制商业用途，并要求再分发保留完整许可及来源、版权说明。构建流程将许可证全文及来源说明复制到 `qq-component/napcat-shell/`，同时保留官方包中依赖的许可。更新组件版本时应同步核对上游许可。
+
 ## DDGS
 
 - Project: <https://github.com/deedy5/ddgs>
@@ -78,3 +87,29 @@ Python依赖列在：
 - 固定GPT-SoVITS提交中的`requirements.txt`
 
 各依赖继续适用其各自许可证。最终Release应由构建流程生成SBOM，并把实际打包组件的许可证文本放入`THIRD_PARTY_NOTICES/`。
+
+## qzone-sdk 1.0.1
+
+QQ 空间适配使用 https://github.com/Eganchiyu/qzone-sdk ，MIT License。
+
+MIT License
+
+Copyright (c) 2026 qzone-sdk contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

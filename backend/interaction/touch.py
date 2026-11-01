@@ -316,8 +316,8 @@ class TouchInteractionService:
                         "必须改变交流目的和句子结构，不能只替换同义词。"
                         "用户始终是触摸发起者，Amadeus 始终是被触摸者；不得把动作主体反写。"
                         + (
-                            "本轮中文必须自然说出一次“变态”或“色狼”，日语必须对应说出“変態”或“スケベ”；"
-                            "这不是要求复读固定台词，而是要求保留红莉栖式越界斥责并改变其余表达。"
+                            "胸口事件要保留清晰越界边界、相应情绪和动作，具体措辞由模型自行决定，"
+                            "不得依赖固定称呼或复读固定台词。"
                             if event["zone"] == "chest" else ""
                         )
                     ),
@@ -366,8 +366,10 @@ class TouchInteractionService:
                 repair_succeeded = True
         if repair_attempted:
             if not repair_succeeded:
-                result = self.mock_touch_reply(event)
-                fallback_used = True
+                # Preserve the model's own wording when a second attempt fails.
+                # Replacing it with a canned local line reintroduces the same
+                # fixed-word and repetition gate this path is meant to avoid.
+                final_fallback_reasons.append("repair_result_preserved")
         result["_touchMetrics"] = {
             "llmLatencyMs": round((time.perf_counter() - started) * 1000),
             "promptChars": sum(len(str(item.get("content") or "")) for item in payload["messages"]),

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from backend.context.prompt_assembly import system_message
+
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -36,6 +38,9 @@ class ConversationImageSources(Protocol):
     def read_attachment(self, attachment_id: str) -> Mapping[str, Any] | None: ...
     def attachments_dir(self) -> Path: ...
     def data_dir(self) -> Path: ...
+    def resolve_agent_workspace_image(
+        self, settings: Mapping[str, Any], raw_path: Any,
+    ) -> Path | None: ...
 
 
 class ConversationImageRuntime(Protocol):
@@ -165,6 +170,18 @@ def conversation_image_inputs(
         if not ident or ident in seen:
             continue
         seen.add(ident)
+        channel_loader = getattr(services.sources, 'load_referenced_image', None)
+        if historical and source.get('channelReference') and channel_loader:
+            if ident not in cache:
+                cache[ident] = channel_loader(source, settings)
+            if not cache[ident]:
+                continue
+            ref = 'image:' + ident
+            body.setdefault('_cognitiveEvidence', {})[ref] = {
+                'ok': True, 'sourceType': 'visual', 'historical': True, 'name': 'image_input',
+                'body': json.dumps({'artifactId': ident, 'imageInputAvailable': True}), 'understandingAvailable': True}
+            result.append({'artifactId': ident, 'evidenceRef': ref, 'historical': True, **cache[ident]})
+            continue
         metadata = services.sources.read_attachment(ident)
         if metadata:
             path = (
@@ -177,7 +194,19 @@ def conversation_image_inputs(
             allowed = services.sources.attachments_dir().resolve() in path.parents
         else:
             saved_path = str(source.get("path") or artifact.get("path") or "")
-            if not saved_path and historical:
+            source_type = str(source.get("sourceType") or artifact.get("sourceType") or "")
+            artifact_id = str(
+                source.get("artifactId") or artifact.get("artifactId") or ident
+            )
+            is_workspace_image = (
+                source_type == "authorized_workspace_image"
+                or artifact_id.startswith("workspace:")
+            )
+            if is_workspace_image:
+                resolver = getattr(services.sources, "resolve_agent_workspace_image", None)
+                path = resolver(settings, saved_path) if callable(resolver) else None
+                allowed = isinstance(path, Path) and path.is_file()
+            elif not saved_path and historical:
                 # Archived sensor descriptors deliberately omit absolute paths.
                 # Their capture ID is the original basename, never 'latest'.
                 sensor_location = {"screen_capture": ("screen-captures", ".png"),
@@ -185,11 +214,12 @@ def conversation_image_inputs(
                 if sensor_location and Path(ident).name == ident:
                     folder, suffix = sensor_location
                     saved_path = str(services.sources.data_dir() / "runtime" / folder / (ident + suffix))
-            path = Path(saved_path).resolve()
-            allowed = path.parent in {
-                (services.sources.data_dir() / "runtime" / folder).resolve()
-                for folder in ("screen-captures", "camera-captures")
-            }
+            if not is_workspace_image:
+                path = Path(saved_path).resolve()
+                allowed = path.parent in {
+                    (services.sources.data_dir() / "runtime" / folder).resolve()
+                    for folder in ("screen-captures", "camera-captures")
+                }
         if not allowed or not path.is_file():
             continue
         if ident not in cache:
@@ -248,8 +278,8 @@ def with_conversation_images(
         messages.append(message)
     references = image_reference_rows(body, {item["artifactId"] for item in images})
     if references:
-        messages.append({"role": "system", "content": HISTORY_IMAGE_HEADER + "\n" + HISTORY_IMAGE_RULE
-                         + "\n" + json.dumps(references, ensure_ascii=False)})
+        messages.append(system_message('backend/chat/brain_transport.py:263', HISTORY_IMAGE_HEADER + "\n" + HISTORY_IMAGE_RULE
+                         + "\n" + json.dumps(references, ensure_ascii=False), source='backend/chat/brain_transport.py', category='unclassified'))
     services.runtime.write_log(
         "conversation_image_selection", requestId=body.get("requestId"), purpose=purpose,
         referenceCount=len(references), selectedArtifactIds=[i["artifactId"] for i in images],
@@ -294,7 +324,7 @@ def with_conversation_images(
         "messages": pin_reply_context(
             [
                 *messages,
-                {"role": "system", "content": DIRECT_IMAGE_INSTRUCTION},
+                system_message('backend/chat/brain_transport.py:309', DIRECT_IMAGE_INSTRUCTION, source='backend/chat/brain_transport.py', category='unclassified'),
                 {"role": "user", "content": content},
             ],
             body.get("_turnContextSnapshot"),
@@ -334,7 +364,9 @@ def send_conversation_brain_payload(
     )
     if prompt:
         body["_cognitiveOutcomeRequired"] = True
-        active["messages"].append({"role": "system", "content": prompt})
+        active["messages"] = [message for message in active["messages"] if not (
+            message.get("role") == "system" and str(message.get("content") or "").startswith("[认知与任务修正协议]"))]
+        active["messages"].append(system_message('cognitive.current', prompt, source='backend/chat/brain_transport.py', category='mixed'))
         # 旧的 1500 token 语音额度还要承载任务补丁、主张和双语台词，
         # 因此为整个结构化容器预留空间。
         active["max_tokens"] = max(4096, int(active.get("max_tokens") or 0))
@@ -346,12 +378,13 @@ def send_conversation_brain_payload(
         and str(active.get("model") or settings.get("apiModel") or "").strip()
     ):
         active["thinking"] = {"type": "enabled"}
-        active["reasoning_effort"] = "low"
-        active["max_tokens"] = max(6000, int(active.get("max_tokens") or 0))
+        deep_research = (body.get("_researchBudget") or {}).get("depth") in {"deep", "exhaustive"}
+        active["reasoning_effort"] = "high" if deep_research else "low"
+        active["max_tokens"] = max(10000 if deep_research else 6000, int(active.get("max_tokens") or 0))
         active.pop("temperature", None)
     if prompt:
         active["messages"].append(
-            {"role": "system", "content": policy.participant_realization_rule}
+            system_message('backend/chat/brain_transport.py:369', policy.participant_realization_rule, source='backend/chat/brain_transport.py', category='unclassified')
         )
     native_web = bool(prompt) and native_web_enabled(settings, body, purpose)
     if native_web:
@@ -418,19 +451,18 @@ def iter_conversation_brain_stream(
                 body, list(payload.get("messages", []))
             ),
         }
-        payload["messages"].append(
-            {"role": "system", "content": services.cognitive.prompt(body)}
-        )
+        prompt = services.cognitive.prompt(body)
+        if prompt:
+            payload["messages"] = [message for message in payload["messages"] if not (
+                message.get("role") == "system" and str(message.get("content") or "").startswith("[认知与任务修正协议]"))]
+            payload["messages"].append(system_message('cognitive.current', prompt, source='backend/chat/brain_transport.py', category='mixed'))
     parts = []
     if services.cognitive.turn_state(body):
         payload = {
             **payload,
             "messages": [
                 *payload.get("messages", []),
-                {
-                    "role": "system",
-                    "content": policy.participant_realization_rule,
-                },
+                system_message('backend/chat/brain_transport.py:447', policy.participant_realization_rule, source='backend/chat/brain_transport.py', category='unclassified'),
             ],
         }
     outgoing = with_cognitive_transport_state(

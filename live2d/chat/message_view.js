@@ -1,8 +1,11 @@
 (function attachMessageView(root, factory) {
-  const api = factory();
+  const deliveryProjection = root.AmadeusDeliveryProjection
+    || (typeof module === "object" && module.exports && typeof require === "function"
+      ? require("./delivery_projection.js") : null);
+  const api = factory(deliveryProjection);
   if (typeof module === "object" && module.exports) module.exports = api;
   root.AmadeusMessageView = api;
-}(typeof globalThis !== "undefined" ? globalThis : this, function createMessageViewApi() {
+}(typeof globalThis !== "undefined" ? globalThis : this, function createMessageViewApi(deliveryProjection) {
   "use strict";
 
   function formatFileSize(value) {
@@ -29,6 +32,10 @@
     }
   }
 
+  function isTrustedGalleryUrl(value) {
+    return /^\/api\/gallery\/[0-9]{5,20}\/[a-f0-9]{64}$/.test(String(value || ""));
+  }
+
   /**
    * 消息视图只拥有聊天日志的 DOM、消息对象到气泡的弱引用和用户点击后的呈现动作。
    * 消息数组、流式分段文本、会话身份与持久化仍由页面维护；调用 render 时传入同一批
@@ -48,6 +55,14 @@
     requestAnimationFrame,
   }) {
     let bubbles = new WeakMap();
+
+    function isDisplayableMessage(message) {
+      if (message?.role !== "assistant") return true;
+      // The server history projection carries the same structured receipt and
+      // turn contract as the live trailer. Keep the durable turn/model facts,
+      // but omit a pure QQ-send acknowledgement from the chat transcript.
+      return deliveryProjection?.isPureQqSendConfirmation?.(message?.meta || {}) !== true;
+    }
 
     function assistantMetaLabel(metaData = {}) {
       const bits = ["Amadeus System"];
@@ -163,7 +178,25 @@
       bubble.appendChild(list);
     }
 
+    function appendGalleryImages(bubble, media) {
+      if (!Array.isArray(media)) return;
+      for (const item of media.slice(0, 2)) {
+        // Only an explicit, server-verified local gallery attachment is
+        // renderable.  Markdown in message text is always textContent and
+        // never triggers an external image fetch.
+        if (!isTrustedGalleryUrl(item?.url)) continue;
+        const img = document.createElement("img");
+        img.className = "message-gallery-image";
+        img.src = item.url;
+        img.alt = String(item.name || "表情包");
+        img.loading = "lazy";
+        img.style.cssText = "display:block;max-width:180px;max-height:180px;object-fit:contain;margin-top:8px;border-radius:8px";
+        bubble.appendChild(img);
+      }
+    }
+
     function append(message) {
+      if (!isDisplayableMessage(message)) return null;
       const role = message?.role === "assistant" ? "assistant" : "user";
       const content = formatContent(role, message?.content);
       const metaData = message?.meta || {};
@@ -211,6 +244,7 @@
       if (replySource) bubble.appendChild(replySource);
       bubble.appendChild(body);
       appendAttachmentCards(bubble, metaData.attachments);
+      if (role === "assistant") appendGalleryImages(bubble, metaData.galleryMedia);
       const diagnostic = role === "assistant" && isDeveloper() ? formatSpeechDiagnostic(metaData) : "";
       if (diagnostic) {
         const ja = document.createElement("span");
@@ -286,6 +320,10 @@
       if (meta && message?.role === "assistant") meta.textContent = assistantMetaLabel(metaData);
       bubble.dataset.messageId = String(metaData.messageId || "");
       bubble.dataset.turnId = String(metaData.turnId || "");
+      if (message?.role === "assistant" && Array.isArray(metaData.galleryMedia)) {
+        bubble.querySelectorAll(".message-gallery-image").forEach(node => node.remove());
+        appendGalleryImages(bubble, metaData.galleryMedia);
+      }
     }
 
     return Object.freeze({
@@ -298,5 +336,5 @@
     });
   }
 
-  return Object.freeze({ createMessageView, formatFileSize, safeExternalSourceUrl });
+  return Object.freeze({ createMessageView, formatFileSize, safeExternalSourceUrl, isTrustedGalleryUrl });
 }));

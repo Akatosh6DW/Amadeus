@@ -229,17 +229,18 @@
     function readEditor() {
       const value = view.readEditor?.() || {};
       const dueValue = String(value.dueAt || "");
+      const instructions = String(value.instructions || "").trim();
       return {
         action: "update",
         taskId: editorTaskId,
         expectedVersion: editorVersion,
         title: String(value.title || "").trim(),
-        details: String(value.details || "").trim(),
+        details: instructions,
         dueAt: dueValue ? new Date(dueValue).toISOString() : "",
         dueDate: dueValue ? "" : String(value.dueDate || ""),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
         remindBeforeMinutes: Number(value.remindBeforeMinutes || 0),
-        onDue: String(value.onDue || "").trim(),
+        onDue: value.executeOnDue ? instructions : "",
         recurrenceRule: String(value.recurrenceRule || ""),
         priority: String(value.priority || "normal"),
       };
@@ -308,6 +309,9 @@
       elements.list?.addEventListener?.("click", handleListClick);
       elements.list?.addEventListener?.("change", handleListChange);
       elements.editor?.addEventListener?.("submit", event => { void saveEditor(event); });
+      elements.editorMode?.addEventListener?.("change", () => {
+        if (elements.editorDetails) elements.editorDetails.required = elements.editorMode.value === "execute";
+      });
       elements.editorDueAt?.addEventListener?.("change", () => {
         if (elements.editorDueAt.value) elements.editorDueDate.value = "";
       });

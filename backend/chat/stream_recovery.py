@@ -12,7 +12,6 @@ import re
 from typing import Any, Protocol
 
 from agent.dialogue_architecture import TurnContract
-from agent.fingerprints import runtime_fingerprint
 from agent.persona_context import PersonaContextSnapshot
 from agent.proactive_control import PROACTIVE_DIRECTIVES
 from agent.semantic_recovery import recover_semantic_output
@@ -41,9 +40,6 @@ class RecoveryContextOperations(Protocol):
 
 
 class RecoveryModelOperations(Protocol):
-    def repair_dialogue_fields_once(self, *args: Any, **kwargs: Any) -> Any: ...
-    def repair_frozen_reply_emotion_once(self, *args: Any, **kwargs: Any) -> Any: ...
-    def repair_speech_plan_once(self, *args: Any, **kwargs: Any) -> Any: ...
     def persona_repair_prefix(self, *args: Any, **kwargs: Any) -> Any: ...
     def send_upstream_chat_payload(self, *args: Any, **kwargs: Any) -> Any: ...
 
@@ -89,8 +85,8 @@ def recover_atomic_fast_stream_utterance(
     """从同一次服务商响应恢复轨道对齐的可见发言。
 
     恢复没有路由权，不能选择工具、研究或新的人格生成。已接受的中文正文保持
-    冻结；日语缺失时单独补齐，交付边界缺失时先用确定性的标点回退，再使用隔离
-    的语音计划修复。仅丢失元数据绝不能导致整份已接受答案重新生成。
+    冻结；日语缺失时降级为文本交付，语音分段只使用同一响应中的结构或确定性的
+    标点回退。仅丢失元数据绝不能导致整份已接受答案重新生成。
     """
     recovery = recover_semantic_output(
         str(raw_text or ""), allow_plain_text=services.runtime.features().plain_text_salvage_enabled
@@ -119,12 +115,6 @@ def recover_atomic_fast_stream_utterance(
         return None
     speech_profile = speech_language_profile(settings)
     requires_spoken = speech_profile["speechLanguage"] == "ja-JP"
-    active_recent_messages = list(recent_messages or [])
-    active_relationship_state = (
-        dict(relationship_state)
-        if isinstance(relationship_state, dict)
-        else services.context.read_relationship_state()
-    )
     missing_fields: list[str] = []
     if requires_spoken and (not spoken_ja):
         missing_fields.append("spokenTextJa")
@@ -144,77 +134,28 @@ def recover_atomic_fast_stream_utterance(
     if isinstance(recovered_units, list):
         repaired["_modelSpeechUnits"] = recovered_units
     if missing_fields:
-        if (
-            not services.runtime.features().field_level_repair_enabled
-            or not services.runtime.configured(settings)
-        ):
-            return None
-        try:
-            services.runtime.update_progress(
-                request_id, "field-repair", "正文已冻结，正在补齐日语发声字段"
-            )
-            repaired = services.model.repair_dialogue_fields_once(
-                settings,
-                repaired,
-                {"missingFields": missing_fields, "invalidFields": []},
-                user_message=user_message,
-                recent_messages=active_recent_messages,
-                relationship_state=active_relationship_state,
-                request_id=request_id,
-                persona_snapshot=persona_snapshot,
-            )
-        except Exception as repair_error:
-            services.runtime.write_log(
-                "semantic_recovery_field_repair_failed",
-                requestId=request_id,
-                mode=recovery.mode,
-                frozenReplyFingerprint=runtime_fingerprint(frozen_reply, length=32),
-                errorType=type(repair_error).__name__,
-                error=str(repair_error)[:500],
-            )
-            return None
-        if str(repaired.get("reply") or "").strip() != frozen_reply:
-            services.runtime.write_log(
-                "semantic_recovery_frozen_reply_violation", requestId=request_id, mode=recovery.mode
-            )
-            return None
+        # Missing Japanese is an optional presentation failure.  Freeze the
+        # recovered Chinese text and let the common delivery boundary mute the
+        # unavailable audio track; recovery must not spend another model call.
+        repaired["dialogueFieldRepairSkipped"] = True
+        repaired["dialogueFieldRepairAttempted"] = False
+        repaired["dialogueFieldRepairFields"] = list(missing_fields)
+        repaired["spokenTextJa"] = ""
+        repaired["speechText"] = frozen_reply
+        repaired["speechUnavailableReason"] = "optional_speech_field_missing"
+        repaired["ttsUnavailableReason"] = "optional_speech_field_missing"
+        repaired["textOnlyDelivery"] = True
     if repaired.get("emotionMissingFromModel"):
-        if services.runtime.configured(settings):
-            try:
-                services.runtime.update_progress(
-                    request_id, "emotion-repair", "正文已冻结，正在补齐表情与语音情绪"
-                )
-                repaired = services.model.repair_frozen_reply_emotion_once(
-                    settings,
-                    repaired,
-                    user_message=user_message,
-                    recent_messages=active_recent_messages,
-                    relationship_state=active_relationship_state,
-                    request_id=request_id,
-                )
-                repaired["emotionRecoveryAttempted"] = True
-                repaired["emotionRecoverySucceeded"] = True
-            except Exception as repair_error:
-                repaired["emotionResolvedLocally"] = True
-                repaired["emotionRecoveryAttempted"] = True
-                repaired["emotionRecoverySucceeded"] = False
-                repaired["emotionUnavailableReason"] = "emotion_label_recovery_failed"
-                services.runtime.write_log(
-                    "semantic_recovery_emotion_repair_failed",
-                    requestId=request_id,
-                    recoveryMode=recovery.mode,
-                    errorType=type(repair_error).__name__,
-                    error=str(repair_error)[:500],
-                )
-        else:
-            repaired["emotionResolvedLocally"] = True
-            repaired["emotionUnavailableReason"] = "model_not_configured"
+        repaired["emotion"] = "neutral"
+        repaired["emotionResolvedLocally"] = True
+        repaired["emotionRecoveryAttempted"] = False
+        repaired["emotionUnavailableReason"] = "model_emotion_missing"
     repaired_spoken = str(repaired.get("spokenTextJa") or "").strip()
     repaired_units = normalize_speech_plan_units(
         repaired.get("_modelSpeechUnits"),
         frozen_reply=frozen_reply,
         frozen_spoken=repaired_spoken,
-        require_spoken=requires_spoken,
+        require_spoken=requires_spoken and bool(repaired_spoken),
     )
     if repaired_units:
         repaired["speechSegmentCountSource"] = str(
@@ -230,34 +171,6 @@ def recover_atomic_fast_stream_utterance(
                 recoveryMode=recovery.mode,
                 unitCount=len(repaired_units),
                 ellipsisIsBoundary=False,
-            )
-    if (
-        not repaired_units
-        and services.runtime.features().field_level_repair_enabled
-        and services.runtime.configured(settings)
-    ):
-        try:
-            services.runtime.update_progress(
-                request_id, "speech-plan-repair", "正文已冻结，正在补齐语音分段计划"
-            )
-            repaired_units = services.model.repair_speech_plan_once(
-                settings,
-                {**repaired, "speechLanguage": speech_profile["speechLanguage"]},
-                request_id=request_id,
-                persona_snapshot=persona_snapshot,
-            )
-            repaired["speechPlanRepairAttempted"] = True
-            repaired["speechPlanRepairSucceeded"] = True
-            repaired["speechSegmentCountSource"] = "speech_plan_field_repair"
-        except Exception as repair_error:
-            repaired["speechPlanRepairAttempted"] = True
-            repaired["speechPlanRepairSucceeded"] = False
-            services.runtime.write_log(
-                "semantic_recovery_speech_plan_repair_failed",
-                requestId=request_id,
-                recoveryMode=recovery.mode,
-                errorType=type(repair_error).__name__,
-                error=str(repair_error)[:500],
             )
     if not repaired_units:
         tracks_are_complete = bool(
@@ -275,7 +188,23 @@ def recover_atomic_fast_stream_utterance(
                 japaneseCharacters=len(re.sub("\\s+", "", repaired_spoken)),
                 reason="accepted_speech_track_is_incomplete",
             )
-            return None
+            # A missing optional speech track still has a deliverable text
+            # unit.  Preserve the reply as one atomic unit and keep audio
+            # disabled rather than discarding the recovered answer.
+            repaired_units = [{
+                "textZh": frozen_reply,
+                "spokenTextJa": "",
+                "boundaryAfter": "turn_pause",
+            }]
+            repaired["textOnlyDelivery"] = True
+            repaired["speechUnavailableReason"] = (
+                repaired.get("speechUnavailableReason")
+                or "optional_speech_field_missing"
+            )
+            repaired["ttsUnavailableReason"] = (
+                repaired.get("ttsUnavailableReason")
+                or "optional_speech_field_missing"
+            )
         repaired_units = [
             {"textZh": frozen_reply, "spokenTextJa": repaired_spoken, "boundaryAfter": "turn_pause"}
         ]
@@ -317,17 +246,59 @@ def recover_atomic_fast_stream_utterance(
         first_visible=True,
         persona_snapshot=persona_snapshot,
     )
-    contracted = _speech_unit_contract_for_result(
-        services,
-        {
+    if requires_spoken and not repaired_spoken:
+        # The shared TTS contract quite correctly refuses a Japanese unit
+        # without Japanese text.  Recovery still needs a visible result, so
+        # represent this as an explicit text-only unit and keep the audio
+        # failure in metadata.
+        text_only_units = [
+            {
+                "textZh": str(item.get("textZh") or frozen_reply),
+                "spokenTextJa": "",
+                "boundaryAfter": str(item.get("boundaryAfter") or "continue"),
+            }
+            for item in repaired_units
+            if isinstance(item, dict) and str(item.get("textZh") or "").strip()
+        ] or [{
+            "textZh": frozen_reply,
+            "spokenTextJa": "",
+            "boundaryAfter": "turn_pause",
+        }]
+        text_only_source = str(
+            repaired.get("speechSegmentCountSource") or "text_only_delivery"
+        )
+        contracted = {
             **normalized,
-            "_modelSpeechUnits": repaired.get("_modelSpeechUnits") or [],
-            "visibleSegmentationSource": str(
-                repaired.get("speechSegmentCountSource") or "semantic_unit_field_repair"
-            ),
-        },
-        request_id=request_id,
-    )
+            "speechUnits": text_only_units,
+            "speechUnitContract": {
+                "schemaVersion": 2,
+                "expectedUnitCount": len(text_only_units),
+                "allUnitsComplete": False,
+                "tailOmitted": False,
+                "segmentationSource": text_only_source,
+                "error": "missing_optional_speech_track",
+            },
+            "visibleSegmentationSource": text_only_source,
+            "textOnlyDelivery": True,
+            "speechUnavailableReason": normalized.get(
+                "speechUnavailableReason"
+            ) or "optional_speech_field_missing",
+            "ttsUnavailableReason": normalized.get(
+                "ttsUnavailableReason"
+            ) or "optional_speech_field_missing",
+        }
+    else:
+        contracted = _speech_unit_contract_for_result(
+            services,
+            {
+                **normalized,
+                "_modelSpeechUnits": repaired.get("_modelSpeechUnits") or [],
+                "visibleSegmentationSource": str(
+                    repaired.get("speechSegmentCountSource") or "semantic_unit_field_repair"
+                ),
+            },
+            request_id=request_id,
+        )
     contracted_units = contracted.get("speechUnits")
     if not isinstance(contracted_units, list) or not contracted_units:
         return None

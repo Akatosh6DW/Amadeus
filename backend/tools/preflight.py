@@ -15,7 +15,6 @@ import sqlite3
 from typing import Any, Callable, Mapping, Sequence
 
 from agent.cognitive_brain import normalize_brain_container
-from agent.cognitive_outcome import current_state_evidence_requirement
 from agent.research_architecture import CapabilityEnvelope, ResearchDecision
 from agent.tool_architecture import (
     DEFAULT_TOOL_REGISTRY,
@@ -23,15 +22,16 @@ from agent.tool_architecture import (
     TurnPreflight,
     assemble_tool_pool,
     build_turn_preflight,
+    capability_query_contract,
+    tool_call_example,
 )
 from agent.todo_architecture import (
     TODO_NOOP_REQUESTABLE_FIELDS,
-    todo_mutation_prohibited,
     todo_noop_target_matches,
     normalize_todo_noop_target,
 )
-from backend.research.intent import user_explicitly_requests_web_research
-from backend.tools.validation import SENSOR_TOOL_NAMES
+from backend.chat.preparation_cache import reuse_preparation
+from backend.tools.validation import SENSOR_TOOL_NAMES, schedule_policy_allows_todo_write
 from todo_store import match_active_todos_to_dialogue, read_todo, list_todos
 
 
@@ -93,7 +93,8 @@ class ToolPreflightService:
             ),
             None,
         )
-        active = build_turn_preflight(
+        active = reuse_preparation(
+            body, "base_tool_preflight", build_turn_preflight,
             user_message,
             messages,
             reply_mode=reply_mode,
@@ -107,55 +108,12 @@ class ToolPreflightService:
                 else None
             ),
         )
-        if settings is not None:
-            workspace_request = self.ports.infer_workspace_current_state_request(
-                user_message,
-                body.get("_discourseLedger")
-                if isinstance(body.get("_discourseLedger"), Mapping)
-                else None,
-            )
-            workspace_path = str(
-                ((workspace_request or {}).get("args") or {}).get("path") or ""
-            ).strip()
-            attachment_names = {
-                Path(str(item.get("name") or item.get("fileName") or "")).name.casefold()
-                for item in raw_attachments
-                if str(item.get("name") or item.get("fileName") or "").strip()
-            }
-            attachment_target = bool(raw_attachments) and (
-                self.ports.is_attachment_followup_query(user_message)
-                or workspace_path in {"", "."}
-                or Path(workspace_path).name.casefold() in attachment_names
-            )
-            requirement = (
-                current_state_evidence_requirement(workspace_request)
-                if workspace_request is not None
-                and bool(settings.get("permissionFileRead"))
-                and not attachment_target
-                else None
-            )
-            if requirement is None:
-                body.pop("_currentStateEvidenceRequirement", None)
-            else:
-                requirement_payload = requirement.to_dict()
-                body["_currentStateEvidenceRequirement"] = requirement_payload
-                active = replace(
-                    active,
-                    candidate_capabilities=tuple(dict.fromkeys((
-                        *active.candidate_capabilities,
-                        requirement.tool_name,
-                    ))),
-                    mandatory_capabilities=tuple(dict.fromkeys((
-                        *active.mandatory_capabilities,
-                        requirement.tool_name,
-                    ))),
-                    current_state_evidence_requirement=requirement_payload,
-                    likely_no_tool=False,
-                    reasons=tuple(dict.fromkeys((
-                        *active.reasons,
-                        "current_workspace_state_requires_current_receipt",
-                    ))),
-                )
+        # Do not turn natural-language file nouns or verbs into a mandatory
+        # read/list operation.  A current-state receipt is created only after
+        # the model emits a concrete file tool call and the executor validates
+        # its path, permission and receipt.  The old lexical projection here
+        # made ordinary discussion of filenames an execution obligation.
+        body.pop("_currentStateEvidenceRequirement", None)
         semantic_source = (body.get("_artifactTaskContext") or {}).get("contextSource")
         if semantic_source in {"dialogue", "new_screen", "new_camera"}:
             visual_names = {"read_image", *SENSOR_TOOL_NAMES}
@@ -196,11 +154,16 @@ class ToolPreflightService:
             messages,
         )
         pending_todo = self.ports.current_pending_action()
+        schedule_decision = (
+            body.get("_scheduleDecision")
+            if isinstance(body.get("_scheduleDecision"), Mapping)
+            else {}
+        )
         if (
             pending_todo.get("type") == "todo_mutation"
             and str(pending_todo.get("status") or "") != "paused"
             and not self.ports.cognitive_turn_state(body)
-            and not todo_mutation_prohibited(user_message)
+            and schedule_policy_allows_todo_write(schedule_decision)
         ):
             # The previous turn already authorized a Todo mutation but could not
             # safely execute it without more information.  Re-open the capability
@@ -432,7 +395,7 @@ class ToolPreflightService:
             task = candidates.get(task_id)
             if not task or not isinstance(task.get("version"), int):
                 continue
-            added.append({"name": "todo_manage", "selection": {"toolAuthorization": "write"},
+            added.append({"name": "todo_manage",
                           "args": {"action": "complete", "taskId": task_id,
                                    "expectedVersion": task["version"], "commitIntent": True}})
             handled.add(task_id)
@@ -481,9 +444,10 @@ def todo_reconciliation_prompt(value: Any) -> str:
         "到场/开始类提醒在用户已到场/已开始时即可完成；整项工作或课程的完成任务则不能因刚开始就标完成。"
         "previousReminder.recurrenceAdvanced 表示那次重复提醒已结束并顺延；用户回应那次提醒不能把下一次也标完成。"
         "计划、否定、假设、他人的进度或无关闲聊都不应触发完成。"
-        "目标明确时直接用此快照中的 taskId、version 作为 expectedVersion，设置 commitIntent=true 和 selection.toolAuthorization=write；"
+        "目标明确时直接用此快照中的 taskId、version 作为 expectedVersion，设置 commitIntent=true；"
         "不必为了形式重复 todo_search。缺少目标或快照不足时再检索；结合对话仍有歧义才请用户选择。"
-        "onDue 非空表示到期由 Amadeus 执行的完整指令，修改/取消执行内容时同步更新该字段；普通提醒为空。"
+        "候选 instructions 是完整任务要求。onDue 非空表示到期执行；此时 details 与 onDue 是同一份要求的兼容字段。"
+        "修改时在其中一个字段提交完整新要求即可，系统统一保存；不要分别生成摘要和执行稿。显式清空 onDue 才切回普通提醒。"
         "用户后续修改任务目标、细节、执行内容或重复规则时，沿用当前候选的 taskId/version 发出 update；不要创建一个新任务来代替原任务。"
         "先在 cognitive.todoReview 中逐项给出候选的简短判断："
         "[{taskId:真实编号,version:当前版本,decision:'complete'|'keep'|'desired_target_already_satisfied',reason:结合当前原话和任务目标的简短理由}]。"
@@ -507,7 +471,7 @@ def todo_reconciliation_prompt(value: Any) -> str:
         "\n若判断应完成，调用容器结构如下（taskId 和 expectedVersion 替换为所选任务的真实值）："
         '{"kind":"tool_use","cognitive":{"interactionAct":"EXECUTION_FEEDBACK",'
         '"understoodGoal":"根据用户进度更新对应待办","patches":[]},'
-        '"calls":[{"name":"todo_manage","selection":{"toolAuthorization":"write"},'
+        '"calls":[{"name":"todo_manage",'
         '"args":{"action":"complete","taskId":"候选中的taskId","expectedVersion":1,"commitIntent":true}}]}。'
         "若判断无须更新，按普通对话容器回复即可；后端只会在本轮再次读取数据库、核对当前用户目标的完整 desiredTarget、版本和明确任务绑定后把该 typed decision 视为终态 no-op。"
     )
@@ -560,9 +524,18 @@ def capability_with_tool_preflight(
         *((current_tool_id,) if current_tool_permitted else ()),
         *(item.tool_id for item in pool),
     )))
+    from agent.engineering_contracts import compact_engineering_enabled
+    if compact_engineering_enabled():
+        # Availability and schema loading are independent. The complete short
+        # index remains visible, while only an actual requirement or an
+        # already-selected step justifies preloading full parameter contracts.
+        selected_ids = set((*capability.required_tools, *preflight.mandatory_capabilities, *extra_tool_ids))
+        if current_tool_permitted:
+            selected_ids.add(current_tool_id)
+        pool_ids = tuple(tool_id for tool_id in pool_ids if tool_id in selected_ids)
     permitted_ids = tuple(
         item.tool_id
-        for item in pool
+        for item in (DEFAULT_TOOL_REGISTRY.all() if compact_engineering_enabled() else pool)
         if not item.permission_key or bool(settings.get(item.permission_key))
     )
     allowed = tuple(dict.fromkeys([
@@ -599,65 +572,92 @@ def reconcile_research_with_tool_preflight(
     preflight: TurnPreflight,
     user_message: str,
 ) -> ResearchDecision:
-    """Keep private/local perception out of the public-web research policy."""
+    """Return the research decision unchanged for a local perception hint.
 
-    if (
-        preflight.perception.required
-        and preflight.perception.target_domain != "none"
-        and not user_explicitly_requests_web_research(user_message)
-    ):
-        return replace(
-            decision,
-            policy="forbidden",
-            reasons=tuple(dict.fromkeys([
-                "local_perception_not_public_research",
-                *decision.reasons,
-            ])),
-            unknown_entities=(),
-            unstable_claims=(),
-            verification_targets=(),
-            primary_source_required=False,
-            source_policy_id=None,
-        )
+    Perception and public research are independent capabilities.  A screen or
+    camera target is a candidate for the model's typed tool selection; it is
+    not evidence that web access was disabled.  Permission settings and an
+    explicit offline instruction remain authoritative in the research planner.
+    ``preflight`` and ``user_message`` stay in the signature for the shared
+    planning interface and for callers that pass the same semantic inputs.
+    """
+
+    del preflight, user_message
     return decision
 
 def tool_preflight_prompt(
     preflight: TurnPreflight,
     capability: CapabilityEnvelope,
+    *,
+    protocol_version: str = "semantic-v3",
 ) -> str:
     current_requirement = (
         preflight.current_state_evidence_requirement
         if isinstance(preflight.current_state_evidence_requirement, Mapping)
         else None
     )
-    current_definition = DEFAULT_TOOL_REGISTRY.get(
+    current_definition = DEFAULT_TOOL_REGISTRY.detail(
         str((current_requirement or {}).get("toolName") or "")
     )
     current_state_tool = (
         {
             "requirement": dict(current_requirement),
-            "toolDefinition": current_definition.to_dict(),
+            "toolDefinition": current_definition,
         }
         if current_requirement is not None and current_definition is not None
         else None
     )
+    from agent.engineering_contracts import compact_engineering_enabled
+    if compact_engineering_enabled():
+        # Routing guesses are not negative evidence or permissions. In
+        # particular, an unresolved short follow-up must not tell the model
+        # that observation is unnecessary or that unloaded tools are forbidden.
+        hints: dict[str, Any] = {}
+        if preflight.candidate_capabilities:
+            hints["candidateTools"] = list(preflight.candidate_capabilities)
+        if preflight.perception.target_domain != "none":
+            hints["perceptionCandidate"] = preflight.perception.to_dict()
+        payload = {
+            "selectionOwner": "model_using_current_request_and_dialogue",
+            "permittedTools": list(capability.allowed_tools),
+            "requiredTools": list(capability.required_tools),
+            "candidateHints": hints,
+            "capabilityIndex": list(DEFAULT_TOOL_REGISTRY.capability_index()),
+            "toolDefinitions": [
+                detail for tool_id in capability.initially_loaded_tool_ids
+                for detail in (DEFAULT_TOOL_REGISTRY.detail(tool_id),)
+                if detail is not None
+            ],
+            "currentStateEvidenceTool": current_state_tool,
+            "toolCallExample": tool_call_example(protocol_version),
+            "capabilityQueryContract": capability_query_contract(),
+        }
+        return (
+            "[统一工具选择前置]\n"
+            + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            + "\n规则：结合本轮原话和对话上下文选择工具。candidateHints 只是预选提示，空值表示未预选；"
+            "toolDefinitions 只表示已加载说明，不限制可选工具。permittedTools 来自设置权限，实际操作仍须符合当前用户授权范围。"
+            "需要未加载工具时可用 capabilityQuery 读取定义，也可提交结构化 calls 由后端展开所选定义后继续。"
+            "requiredTools 和 currentStateEvidenceTool 非空时，先取得对应的新回执。历史画面只证明当时；"
+            "需要当前观察时选择对应感知工具，在 selection 中明确 targetDomain、freshness。"
+            "未明确的目标由完整语境判断，确实无法判断才澄清。工具执行后根据真实回执继续完成本轮交付。"
+        )
     return (
         "[统一工具选择前置]\n"
         + json.dumps(
             {
                 "preflight": preflight.to_dict(),
                 "capabilityEnvelope": capability.to_dict(),
-                "capabilityIndex": [
-                    {"id": item.tool_id, "family": item.family, "summary": item.description}
-                    for item in DEFAULT_TOOL_REGISTRY.all()
-                ],
+                "capabilityIndex": list(DEFAULT_TOOL_REGISTRY.capability_index()),
                 "toolDefinitions": [
-                    definition.to_dict()
+                    detail
                     for tool_id in capability.initially_loaded_tool_ids
-                    for definition in (DEFAULT_TOOL_REGISTRY.get(tool_id),)
-                    if definition is not None
+                    for detail in (DEFAULT_TOOL_REGISTRY.detail(tool_id),)
+                    if detail is not None
                 ],
                 "currentStateEvidenceTool": current_state_tool,
+                "toolCallExample": tool_call_example(protocol_version),
+                "capabilityQueryContract": capability_query_contract(),
             },
             ensure_ascii=False,
             separators=(",", ":"),

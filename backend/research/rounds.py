@@ -29,7 +29,7 @@ def execute_web_research_plan(
     field_coverage: Callable[..., dict[str, Any]],
     write_log: Callable[..., Any],
 ) -> dict[str, Any]:
-    """执行最多三个计划查询，统一来源索引并保留每条失败信息。"""
+    """执行计划中的全部查询；调用数由外层研究预算控制。"""
 
     resolution = resolution or {}
     queries: list[dict[str, Any]] = []
@@ -42,12 +42,11 @@ def execute_web_research_plan(
         if not query:
             continue
         queries.append({**item, "query": query})
-        if len(queries) >= 3:
-            break
     if not queries:
         return {"name": "web_search", "ok": False, "error": "research_plan_has_no_query"}
     successful: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    tool_call_count = 0
     query_index_offset = clamp_int(plan.get("_queryIndexOffset"), 0, 20, 0)
     for index, item in enumerate(queries, 1):
         query = str(item.get("query") or "").strip()
@@ -78,6 +77,7 @@ def execute_web_research_plan(
             value = str(item.get(field) or "").strip()
             if value:
                 search_args[field] = value[:80]
+        tool_call_count += 1
         result = execute_tool(
             "web_search", settings, search_args,
             cognitive_body=cognitive_body, request_id=request_id,
@@ -112,6 +112,7 @@ def execute_web_research_plan(
             "error": "all_planned_searches_failed",
             "queryErrors": errors,
             "researchPlan": plan,
+            "_researchToolCallCount": tool_call_count,
         }
     merged = successful[0]
     for supplemental in successful[1:]:
@@ -120,6 +121,9 @@ def execute_web_research_plan(
     merged["ok"] = True
     merged["researchPlan"] = plan
     merged["queryErrors"] = errors
+    merged["_researchToolCallCount"] = tool_call_count
+    merged['executedLanguageQueries'] = [{'query': item.get('query', ''), 'queryLocale': item.get('locale', '')}
+                                       for item in queries]
     if resolution.get("kind") == "sports" and resolution.get("intent"):
         merged["evidenceStatus"] = field_coverage(
             merged,
@@ -139,7 +143,7 @@ def execute_research_read_round(
     *, cognitive_body: dict[str, Any] | None = None, request_id: str = "",
     execute_tool: Callable[..., dict[str, Any]],
 ) -> tuple[dict[str, Any], list[str], list[dict[str, str]]]:
-    """最多读取两个来源，继承搜索索引并返回实际尝试的 URL。"""
+    """读取所有已批准来源；外层研究预算决定本轮可执行数量。"""
     merged: dict[str, Any] = {}
     read_urls: list[str] = []
     errors: list[dict[str, str]] = []
@@ -153,7 +157,7 @@ def execute_research_read_round(
         for source in existing_sources
         if str(source.get("url") or "").strip()
     }
-    for item in list(read_requests)[:2]:
+    for item in list(read_requests):
         try:
             url = canonicalize_public_url(str(item.get("url") or "").strip())
         except (SafeWebError, ValueError, TypeError):
@@ -164,6 +168,7 @@ def execute_research_read_round(
         original = source_by_url.get(url, {})
         result = execute_tool("read_web_page", settings, {
             "url": url,
+            "searchProvider": str(original.get('searchProvider') or ''),
             "researchQuery": str(
                 original.get("researchQuery")
                 or plan.get("resolvedQuestion")

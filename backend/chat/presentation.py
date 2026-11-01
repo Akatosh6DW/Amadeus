@@ -1,4 +1,8 @@
-"""语音、表情与舞台说明的纯表现契约。"""
+"""语音、表情与舞台说明的纯表现契约。
+
+回复正文是规范事实。任何有损的舞台说明处理都只能发生在语音投影中，
+不能在归一化、持久化或聊天气泡渲染阶段改写正文。
+"""
 from __future__ import annotations
 import re
 from typing import Any
@@ -137,6 +141,41 @@ ROLEPLAY_STAGE_BLOCK_PATTERNS = (
 )
 
 
+# These are intentionally small, high-confidence speech-only fallbacks.  The
+# model-provided ``gesture`` field remains the primary presentation channel;
+# this vocabulary only removes a short action aside when it is safe to lose it
+# from audio.  Technical punctuation and identifiers are rejected separately.
+ROLEPLAY_SPEECH_ACTION_WORDS = frozenset({
+    "笑", "微笑", "轻笑", "偷笑", "苦笑", "冷笑", "叹气", "叹了口气", "轻轻叹了口气",
+    "点头", "摇头", "耸肩", "眨眼", "眯眼", "眯起眼", "闭眼", "闭上眼", "低头", "抬头",
+    "歪头", "偏头", "偏过头", "转头", "轻哼", "哼了一声", "沉默", "脸红", "皱眉",
+    "挑眉", "扬眉", "别开脸", "移开视线", "笑死我了",
+    "笑う", "笑った", "笑み", "微笑む", "ため息", "頷く", "うなずく", "首を振る",
+    "目を閉じる", "目を細める", "顔をそらす", "黙る", "黙った",
+    "smile", "smiles", "smirk", "smirks", "sigh", "sighs", "nod", "nods",
+    "blush", "blushes", "look away", "looks away", "tilt head", "tilts head",
+})
+
+
+# regex-purpose: projection — audio-only stage directions, canonical text is preserved.
+# regex-boundary: candidates are limited to 12 characters before matching.
+ROLEPLAY_SPEECH_ACTION_VERBS = re.compile(
+    r"(?:"
+    r"叹(?:了)?口气|笑(?:了|着|意|容|声)?|微笑|苦笑|冷笑|偷笑|点头|摇头|耸肩|眨眼|"
+    r"眯(?:起)?眼|闭(?:上)?眼|低头|抬头|歪(?:了)?头|偏(?:过)?头|转头|别开(?:脸|视线)|"
+    r"移开视线|轻哼|哼了一声|沉默|脸红|皱眉|挑眉|扬眉|"
+    r"笑(?:う|った)|微笑(?:む|んだ)|ため息|頷く|うなずく|首を振る|目を(?:閉じる|細める)|"
+    r"顔をそらす|黙(?:る|った)|"
+    r"smiles?|smirks?|sighs?|nods?|blush(?:es|ed)?|looks?\s+away|tilts?\s+(?:her\s+)?head"
+    r")",
+    re.IGNORECASE,
+)
+
+
+# regex-purpose: projection — protect technical parentheses from audio cleanup.
+ROLEPLAY_SPEECH_TECHNICAL_CHARS = re.compile(r"[0-9A-Za-z=_/.:;%+\-#\\<>]")
+
+
 def normalize_speech_language(
     value: Any,
     *,
@@ -230,34 +269,76 @@ def resolve_voice_intensity(value: Any, emotion_intensity: float, emotion_delta:
 
 
 def sanitize_roleplay_text(value: Any) -> tuple[str, list[str]]:
-    """Keep spoken dialogue while extracting bracketed Live2D stage directions."""
+    """Return the canonical text without deleting stage directions.
+
+    The name is retained for compatibility with existing normalization and
+    repair callers.  It no longer performs a lossy rewrite: callers that need
+    audio projection must opt into :func:`speech_projection_text` explicitly.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "", []
+    directions: list[str] = []
+    for pattern in ROLEPLAY_STAGE_BLOCK_PATTERNS:
+        directions.extend(
+            str(match.group(1) or "").strip()
+            for match in pattern.finditer(text)
+            if ROLEPLAY_STAGE_DIRECTION_TERMS.search(str(match.group(1) or ""))
+        )
+    return text, directions
+
+
+def _speech_stage_candidate_is_safe(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    """Return whether one bracketed aside is safe to omit from audio."""
+    # regex-purpose: projection — whitespace normalization for audio matching only.
+    candidate = re.sub(r"\s+", "", str(match.group(1) or "").strip())
+    if not candidate or len(candidate) > 12:
+        return False
+    if ROLEPLAY_SPEECH_TECHNICAL_CHARS.search(candidate):
+        return False
+    if candidate in ROLEPLAY_SPEECH_ACTION_WORDS:
+        return True
+    if not ROLEPLAY_SPEECH_ACTION_VERBS.search(candidate):
+        return False
+
+    before = text[: match.start()].rstrip()
+    after = text[match.end():].lstrip()
+    sentence_boundaries = set("。！？!?；;：:\n")
+    before_at_boundary = not before or before[-1] in sentence_boundaries
+    after_at_boundary = not after or after[0] in sentence_boundaries
+    return before_at_boundary or after_at_boundary
+
+
+def speech_projection_text(value: Any) -> tuple[str, list[str]]:
+    """Project text for speech while keeping the source text unchanged.
+
+    Only short, high-confidence action asides are removed.  Parentheses that
+    contain numbers, Latin identifiers, operators, URLs, or technical nouns
+    remain audible, which protects examples such as ``（动作空间为17维）`` and
+    ``（动作识别部分）``.
+    """
     text = str(value or "").strip()
     if not text:
         return "", []
     directions: list[str] = []
 
-    def remove_if_stage(match: re.Match[str]) -> str:
+    def remove_safe_stage(match: re.Match[str]) -> str:
         candidate = str(match.group(1) or "").strip()
-        if ROLEPLAY_STAGE_DIRECTION_TERMS.search(candidate):
+        if _speech_stage_candidate_is_safe(text, match):
             directions.append(candidate)
             return ""
         return match.group(0)
 
     for pattern in ROLEPLAY_STAGE_BLOCK_PATTERNS:
-        text = pattern.sub(remove_if_stage, text)
+        # ``text`` is intentionally rebound after each pattern so the next
+        # callback sees the current sentence boundaries.
+        text = pattern.sub(remove_safe_stage, text)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n[ \t]+", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-
-    quote_pairs = (("\"", "\""), ("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』"))
-    changed = True
-    while changed and len(text) >= 2:
-        changed = False
-        for opening, closing in quote_pairs:
-            if text.startswith(opening) and text.endswith(closing):
-                text = text[len(opening):-len(closing)].strip()
-                changed = True
-                break
     return text, directions
 
 
@@ -296,18 +377,14 @@ def roleplay_visual_hints(directions: list[str]) -> dict[str, Any]:
 
 
 def fallback_spoken_text_ja(reply: str) -> str:
-    text = str(reply or "").strip()
-    if re.search(r"接口|错误|失败|正常回应", text):
-        return "接続に問題があるみたい。ローカルの応答に切り替えるわ。"
-    if re.search(r"难受|焦虑|痛苦|累|陪", text):
-        return "少し落ち着いて。大丈夫、ここにいるから。"
-    if re.search(r"变量|实验|模型|接口|代码|算法", text):
-        return "まず変数を分けて考えましょう。そこから検証できる形に直すの。"
-    if re.search(r"突然|评价|参考|继续", text):
-        return "きゅ、急に何を言ってるのよ。まあ、続けて。聞いてるから。"
-    if re.search(r"称呼|奇怪|调侃", text):
-        return "変な呼び方をしないで。まったく、次は何の実験なの？"
-    return "うん、分かった。続けて。ちゃんと聞いてるから。"
+    """Return no speech when the model omitted spoken Japanese.
+
+    A keyword-selected canned sentence can change the meaning of an otherwise
+    valid reply.  Callers retain ``spokenTextJaMissingFromModel`` as the
+    structured diagnostic and let the frontend present the text-only reply.
+    """
+
+    return ""
 
 
 def model_emotion_label(value: Any) -> str:

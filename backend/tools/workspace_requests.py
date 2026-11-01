@@ -43,7 +43,6 @@ def extract_agent_file_path(text: str) -> str:
         return directory.group(1).strip()
     return ""
 
-
 def workspace_action_text(
     user_message: str,
     reference_ledger: Mapping[str, Any] | None = None,
@@ -84,7 +83,11 @@ class WorkspaceRequests:
         self.is_open_browser = is_open_browser
 
     def is_agent_file_action_query(self, text: str) -> bool:
-        value = re.sub(r"\s+", " ", str(text or "")).strip()
+        # Bound the compatibility classifier.  It is only a legacy hint for
+        # downstream permission/receipt checks; model-selected file calls are
+        # authoritative in the cognitive path.
+        # regex-purpose: projection
+        value = re.sub(r"\s+", " ", str(text or "")[:4096]).strip()
         if (
             self.is_open_browser(value)
             and not re.search(r"文件|文本|目录|文件夹|工作区|[A-Za-z]:\\", value, re.I)

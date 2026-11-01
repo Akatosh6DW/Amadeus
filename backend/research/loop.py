@@ -16,6 +16,12 @@ from agent.research_architecture import (
     ResearchLoopState,
     normalized_query_hash,
 )
+from agent.research_budget import (
+    DEPTHS,
+    research_budget_exhausted,
+    select_research_budget,
+    sync_research_usage,
+)
 from backend.common.text import unique_strings
 from backend.research.current_info import web_research_temporal_contract
 from backend.research.evidence import (
@@ -26,6 +32,7 @@ from backend.research.evidence import (
 from backend.research.planning import (
     fallback_web_research_query,
     merge_research_plan_queries,
+    normalize_research_depth,
     safe_outbound_web_query,
 )
 from backend.research.sources import source_has_readable_evidence
@@ -245,9 +252,8 @@ def _empty_result_recovery_query(
         {},
     )
 
-    # ``execute_web_research_plan`` sends at most three items in one call.  If
-    # the original plan had more, preserve the next query instead of silently
-    # abandoning it.  A different provider alone is deliberately not enough:
+    # Preserve the next query when the outer request budget slices a larger
+    # plan.  A different provider alone is deliberately not enough:
     # this recovery must change the search text or select a truly new planned
     # query, never replay the same text under another engine label.
     for item in (
@@ -502,12 +508,135 @@ def run_research_query_loop(
         if not _query_already_executed(item, executed_hashes, executed_strategies)
     ]
     pending_reads: list[dict[str, Any]] = []
+    persisted_pending = (
+        plan.get("pendingActions")
+        if isinstance(plan.get("pendingActions"), dict)
+        else {}
+    )
+    for item in (
+        persisted_pending.get("readUrls")
+        if isinstance(persisted_pending.get("readUrls"), list)
+        else []
+    ):
+        try:
+            url = canonicalize_public_url(
+                str(item.get("url") if isinstance(item, dict) else item).strip()
+            )
+        except (SafeWebError, ValueError, TypeError):
+            continue
+        if url and url not in attempted_urls:
+            pending_reads.append({"url": url, "reason": "恢复待读来源"})
+    persisted_pending_queries = (
+        persisted_pending.get("queries")
+        if isinstance(persisted_pending.get("queries"), list)
+        else []
+    )
+    pending_query_signatures = {
+        _query_strategy_signature(item)
+        for item in pending_queries
+        if isinstance(item, dict)
+    }
+    for item in persisted_pending_queries:
+        candidate = item if isinstance(item, dict) else {"query": item}
+        query = safe_outbound_web_query(candidate.get("query"), max_length=500)
+        if not query:
+            continue
+        candidate = {**candidate, "query": query}
+        signature = _query_strategy_signature(candidate)
+        if (
+            signature
+            and signature not in pending_query_signatures
+            and not _query_already_executed(candidate, executed_hashes, executed_strategies)
+        ):
+            pending_queries.append(candidate)
+            pending_query_signatures.add(signature)
     review_ms = 0
-    # Search and read are different recovery actions.  Keep the configured
-    # round limit for searches, while reserving one bounded read pass so a
-    # normal search -> read flow is not cut off by the same counter.
-    max_search_rounds = max(1, int(envelope.max_tool_rounds or 3))
-    max_read_rounds = max(1, min(2, max_search_rounds - 1 or 1))
+    # Resource accounting is request-wide and persisted in the active plan.
+    # Older plans may have no snapshot yet; they receive the compatibility
+    # standard tier without inferring depth from the question text.
+    budget_body = cognitive_body if isinstance(cognitive_body, dict) else {}
+
+    def restore_budget_runtime(
+        snapshot: dict[str, Any], now: float,
+    ) -> dict[str, Any]:
+        """Rebuild a process-local clock from a portable elapsed snapshot."""
+
+        restored = dict(snapshot)
+        try:
+            elapsed = max(0.0, float(restored.get("elapsedSeconds") or 0.0))
+        except (TypeError, ValueError):
+            elapsed = 0.0
+        if "elapsedSeconds" in restored:
+            restored["startedAt"] = now - elapsed
+        else:
+            # An old persisted absolute clock cannot be interpreted across
+            # restarts. Retain its call count and start a new time window;
+            # existing live request clocks bypass this restoration path.
+            restored["startedAt"] = now
+        return restored
+
+    def budget_snapshot(state: dict[str, Any], now: float) -> dict[str, Any]:
+        """Serialize only portable request-budget state into the plan."""
+
+        snapshot = dict(state)
+        try:
+            started_at = float(state.get("startedAt"))
+        except (TypeError, ValueError):
+            started_at = now
+        try:
+            previous_elapsed = max(0.0, float(state.get("elapsedSeconds") or 0.0))
+        except (TypeError, ValueError):
+            previous_elapsed = 0.0
+        snapshot["elapsedSeconds"] = max(
+            previous_elapsed,
+            max(0.0, now - started_at),
+        )
+        snapshot.pop("startedAt", None)
+        return snapshot
+
+    budget_now = perf_counter()
+    live_budget = budget_body.get("_researchBudget")
+    if isinstance(live_budget, dict) and "startedAt" not in live_budget:
+        budget_body["_researchBudget"] = restore_budget_runtime(
+            live_budget, budget_now,
+        )
+    persisted_budget = plan.get("_researchBudget")
+    if (
+        not isinstance(budget_body.get("_researchBudget"), dict)
+        and isinstance(persisted_budget, dict)
+    ):
+        budget_body["_researchBudget"] = restore_budget_runtime(
+            persisted_budget, budget_now,
+        )
+    initial_depth_value = (
+        plan.get("researchDepth")
+        or plan.get("research_depth")
+        or "standard"
+    )
+    initial_depth = normalize_research_depth(initial_depth_value)
+    budget_state = select_research_budget(
+        budget_body,
+        {
+            "cognitive": {
+                "research": {
+                    "depth": initial_depth,
+                    "reason": str(plan.get("researchDepthReason") or "")[:500],
+                    "topic": plan.get('researchTopic', 'general'),
+                },
+            },
+            # The helper starts accounting only for research calls. Supplying
+            # this synthetic metadata is the compatibility bridge for the
+            # legacy explicit workflow, which has no native model envelope.
+            "calls": [{"name": "web_search", "args": {"researchDepth": initial_depth}}],
+        },
+        settings,
+        now=budget_now,
+    )
+    if isinstance(budget_state, dict):
+        plan["_researchBudget"] = budget_snapshot(budget_state, budget_now)
+        plan["researchDepth"] = str(
+            budget_state.get("depth") or initial_depth
+        )
     search_rounds = max(0, int(plan.get("_searchRoundCount") or 0))
     read_rounds = max(0, int(plan.get("_readRoundCount") or 0))
     empty_result_recovery_count = max(
@@ -520,14 +649,58 @@ def run_research_query_loop(
         0, int(plan.get("_reviewRecoveryCount") or 0),
     )
     budget_exhausted = False
+    budget_exhausted_reason = ""
+
+    def record_budget_calls(count: int) -> None:
+        """Persist actual web tool attempts without counting loop batches."""
+
+        nonlocal budget_state
+        if not isinstance(budget_state, dict) or count <= 0:
+            return
+        previous = max(0, int(budget_state.get("callsUsed") or 0))
+        # sync_research_usage accepts a cumulative result sequence. Supplying
+        # the previous count plus this batch preserves monotonic accounting
+        # across resumptions while counting failed attempts as real calls.
+        sync_research_usage(
+            budget_body,
+            [{"name": "web_research"} for _ in range(previous + count)],
+        )
+        current = budget_body.get("_researchBudget")
+        if isinstance(current, dict):
+            budget_state = current
+            plan["_researchBudget"] = budget_snapshot(current, perf_counter())
+
+    def remaining_budget_calls() -> int | None:
+        if not isinstance(budget_state, dict):
+            return None
+        try:
+            return max(
+                0,
+                int(budget_state.get("maxCalls") or 0)
+                - int(budget_state.get("callsUsed") or 0),
+            )
+        except (TypeError, ValueError):
+            return 0
+
+    def budget_stop_reason() -> str:
+        if not isinstance(budget_state, dict):
+            return ""
+        return research_budget_exhausted(budget_body, now=perf_counter())
 
     def apply_review(
         retrieval_diagnostics: dict[str, Any],
     ) -> tuple[bool, dict[str, Any]]:
-        """Run one review and queue only its bounded, validated actions."""
+        """Run one review and queue validated actions for the next batch."""
 
         nonlocal evidence, last_review, pending_reads, pending_queries
         nonlocal plan, review_ms, state
+
+        existing_pending_reads = [
+            dict(item) for item in pending_reads if isinstance(item, dict)
+        ]
+        existing_pending_queries = [
+            dict(item) for item in pending_queries if isinstance(item, dict)
+        ]
 
         review_started = perf_counter()
         try:
@@ -584,6 +757,54 @@ def run_research_query_loop(
         plan["resolvedQuestion"] = immutable_resolved_question
         plan["entityFindings"] = list(last_review.get("entityFindings") or [])
         plan["planIssues"] = list(last_review.get("planIssues") or [])
+        raw_review_depth = str(
+            last_review.get("researchDepth")
+            or last_review.get("research_depth")
+            or ""
+        ).strip().lower()
+        current_depth = normalize_research_depth(
+            plan.get("researchDepth") or plan.get("research_depth") or "standard"
+        )
+        if raw_review_depth in DEPTHS:
+            # Reviews can request more work, but cannot silently lower a
+            # tier already selected for this request.
+            selected_depth = max(
+                (current_depth, raw_review_depth),
+                key=DEPTHS.index,
+            )
+            plan["researchDepth"] = selected_depth
+            if selected_depth == raw_review_depth and str(
+                last_review.get("researchDepthReason") or ""
+            ).strip():
+                    # regex-purpose: projection
+                plan["researchDepthReason"] = re.sub(
+                    r"\s+",
+                    " ",
+                    str(last_review.get("researchDepthReason") or ""),
+                ).strip()[:500]
+            budget_state = select_research_budget(
+                budget_body,
+                {
+                    "cognitive": {
+                        "research": {
+                            "depth": selected_depth,
+                            "reason": str(
+                                last_review.get("researchDepthReason") or ""
+                            )[:500],
+                        },
+                    },
+                    "calls": [{
+                        "name": "web_search",
+                        "args": {"researchDepth": selected_depth},
+                    }],
+                },
+                settings,
+                now=perf_counter(),
+            )
+            if isinstance(budget_state, dict):
+                plan["_researchBudget"] = budget_snapshot(
+                    budget_state, perf_counter(),
+                )
         existing_status = (
             evidence.get("evidenceStatus")
             if isinstance(evidence.get("evidenceStatus"), dict)
@@ -615,7 +836,12 @@ def run_research_query_loop(
             )
             return True, status
 
-        pending_reads = []
+        pending_reads = existing_pending_reads
+        queued_read_urls = {
+            str(item.get("url") or "").strip()
+            for item in pending_reads
+            if str(item.get("url") or "").strip()
+        }
         for item in (
             last_review.get("readUrls")
             if isinstance(last_review.get("readUrls"), list)
@@ -627,8 +853,9 @@ def run_research_query_loop(
                 url = canonicalize_public_url(str(item.get("url") or "").strip())
             except (SafeWebError, ValueError, TypeError):
                 continue
-            if url and url not in attempted_urls:
+            if url and url not in attempted_urls and url not in queued_read_urls:
                 pending_reads.append({**item, "url": url})
+                queued_read_urls.add(url)
         combined_plan, additions, _ = merge_research_plan_queries(
             plan,
             [
@@ -642,12 +869,37 @@ def run_research_query_loop(
             ],
         )
         plan = combined_plan
-        pending_queries = [
-            item
-            for item in additions
-            if not _query_already_executed(item, executed_hashes, executed_strategies)
-        ]
-        retrieval_diagnostics["reviewAdditionalQueryCount"] = len(pending_queries)
+        plan_query_signatures = {
+            _query_strategy_signature(item)
+            for item in (
+                plan.get("queries") if isinstance(plan.get("queries"), list) else []
+            )
+            if isinstance(item, dict)
+        }
+        pending_queries = []
+        seen_pending_signatures: set[str] = set()
+        for item in [*existing_pending_queries, *additions]:
+            if not isinstance(item, dict):
+                continue
+            signature = _query_strategy_signature(item)
+            if not signature or signature in seen_pending_signatures:
+                continue
+            # A newly added query beyond the depth capacity is not executable
+            # in this plan. Existing pending items are retained for recovery
+            # even when persisted data predates the capacity field.
+            if item not in existing_pending_queries and signature not in plan_query_signatures:
+                continue
+            if _query_already_executed(item, executed_hashes, executed_strategies):
+                continue
+            seen_pending_signatures.add(signature)
+            pending_queries.append(item)
+        retrieval_diagnostics["reviewAdditionalQueryCount"] = len(
+            [
+                item for item in additions
+                if isinstance(item, dict)
+                and not _query_already_executed(item, executed_hashes, executed_strategies)
+            ]
+        )
         retrieval_diagnostics["reviewReadUrlCount"] = len(pending_reads)
         plan["retrievalDiagnostics"] = retrieval_diagnostics
         evidence["retrievalDiagnostics"] = dict(retrieval_diagnostics)
@@ -677,13 +929,17 @@ def run_research_query_loop(
         return False, status
 
     while pending_reads or pending_queries:
-        if pending_reads and read_rounds >= max_read_rounds:
+        current_budget_stop = budget_stop_reason()
+        if current_budget_stop:
             budget_exhausted = True
-            break
-        if not pending_reads and pending_queries and search_rounds >= max_search_rounds:
-            budget_exhausted = True
+            budget_exhausted_reason = current_budget_stop
             break
         if not pending_reads and not pending_queries:
+            break
+        available_calls = remaining_budget_calls()
+        if available_calls is not None and available_calls <= 0:
+            budget_exhausted = True
+            budget_exhausted_reason = "research_call_budget_exhausted"
             break
         log_event(
             "research_loop_round_started",
@@ -707,20 +963,31 @@ def run_research_query_loop(
         round_kind = ""
         if pending_reads:
             round_kind = "read"
+            selected_reads = (
+                pending_reads
+                if available_calls is None
+                else pending_reads[:available_calls]
+            )
+            pending_reads = pending_reads[len(selected_reads):]
             read_plan = {**plan, "_currentEvidence": evidence}
             round_result, attempted_read_urls, round_errors = rounds.read(
                 settings,
-                pending_reads,
+                selected_reads,
                 read_plan,
                 cognitive_body=cognitive_body, request_id=request_id,
             )
-            pending_reads = []
+            record_budget_calls(len(attempted_read_urls))
             read_rounds += 1
         elif pending_queries:
             round_kind = "search"
-            # rounds.execute_web_research_plan has the same three-query cap;
-            # persist only calls that this loop actually handed to it.
-            attempted_query_items = [dict(item) for item in pending_queries[:3]]
+            selected_queries = (
+                pending_queries
+                if available_calls is None
+                else pending_queries[:available_calls]
+            )
+            pending_queries = pending_queries[len(selected_queries):]
+            # Persist only calls that this loop actually handed to the round.
+            attempted_query_items = [dict(item) for item in selected_queries]
             attempted_queries = [
                 str(item.get("query") or "").strip()
                 for item in attempted_query_items
@@ -736,7 +1003,7 @@ def run_research_query_loop(
             offset = min(query_indexes) if query_indexes else 0
             round_plan = {
                 **plan,
-                "queries": pending_queries,
+                "queries": attempted_query_items,
                 "_queryIndexOffset": offset,
             }
             round_result = rounds.search(
@@ -746,7 +1013,19 @@ def run_research_query_loop(
                 request_id=request_id,
                 cognitive_body=cognitive_body,
             )
-            pending_queries = []
+            round_call_count = round_result.pop(
+                "_researchToolCallCount",
+                len(attempted_query_items),
+            )
+            try:
+                round_call_count = max(0, int(round_call_count))
+            except (TypeError, ValueError):
+                round_call_count = len(attempted_query_items)
+            record_budget_calls(round_call_count)
+            from agent.research_budget import record_query_languages
+            record_query_languages(budget_body, [round_result])
+            if isinstance(budget_state, dict):
+                plan['_researchBudget'] = budget_snapshot(budget_state, perf_counter())
             search_rounds += 1
             for item in attempted_query_items:
                 signature = _query_strategy_signature(item)
@@ -839,13 +1118,23 @@ def run_research_query_loop(
         readable_content_gain = _readable_content_gain(
             before_source_map, after_source_map,
         )
+        current_budget_state = (
+            dict(budget_state) if isinstance(budget_state, dict) else {}
+        )
         evidence_gain = bool(new_source_ids or readable_content_gain)
         retrieval_diagnostics: dict[str, Any] = {
             "action": round_kind,
             "searchRoundCount": search_rounds,
             "readRoundCount": read_rounds,
-            "searchRoundLimit": max_search_rounds,
-            "readRoundLimit": max_read_rounds,
+            # Kept as null compatibility fields; rounds are no longer the
+            # resource ceiling. The actual upper bound is request-wide.
+            "searchRoundLimit": None,
+            "readRoundLimit": None,
+            "researchDepth": current_budget_state.get("depth"),
+            "researchCallCount": current_budget_state.get("callsUsed", 0),
+            "researchCallLimit": current_budget_state.get("maxCalls"),
+            "researchSecondsLimit": current_budget_state.get("maxSeconds"),
+            "budgetExhausted": False,
             "resultSourceCount": len(round_source_map),
             "sourceCountBefore": len(before_source_map),
             "sourceCountAfter": len(after_source_map),
@@ -862,7 +1151,7 @@ def run_research_query_loop(
             "repeatedResult": bool(round_source_map and not new_source_ids and not readable_content_gain),
             "attemptedQueries": [item[:240] for item in attempted_queries],
         }
-        plan["_executedQueryStrategies"] = sorted(executed_strategies)[-64:]
+        plan["_executedQueryStrategies"] = sorted(executed_strategies)
         plan["_searchRoundCount"] = search_rounds
         plan["_readRoundCount"] = read_rounds
         plan["retrievalDiagnostics"] = retrieval_diagnostics
@@ -932,7 +1221,7 @@ def run_research_query_loop(
         if empty_search_round:
             recovery_item = {}
             if (
-                search_rounds < max_search_rounds
+                not budget_stop_reason()
                 and empty_result_recovery_count < 1
             ):
                 recovery_item = _empty_result_recovery_query(
@@ -1006,7 +1295,7 @@ def run_research_query_loop(
         )
         if (
             read_failed_without_progress
-            and search_rounds < max_search_rounds
+            and not budget_stop_reason()
             and review_recovery_count < 1
         ):
             review_recovery_count += 1
@@ -1028,7 +1317,7 @@ def run_research_query_loop(
                     for item in recovery_errors
                     if isinstance(item, dict)
                 ],
-                "remainingSearchRounds": max(0, max_search_rounds - search_rounds),
+                "remainingResearchCalls": remaining_budget_calls(),
                 "attempt": review_recovery_count,
             }
             plan["_reviewRecoveryCount"] = review_recovery_count
@@ -1097,6 +1386,10 @@ def run_research_query_loop(
         if review_finished:
             break
 
+    if isinstance(budget_state, dict):
+        plan["_researchBudget"] = budget_snapshot(
+            budget_state, perf_counter(),
+        )
     pending_actions = {
         "readUrls": [
             str(item.get("url") or "")[:500]
@@ -1116,6 +1409,28 @@ def run_research_query_loop(
             if isinstance(item, dict) and str(item.get("query") or "").strip()
         ],
     }
+    if budget_exhausted:
+        plan["budgetExhausted"] = True
+        current_budget_state = (
+            dict(budget_state) if isinstance(budget_state, dict) else {}
+        )
+        budget_diagnostics = (
+            dict(plan.get("retrievalDiagnostics"))
+            if isinstance(plan.get("retrievalDiagnostics"), dict)
+            else {}
+        )
+        budget_diagnostics.update(
+            {
+                "budgetExhausted": True,
+                "budgetExhaustedReason": budget_exhausted_reason,
+                "researchDepth": current_budget_state.get("depth"),
+                "researchCallCount": current_budget_state.get("callsUsed", 0),
+                "researchCallLimit": current_budget_state.get("maxCalls"),
+                "researchSecondsLimit": current_budget_state.get("maxSeconds"),
+            }
+        )
+        plan["retrievalDiagnostics"] = budget_diagnostics
+        evidence["retrievalDiagnostics"] = dict(budget_diagnostics)
     if any(pending_actions.values()):
         plan["pendingActions"] = pending_actions
         plan["budgetExhausted"] = bool(budget_exhausted)
@@ -1128,6 +1443,9 @@ def run_research_query_loop(
             }
             evidence["retrievalDiagnostics"] = dict(plan["retrievalDiagnostics"])
         evidence["pendingActions"] = pending_actions
+    else:
+        plan.pop("pendingActions", None)
+        evidence.pop("pendingActions", None)
 
     if state.status not in {"completed", "insufficient"}:
         status = (
@@ -1148,7 +1466,8 @@ def run_research_query_loop(
                 else "duplicate_results"
                 if isinstance(plan.get("retrievalDiagnostics"), dict)
                 and plan["retrievalDiagnostics"].get("repeatedResult")
-                else "tool_round_limit"
+                else budget_exhausted_reason
+                or "research_incomplete"
             ),
             active_plan=plan,
             evidence_result=evidence,

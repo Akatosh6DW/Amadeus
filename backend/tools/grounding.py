@@ -83,10 +83,10 @@ def tool_grounding_instruction(results: list[dict[str, Any]]) -> str:
         instructions.append(
             "todo_manage 已经实际修改本地日程/待办，并返回了 actionReceipt。"
             "只有该结果 ok=true 且 actionReceipt.status=accepted 时，才能说已经添加、修改、完成、暂停、恢复、删除或推迟；"
-            "确认时必须依据结果中的 action、task.title、task.dueAt 和 task.remindBeforeMinutes，不能编造未落库的时间或状态。"
+            "确认时必须依据结果中的 action、task.title、task.dueAt、task.remindBeforeMinutes、task.onDue 和 task.deliveryTarget，不能编造未落库的时间、指令或投递位置。"
             "有 timeFacts 时以其 localDate/localClock 明确报出月日和钟点，不能只说‘明天’；"
             "若提到还有多久或能睡多久，必须使用 timeFacts.hoursUntilDue/secondsUntilDue，不能重新心算。"
-            "先核对实际结果与用户意图；若发现日期选错，继续用原授权修正任务，再确认最终结果。"
+            "先核对实际结果与用户意图；若发现日期、完整要求或投递位置与委托不一致，继续用原授权修正任务，再确认最终结果。"
         )
     if "todo_search" in names:
         instructions.append(

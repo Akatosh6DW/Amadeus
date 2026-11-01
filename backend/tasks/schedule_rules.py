@@ -67,6 +67,11 @@ def merge_schedule_tool_requests(
                 item.get("name") == "todo_manage"
                 and policy
                 and (policy.get("action") != "execute" or not policy.get("allowed"))
+                # A current structured model call is already the executable
+                # plan. A stale compatibility ScheduleIntent must not discard
+                # it; execution still applies commitIntent, permissions,
+                # target scope and trust checks.
+                and not isinstance(item.get("args"), Mapping)
             )
         ]
     scheduled_names = {str(item.get("name") or "") for item in scheduled}

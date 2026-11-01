@@ -15,7 +15,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.fingerprints import legacy_persistent_fingerprint
 from agent.task_recurrence import next_occurrence, normalize_recurrence_rule
-from agent.todo_architecture import recent_todo_task_ids
+from agent.todo_architecture import (
+    is_qq_delivery_target,
+    normalize_completion_mode,
+    normalize_delivery_target,
+    recent_todo_task_ids,
+)
+from agent.task_instructions import normalize_instruction_changes, task_instruction_text
 
 
 TODO_SCHEMA_SQL = """
@@ -29,6 +35,8 @@ CREATE TABLE IF NOT EXISTS todo_items (
     due_at TEXT NOT NULL DEFAULT '',
     due_date TEXT NOT NULL DEFAULT '',
     timezone_name TEXT NOT NULL DEFAULT '',
+    delivery_target_json TEXT NOT NULL DEFAULT '{}',
+    completion_mode TEXT NOT NULL DEFAULT 'manual',
     remind_before_minutes INTEGER NOT NULL DEFAULT 0,
     recurrence_rule TEXT NOT NULL DEFAULT '',
     recurrence_anchor_at TEXT NOT NULL DEFAULT '',
@@ -168,23 +176,72 @@ def ensure_todo_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE todo_items ADD COLUMN recurrence_anchor_at TEXT NOT NULL DEFAULT ''"
         )
+    if "delivery_target_json" not in columns:
+        connection.execute(
+            "ALTER TABLE todo_items ADD COLUMN delivery_target_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    if "completion_mode" not in columns:
+        connection.execute(
+            "ALTER TABLE todo_items ADD COLUMN completion_mode TEXT NOT NULL DEFAULT 'manual'"
+        )
+
+
+def _decode_delivery_target(value: Any) -> dict[str, str]:
+    """Read a canonical target while keeping malformed legacy rows local-only."""
+
+    raw: Any = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            raw = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+    try:
+        return normalize_delivery_target(raw)
+    except ValueError:
+        return {}
+
+
+def _encode_delivery_target(value: Any) -> str:
+    return json.dumps(
+        normalize_delivery_target(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _row_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any]:
     if row is None:
         return {}
     value = dict(row)
+    try:
+        completion_mode = normalize_completion_mode(
+            value.get("completion_mode"), default="manual"
+        )
+    except ValueError:
+        # A hand-edited/partially migrated row must remain readable and safe.
+        completion_mode = "manual"
+    if completion_mode == "legacy":
+        # Older intermediate builds used this marker.  Expose the safe
+        # model-facing default without inferring intent from task text.
+        completion_mode = "manual"
     return {
         "taskId": str(value.get("task_id") or ""),
         "title": str(value.get("title") or ""),
         "details": str(value.get("details") or ""),
         "onDue": str(value.get("on_due") or ""),
+        "instructions": task_instruction_text({"details": value.get("details"), "onDue": value.get("on_due")}),
         "status": str(value.get("status") or "pending"),
         "priority": str(value.get("priority") or "normal"),
         "dueAt": str(value.get("due_at") or ""),
         "dueDate": str(value.get("due_date") or ""),
         "allDay": not bool(value.get("due_at")),
         "timezone": str(value.get("timezone_name") or ""),
+        "deliveryTarget": _decode_delivery_target(value.get("delivery_target_json")),
+        "completionMode": completion_mode,
         "remindBeforeMinutes": int(value.get("remind_before_minutes") or 0),
         "recurrenceRule": str(value.get("recurrence_rule") or ""),
         "recurrenceAnchorAt": str(value.get("recurrence_anchor_at") or ""),
@@ -510,6 +567,7 @@ def match_active_todos_to_dialogue(
             "dueDate": str(item.get("dueDate") or ""),
             "allDay": not bool(item.get("dueAt")),
             "timezone": str(item.get("timezone") or ""),
+            "deliveryTarget": normalize_delivery_target(item.get("deliveryTarget", {})),
             "remindBeforeMinutes": int(item.get("remindBeforeMinutes") or 0),
             "recurrenceRule": str(item.get("recurrenceRule") or ""),
             "snoozedUntil": str(item.get("snoozedUntil") or ""),
@@ -712,12 +770,20 @@ def create_todo(
     due_at: str = "",
     due_date: str = "",
     timezone_name: str = "",
+    delivery_target: Mapping[str, Any] | None = None,
+    completion_mode: str = "manual",
     remind_before_minutes: int = 0,
     priority: str = "normal",
     recurrence_rule: str = "",
     source_turn_id: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    instruction_fields = normalize_instruction_changes({}, {"details": details, "onDue": on_due})
+    details, on_due = instruction_fields["details"], instruction_fields["onDue"]
+    normalized_delivery_target = normalize_delivery_target(delivery_target)
+    normalized_completion_mode = normalize_completion_mode(completion_mode, default="manual")
+    if normalized_completion_mode == "legacy":
+        raise ValueError("todo_invalid_completion_mode")
     active_now = now or utc_now()
     timestamp = iso_utc(active_now)
     task_id = f"todo-{uuid.uuid4().hex}"
@@ -735,9 +801,10 @@ def create_todo(
         """
         INSERT INTO todo_items(
             task_id, title, details, on_due, status, priority, due_at, due_date, timezone_name,
+            delivery_target_json, completion_mode,
             remind_before_minutes, recurrence_rule, recurrence_anchor_at, snoozed_until,
             version, source_turn_id, created_at, updated_at, completed_at, deleted_at
-        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', '')
+        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', '')
         """,
         (
             task_id,
@@ -748,6 +815,8 @@ def create_todo(
             stored_due_at,
             stored_due_date,
             timezone_name,
+            _encode_delivery_target(normalized_delivery_target),
+            normalized_completion_mode,
             max(0, int(remind_before_minutes)),
             normalized_recurrence,
             recurrence_anchor,
@@ -783,10 +852,20 @@ def update_todo(
         "dueAt": "due_at",
         "dueDate": "due_date",
         "timezone": "timezone_name",
+        "deliveryTarget": "delivery_target_json",
+        "completionMode": "completion_mode",
         "remindBeforeMinutes": "remind_before_minutes",
         "recurrenceRule": "recurrence_rule",
     }
-    changes = dict(changes)
+    changes = normalize_instruction_changes(current, changes)
+    if "deliveryTarget" in changes:
+        changes["deliveryTarget"] = normalize_delivery_target(changes["deliveryTarget"])
+    if "completionMode" in changes:
+        changes["completionMode"] = normalize_completion_mode(
+            changes["completionMode"], default="manual"
+        )
+        if changes["completionMode"] == "legacy":
+            raise ValueError("todo_invalid_completion_mode")
     if "recurrenceRule" in changes:
         changes["recurrenceRule"] = normalize_recurrence_rule(changes.get("recurrenceRule"))
     if changes.get("dueAt"):
@@ -799,7 +878,10 @@ def update_todo(
         if public_name not in changes:
             continue
         assignments.append(f"{column} = ?")
-        values.append(changes[public_name])
+        value = changes[public_name]
+        if public_name == "deliveryTarget":
+            value = _encode_delivery_target(value)
+        values.append(value)
     if any(name in changes for name in ("recurrenceRule", "dueAt", "dueDate", "timezone")):
         next_rule = changes.get("recurrenceRule", current.get("recurrenceRule"))
         next_due_at = changes.get("dueAt", current.get("dueAt"))
@@ -1012,7 +1094,7 @@ def claim_due_todo_run(
     timestamp = iso_utc(active_now)
     where = [
         "i.status IN ('pending','in_progress')",
-        "i.on_due <> ''",
+        "(i.on_due <> '' OR COALESCE(i.delivery_target_json, '') <> '{}')",
         "(i.due_at = '' OR i.due_at <= ?)",
         "(i.snoozed_until = '' OR i.snoozed_until <= ?)",
     ]
@@ -1028,6 +1110,10 @@ def claim_due_todo_run(
     )
     for row in rows:
         task = _row_dict(row)
+        if not task.get("onDue") and not is_qq_delivery_target(task.get("deliveryTarget")):
+            # An explicit desktop target remains a normal reminder; only QQ
+            # destinations turn an empty onDue into an external run.
+            continue
         try:
             occurrence = _task_occurrence_key(task, active_now)
         except (TypeError, ValueError):
@@ -1317,7 +1403,7 @@ def finish_todo_run(
         current
         and normalized_status == "completed"
         and not normalize_recurrence_rule(current.get("recurrenceRule"))
-        and current.get("onDue")
+        and (current.get("onDue") or is_qq_delivery_target(current.get("deliveryTarget")))
         and current.get("status") in {"pending", "in_progress"}
         and int(current.get("version") or 0) == int(previous["taskVersion"])
     ):
@@ -1874,8 +1960,12 @@ def claim_due_reminder(
     row = None
     for candidate in rows:
         reminder_kind = str(candidate["reminder_kind"] or "")
+        task = read_todo(connection, str(candidate["task_id"] or ""))
+        if reminder_kind != "execution" and task and is_qq_delivery_target(task.get("deliveryTarget")):
+            # External destinations are claimed by the durable run path.  The
+            # local reminder endpoint must not ack them as desktop-delivered.
+            continue
         if reminder_kind in {"due", "snoozed", "all_day"}:
-            task = read_todo(connection, str(candidate["task_id"] or ""))
             if task:
                 try:
                     occurrence = _task_occurrence_key(task, active_now)
@@ -1928,6 +2018,30 @@ def claim_due_reminder(
             "nextTaskSnapshot": payload.get("nextTaskSnapshot") or {},
         })
     return result
+
+
+def _reminder_delivery_completes_task(
+    task: Mapping[str, Any],
+    reminder: sqlite3.Row | Mapping[str, Any],
+) -> bool:
+    """Return whether this successful reminder is itself the task outcome.
+
+    Model-created rows carry an explicit ``completionMode``.  Rows from before
+    that field existed are treated as ``manual`` because their original intent
+    cannot be reconstructed from due time or reminder delivery.  Recurring
+    rows are advanced by the occurrence path above.
+    """
+
+    if not task or str(task.get("status") or "") not in {"pending", "in_progress"}:
+        return False
+    if int(task.get("version") or 0) != int(reminder["task_version"] or 0):
+        return False
+    if normalize_recurrence_rule(task.get("recurrenceRule")):
+        return False
+    if str(task.get("onDue") or "").strip() or is_qq_delivery_target(task.get("deliveryTarget")):
+        return False
+    mode = normalize_completion_mode(task.get("completionMode"), default="manual")
+    return mode == "delivery"
 
 
 # 领取成功不等于送达：收到结果后才更新 delivered，失败则延后重试并限制次数。
@@ -2009,9 +2123,11 @@ def acknowledge_reminder(
     elif delivered and str(row["status"]) == "claimed" and str(row["reminder_kind"]) not in {"upcoming", "execution"}:
         task = read_todo(connection, str(row["task_id"]))
         execution_result = (_run_json(row["payload_json"]).get("execution") or {}).get("result") or {}
-        if (task.get("onDue") and not task.get("recurrenceRule")
-                and task.get("version") == int(row["task_version"])
-                and execution_result.get("scheduledExecutionStatus") == "completed"):
+        if (_reminder_delivery_completes_task(task, row)
+                or ((task.get("onDue") or is_qq_delivery_target(task.get("deliveryTarget")))
+                    and not task.get("recurrenceRule")
+                    and task.get("version") == int(row["task_version"])
+                    and execution_result.get("scheduledExecutionStatus") == "completed")):
             result["task"] = set_todo_status(connection, task["taskId"], "completed",
                                             expected_version=task["version"], now=active_now)
     return result

@@ -9,14 +9,21 @@ files, databases, network state, or the process clock.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 import re
-from typing import Any, Mapping
+import unicodedata
+from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 __all__ = [
     "normalize_time_spec",
+    "ParsedClock",
+    "parse_clock_text",
+    "parse_time_quote",
+    "validate_time_source_evidence",
+    "validate_schedule_time_evidence",
     "resolve_time_spec",
     "schedule_time_facts",
 ]
@@ -24,15 +31,450 @@ __all__ = [
 
 _KINDS = frozenset({
     "next_clock",
+    "next_clock_12h",
     "next_weekday",
     "calendar",
     "after",
     "existing_date",
 })
 _COMMON_FIELDS = frozenset({"kind", "reason"})
+_UNSPECIFIED_MERIDIEM = "unspecified"
 _CLOCK_RE = re.compile(r"^(?P<hour>[0-9]|[01]\d|2[0-3]):(?P<minute>[0-5]\d)(?::(?P<second>[0-5]\d))?$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _OFFSET_RE = re.compile(r"^(?P<sign>[+-])(?P<hour>\d{2})(?::?(?P<minute>\d{2}))$")
+
+# regex-purpose: format; bounded clock syntax, validated numeric ranges below.
+_CLOCK_TEXT_RE = re.compile(
+    r"^(?P<hour>\d{1,2})(?:\s*:\s*(?P<minute>\d{1,2})(?:\s*:\s*(?P<second>\d{1,2}))?)?$",
+    re.I,
+)
+# regex-purpose: format; explicit meridiem suffix, not inferred user intent.
+_AMPM_SUFFIX_RE = re.compile(
+    r"^(?P<clock>\d{1,2}(?:\s*:\s*\d{1,2})?(?:\s*:\s*\d{1,2})?)\s*"
+    r"(?P<meridiem>a\.?m\.?|p\.?m\.?)$",
+    re.I,
+)
+# regex-purpose: format; explicit meridiem prefix, not inferred user intent.
+_AMPM_PREFIX_RE = re.compile(
+    r"^(?P<meridiem>a\.?m\.?|p\.?m\.?)\s*"
+    r"(?P<clock>\d{1,2}(?:\s*:\s*\d{1,2})?(?:\s*:\s*\d{1,2})?)$",
+    re.I,
+)
+# regex-purpose: format; explicit Chinese clock tokens with numeric validation.
+_CHINESE_CLOCK_RE = re.compile(
+    r"^(?:(?P<meridiem>今晚|傍晚|早晨|清晨|凌晨|早上|上午|中午|下午|晚上|晚|夜里)\s*)?"
+    r"(?P<hour>\d{1,2}|[零〇一二两三四五六七八九十百]+)\s*"
+    r"(?:(?P<colon>[:：])\s*(?P<cminute>\d{1,2}|[零〇一二两三四五六七八九十百]+)|"
+    r"(?P<unit>[点时])\s*(?:(?P<half>半)|"
+    r"(?P<quarter>一刻|三刻)|"
+    r"(?P<after>过\s*(?P<after_minute>\d{1,2}|[零〇一二两三四五六七八九十百]+)\s*分?)|"
+    r"(?P<minute>\d{1,2}|[零〇一二两三四五六七八九十百]+)\s*分?)?)?$",
+    re.I,
+)
+_BOUNDARY_LEFT = frozenset(".:")
+_SOURCE_ID_FIELDS = (
+    "sourceMessageId", "source_message_id", "messageId", "message_id",
+    "sourceTurnId", "source_turn_id", "turnId", "turn_id", "id",
+    "sourceId", "source_id", "messageRef", "message_ref",
+)
+_SOURCE_QUOTE_FIELDS = (
+    "quote", "sourceQuote", "source_quote", "sourceSpan", "source_span",
+)
+_SOURCE_CLOCK_FIELDS = (
+    "parsedClock", "parsed_clock", "clock", "timeValue", "time_value",
+    "parsedTime", "parsed_time", "value", "time",
+)
+_SOURCE_ROLE_FIELDS = (
+    "sourceRole", "source_role", "role", "speaker", "sourceSpeaker",
+    "source_speaker",
+)
+_SOURCE_ORIGIN_FIELDS = (
+    "sourceType", "source_type", "origin", "conversationOrigin",
+    "conversation_origin", "contextSource", "context_source",
+)
+_TOOL_SOURCE_ALIASES = frozenset({
+    "tool", "tool_result", "tool_evidence", "toolresult", "toolresults",
+    "web", "web_evidence", "research", "ocr", "visual", "attachment",
+})
+
+
+@dataclass(frozen=True)
+class ParsedClock:
+    """A clock parsed from one complete source quote."""
+
+    clock: str
+    quote: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"clock": self.clock, "quote": self.quote}
+
+
+def _nfkc(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip()
+
+
+def _chinese_number(value: str) -> int | None:
+    digits = {
+        "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3,
+        "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    }
+    text = str(value or "")
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if text == "十":
+        return 10
+    if "十" in text:
+        left, right = text.split("十", 1)
+        tens = digits.get(left, 1) if left else 1
+        ones = digits.get(right, 0) if right else 0
+        if left and left not in digits:
+            return None
+        if right and right not in digits:
+            return None
+        return tens * 10 + ones
+    if all(char in digits for char in text):
+        result = 0
+        for char in text:
+            result = result * 10 + digits[char]
+        return result
+    return None
+
+
+def _format_clock(hour: int, minute: int, second: int = 0) -> str | None:
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59 or not 0 <= second <= 59:
+        return None
+    return f"{hour:02d}:{minute:02d}" + (f":{second:02d}" if second else "")
+
+
+def _parse_numeric_clock(value: str) -> str | None:
+    match = _CLOCK_TEXT_RE.fullmatch(value)
+    if match is None:
+        return None
+    return _format_clock(
+        int(match.group("hour")),
+        int(match.group("minute") or 0),
+        int(match.group("second") or 0),
+    )
+
+
+def parse_clock_text(value: Any) -> str | None:
+    """Parse one complete human clock expression into ``HH:MM[:SS]``.
+
+    The parser intentionally accepts only a complete expression.  It never
+    searches arbitrary prose, so callers must separately prove that a quote
+    is present in an identified source message and is not a token fragment.
+    """
+
+    text = _nfkc(value)
+    if not text:
+        return None
+    aliases = {
+        "正午": "12:00",
+        "中午十二点": "12:00",
+        "午夜": "00:00",
+        "零点": "00:00",
+    }
+    if text in aliases:
+        return aliases[text]
+
+    match = _AMPM_SUFFIX_RE.fullmatch(text) or _AMPM_PREFIX_RE.fullmatch(text)
+    if match is not None:
+        clock = _parse_numeric_clock(_nfkc(match.group("clock")))
+        if clock is None:
+            return None
+        hour = int(clock[:2])
+        suffix = match.group("meridiem").lower().replace(".", "")
+        if hour > 12 or hour == 0:
+            return None
+        if suffix == "am":
+            hour = 0 if hour == 12 else hour
+        else:
+            hour = 12 if hour == 12 else hour + 12
+        second = int(clock[6:8]) if len(clock) > 5 else 0
+        return _format_clock(hour, int(clock[3:5]), second)
+
+    # A bare 24-hour clock is unambiguous, while a bare ``9`` is not a clock
+    # source and is therefore intentionally rejected.
+    bare = _parse_numeric_clock(text)
+    if bare is not None and ":" in text:
+        return bare
+
+    match = _CHINESE_CLOCK_RE.fullmatch(text)
+    if match is None or not match.group("unit"):
+        return None
+    hour = _chinese_number(match.group("hour"))
+    if hour is None:
+        return None
+    if match.group("colon"):
+        minute = _chinese_number(match.group("cminute"))
+    elif match.group("half"):
+        minute = 30
+    elif match.group("quarter"):
+        minute = 15 if match.group("quarter") == "一刻" else 45
+    elif match.group("after"):
+        minute = _chinese_number(match.group("after_minute"))
+    elif match.group("minute"):
+        minute = _chinese_number(match.group("minute"))
+    else:
+        minute = 0
+    if minute is None:
+        return None
+    meridiem = match.group("meridiem") or ""
+    if meridiem in {"今晚", "傍晚", "下午", "晚上", "晚", "夜里", "中午"} and hour < 12:
+        hour += 12
+    elif meridiem in {"凌晨", "早晨", "清晨", "早上", "上午"} and hour == 12:
+        hour = 0
+    return _format_clock(hour, minute)
+
+
+def parse_time_quote(value: Any) -> str | None:
+    """Compatibility alias for the complete-quote clock parser."""
+
+    return parse_clock_text(value)
+
+
+def _first_field(mapping: Mapping[str, Any], fields: Iterable[str]) -> Any:
+    for field in fields:
+        value = mapping.get(field)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _source_id(message: Mapping[str, Any], fallback: Any = None) -> str:
+    value = _first_field(message, _SOURCE_ID_FIELDS)
+    return str(value if value not in (None, "") else fallback or "").strip()[:180]
+
+
+def _source_role(message: Mapping[str, Any]) -> str:
+    value = _first_field(message, _SOURCE_ROLE_FIELDS)
+    role = str(value or "").strip().lower()
+    if role:
+        return role
+    if message.get("user") not in (None, ""):
+        return "user"
+    if message.get("assistant") not in (None, ""):
+        return "assistant"
+    return ""
+
+
+def _source_origin(message: Mapping[str, Any]) -> str:
+    value = _first_field(message, _SOURCE_ORIGIN_FIELDS)
+    return _nfkc(value).casefold().replace("-", "_").replace(" ", "_")
+
+
+def _source_content(message: Mapping[str, Any]) -> str:
+    for key in ("content", "text", "user", "assistant", "message"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, Mapping):
+                    text = item.get("text") or item.get("content") or item.get("value")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text)
+                elif isinstance(item, str) and item.strip():
+                    parts.append(item)
+            if parts:
+                return " ".join(parts)
+    return ""
+
+
+def _source_messages(messages: Any) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if isinstance(messages, Mapping):
+        nested_messages = messages.get("messages") or messages.get("turns")
+        if isinstance(nested_messages, Sequence) and not isinstance(nested_messages, (str, bytes)):
+            messages = nested_messages
+        else:
+            nested_by_id = messages.get("sourceMessages") or messages.get("source_messages")
+            if isinstance(nested_by_id, (Mapping, Sequence)) and not isinstance(nested_by_id, (str, bytes)):
+                messages = nested_by_id
+    if isinstance(messages, Mapping):
+        if any(key in messages for key in ("role", "content", "text", "user", "assistant", "message")):
+            ident = _source_id(messages)
+            return ((ident, messages),) if ident else (("", messages),)
+        result: list[tuple[str, Mapping[str, Any]]] = []
+        for key, value in messages.items():
+            if isinstance(value, Mapping):
+                result.append((_source_id(value, key), value))
+        return tuple(result)
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        result = []
+        for item in messages:
+            if isinstance(item, Mapping):
+                result.append((_source_id(item), item))
+        return tuple(result)
+    return ()
+
+
+def _evidence_mapping(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    for key in (
+        "timeSource", "time_source", "timeEvidence", "time_evidence",
+        "sourceEvidence", "source_evidence",
+    ):
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            return nested
+    nested_source = value.get("source")
+    if isinstance(nested_source, Mapping):
+        merged = dict(value)
+        merged.update({key: nested for key, nested in nested_source.items() if key not in merged})
+        return merged
+    return value
+
+
+def _matching_quote_indexes(source: str, quote: str) -> tuple[int, ...]:
+    source_nfkc = _nfkc(source)
+    quote_nfkc = _nfkc(quote)
+    if not source_nfkc or not quote_nfkc:
+        return ()
+    indexes: list[int] = []
+    start = 0
+    while True:
+        found = source_nfkc.find(quote_nfkc, start)
+        if found < 0:
+            break
+        indexes.append(found)
+        start = found + max(1, len(quote_nfkc))
+    return tuple(indexes)
+
+
+def _quote_is_complete_token(source: str, quote: str, index: int) -> bool:
+    """Return whether ``quote`` is not a suffix of a larger clock token.
+
+    The model supplies the quote; this check only establishes that the quote
+    occurs as a complete source span.  In particular, ``4:30`` in ``24:30``
+    and ``12时`` in ``3.12时`` must not become time evidence merely because
+    their suffixes parse successfully.
+    """
+
+    source_text = _nfkc(source)
+    quote_text = _nfkc(quote)
+    left = source_text[index - 1] if index > 0 else ""
+    end = index + len(quote_text)
+    right = source_text[end] if end < len(source_text) else ""
+    return (
+        left not in _BOUNDARY_LEFT
+        and not left.isdigit()
+        and not right.isdigit()
+    )
+
+
+def validate_time_source_evidence(
+    evidence: Any,
+    messages: Any = (),
+    *,
+    current_message: Any = None,
+) -> dict[str, Any]:
+    """Validate a model-provided clock quote against identified source data.
+
+    This is deliberately a narrow evidence check.  It does not decide whether
+    a phrase means a schedule time and it does not search the whole transcript
+    for a clock.  The caller supplies a source id, quote, and parsed value;
+    prior turns are valid sources when present in ``messages``.
+    """
+
+    raw = _evidence_mapping(evidence)
+    quote_value = _first_field(raw, _SOURCE_QUOTE_FIELDS)
+    quote = _nfkc(quote_value)
+    source_id = str(_first_field(raw, _SOURCE_ID_FIELDS) or "").strip()
+    declared_value = _first_field(raw, _SOURCE_CLOCK_FIELDS)
+    declared_clock = parse_clock_text(declared_value)
+    source_rows = _source_messages(messages)
+    if current_message is not None and isinstance(current_message, Mapping):
+        current_id = _source_id(current_message)
+        if current_id and not any(row_id == current_id for row_id, _row in source_rows):
+            source_rows = (*source_rows, (current_id, current_message))
+
+    result: dict[str, Any] = {
+        "valid": False,
+        "status": "missing_source_evidence",
+        "sourceMessageId": source_id,
+        "quote": quote,
+        "parsedClock": declared_clock or "",
+    }
+    if not quote or not source_id or declared_clock is None:
+        if not quote:
+            result["status"] = "missing_quote"
+        elif not source_id:
+            result["status"] = "missing_source_message"
+        else:
+            result["status"] = "invalid_parsed_clock"
+        return result
+
+    source_message = next(
+        (message for row_id, message in source_rows if row_id == source_id),
+        None,
+    )
+    if source_message is None:
+        result["status"] = "source_message_not_found"
+        return result
+
+    source_role = _source_role(source_message)
+    source_type = _source_origin(source_message)
+    declared_role = _first_field(raw, _SOURCE_ROLE_FIELDS)
+    declared_origin = _first_field(raw, _SOURCE_ORIGIN_FIELDS)
+    result["sourceRole"] = source_role
+    result["sourceType"] = source_type
+    if declared_role not in (None, "") and str(declared_role).strip().lower() != source_role:
+        result["status"] = "source_role_mismatch"
+        return result
+    if declared_origin not in (None, ""):
+        normalized_declared_origin = _nfkc(declared_origin).casefold().replace("-", "_").replace(" ", "_")
+        if source_type and normalized_declared_origin != source_type:
+            result["status"] = "source_type_mismatch"
+            return result
+        source_type = normalized_declared_origin
+        result["sourceType"] = source_type
+    if source_role in {"tool", "function", "developer"} or source_type in _TOOL_SOURCE_ALIASES:
+        result["status"] = "non_conversational_source"
+        return result
+
+    source_text = _source_content(source_message)
+    matching_indexes = _matching_quote_indexes(source_text, quote)
+    if not matching_indexes:
+        result["status"] = "quote_not_in_source"
+        return result
+    if not any(_quote_is_complete_token(source_text, quote, index) for index in matching_indexes):
+        result["status"] = "fragment_of_other_token"
+        return result
+
+    # The quote is retained for provenance diagnostics.  Structured schedule
+    # grounding validates the model's dueAt/timeSpec separately and must not
+    # make execution depend on locally parsing this verbatim fragment.
+    parsed_quote = parse_clock_text(quote)
+    if parsed_quote is None:
+        result["status"] = "quote_not_a_complete_clock"
+        return result
+    if parsed_quote != declared_clock:
+        result["status"] = "value_mismatch"
+        result["quoteParsedClock"] = parsed_quote
+        return result
+    result["quoteParsedClock"] = parsed_quote
+    result["valid"] = True
+    result["status"] = "accepted"
+    return result
+
+
+def validate_schedule_time_evidence(
+    evidence: Any,
+    messages: Any = (),
+    *,
+    current_message: Any = None,
+) -> dict[str, Any]:
+    """Compatibility name used by schedule callers."""
+
+    return validate_time_source_evidence(
+        evidence,
+        messages,
+        current_message=current_message,
+    )
 
 
 def _raise(code: str) -> None:
@@ -66,6 +508,26 @@ def _clock(value: Any) -> str:
     if match.group("second") is not None:
         normalized += f":{match.group('second')}"
     return normalized
+
+
+def _meridiem(value: Any) -> str:
+    """Validate the explicit marker for an unqualified 12-hour clock.
+
+    Explicit morning/evening wording is already represented by the canonical
+    24-hour ``clock`` value.  ``unspecified`` is reserved for a bare clock such
+    as ``八点四十`` whose AM/PM meaning must be selected against the frozen
+    anchor rather than guessed from prose.
+    """
+
+    if not isinstance(value, str) or value.strip().lower() != _UNSPECIFIED_MERIDIEM:
+        _raise("todo_time_invalid_meridiem")
+    return _UNSPECIFIED_MERIDIEM
+
+
+def _validate_unspecified_clock(clock: str) -> None:
+    hour = int(clock[:2])
+    if not 1 <= hour <= 12:
+        _raise("todo_time_12h_clock_invalid")
 
 
 def _weekday(value: Any) -> int:
@@ -106,7 +568,7 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
 
     ``None`` and an empty mapping mean that the command intentionally carries
     no clock specification and normalize to ``{}``.  Every non-empty mapping
-    must use one of the five known kinds and only fields allowed by that kind.
+    must use one of the six known kinds and only fields allowed by that kind.
     The returned mapping is a fresh plain dictionary suitable for logging and
     for passing to :func:`resolve_time_spec`.
     """
@@ -119,7 +581,7 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
         return {}
 
     unknown = set(value) - {
-        "kind", "clock", "weekday", "date", "dayOffset", "seconds", "reason"
+        "kind", "clock", "meridiem", "weekday", "date", "dayOffset", "seconds", "reason"
     }
     if unknown:
         _raise("todo_time_unknown_field")
@@ -132,7 +594,8 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
         _raise("todo_time_invalid_kind")
 
     fields_by_kind = {
-        "next_clock": _COMMON_FIELDS | {"clock"},
+        "next_clock": _COMMON_FIELDS | {"clock", "meridiem"},
+        "next_clock_12h": _COMMON_FIELDS | {"clock", "meridiem"},
         "next_weekday": _COMMON_FIELDS | {"weekday", "clock"},
         "calendar": _COMMON_FIELDS | {"clock", "date", "dayOffset"},
         "after": _COMMON_FIELDS | {"seconds"},
@@ -150,6 +613,14 @@ def normalize_time_spec(value: Any) -> dict[str, Any]:
         if "clock" not in value or _blank_optional(value["clock"]):
             _raise("todo_time_clock_required")
         normalized["clock"] = _clock(value["clock"])
+        if kind == "next_clock_12h":
+            normalized["meridiem"] = _meridiem(
+                value.get("meridiem", _UNSPECIFIED_MERIDIEM)
+            )
+            _validate_unspecified_clock(normalized["clock"])
+        elif "meridiem" in value and not _blank_optional(value["meridiem"]):
+            normalized["meridiem"] = _meridiem(value["meridiem"])
+            _validate_unspecified_clock(normalized["clock"])
 
     if kind == "next_weekday":
         if "weekday" not in value or _blank_optional(value["weekday"]):
@@ -284,11 +755,25 @@ def _parse_datetime(value: Any, *, error: str) -> datetime:
     return parsed
 
 
-def _parse_existing_due_at(existing: Mapping[str, Any]) -> datetime:
-    value = _mapping_value(existing, "dueAt", "due_at")
-    if value in (None, ""):
-        _raise("todo_existing_due_at_required")
-    return _parse_datetime(value, error="todo_existing_due_at_invalid")
+def _parse_existing_local_date(existing: Mapping[str, Any], *, zone: tzinfo) -> date:
+    """Read the date that an ``existing_date`` update must preserve.
+
+    Timed tasks carry the date in ``dueAt`` and all-day tasks carry it in
+    ``dueDate``.  Both are authoritative for this mode; falling back to the
+    frozen anchor would silently turn an update into a new next-occurrence
+    calculation.
+    """
+
+    due_at = _mapping_value(existing, "dueAt", "due_at")
+    if due_at not in (None, ""):
+        return _parse_datetime(due_at, error="todo_existing_due_at_invalid").astimezone(zone).date()
+    due_date = _mapping_value(existing, "dueDate", "due_date")
+    if due_date not in (None, ""):
+        try:
+            return date.fromisoformat(_calendar_date(due_date))
+        except ValueError:
+            _raise("todo_existing_due_date_invalid")
+    _raise("todo_existing_date_required")
 
 
 def _clock_time(clock: str) -> time:
@@ -299,6 +784,31 @@ def _clock_time(clock: str) -> time:
         int(match.group("minute")),
         int(match.group("second") or 0),
     )
+
+
+def _resolve_unspecified_12h_clock(
+    clock: str,
+    *,
+    local_anchor: datetime,
+    anchor_utc: datetime,
+    zone: tzinfo,
+) -> str:
+    """Choose the next 08:xx/20:xx occurrence without reading user prose."""
+
+    base_time = _clock_time(clock)
+    hours = (0, 12) if base_time.hour == 12 else (base_time.hour, base_time.hour + 12)
+    candidates: list[datetime] = []
+    for day_offset in (0, 1):
+        target_date = local_anchor.date() + timedelta(days=day_offset)
+        for hour in hours:
+            candidate = _localize(
+                datetime.combine(target_date, base_time.replace(hour=hour)), zone
+            )
+            if candidate.astimezone(timezone.utc) > anchor_utc:
+                candidates.append(candidate)
+    if not candidates:
+        _raise("todo_time_candidate_unavailable")
+    return _utc_iso(min(candidates, key=lambda value: value.astimezone(timezone.utc)))
 
 
 def _localize(naive: datetime, zone: tzinfo) -> datetime:
@@ -363,7 +873,7 @@ def resolve_time_spec(
     if normalized["kind"] == "existing_date":
         if existing is None:
             _raise("todo_time_existing_task_required")
-        target_date = _parse_existing_due_at(existing).astimezone(zone).date()
+        target_date = _parse_existing_local_date(existing, zone=zone)
     elif normalized["kind"] == "next_weekday":
         days_ahead = (normalized["weekday"] - local_anchor.isoweekday()) % 7
         target_date = local_anchor.date() + timedelta(days=days_ahead)
@@ -374,6 +884,14 @@ def resolve_time_spec(
             target_date = local_anchor.date() + timedelta(days=normalized["dayOffset"])
     else:
         target_date = local_anchor.date()
+
+    if normalized["kind"] == "next_clock_12h" or normalized.get("meridiem") == _UNSPECIFIED_MERIDIEM:
+        return _resolve_unspecified_12h_clock(
+            normalized["clock"],
+            local_anchor=local_anchor,
+            anchor_utc=anchor_utc,
+            zone=zone,
+        )
 
     local_naive = datetime.combine(target_date, _clock_time(normalized["clock"]))
     candidate = _localize(local_naive, zone)

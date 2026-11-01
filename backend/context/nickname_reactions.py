@@ -182,7 +182,7 @@ class NicknameReactions:
             f"- 同一项的日语必须逐字使用：{json.dumps(reaction['spokenTextJa'], ensure_ascii=False)}",
             delivery_rule,
             "- 若用户同时要求分析、修改、打开、查找或做其他事情，从第二个语义单元开始正常完成正题；外号反应不能替代任务或动作回执。",
-            "- 同一段后续语义单元保持第一句的情绪、表情方向、voiceStyle 与 voiceTone；内容可以回到正题，但不能突然切成平静或另一种情绪。",
+            "- 从第二个语义单元开始，emotion、表情方向、voiceStyle 与 voiceTone 由后续内容和当前任务自行决定；不要为了延续外号反应机械增加戏剧化语气或重复口头禅。",
             tone_rule,
         ])
 

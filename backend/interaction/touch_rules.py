@@ -13,7 +13,7 @@ from backend.common.text import unique_strings
 from backend.common.values import clamp_float, clamp_int
 from backend.runtime.requests import RequestValidationError
 from backend.interaction.touch_catalog import (
-    TOUCH_ZONE_LABELS, PARTNER_STAGES, CHEST_SCOLD_CN_RE, CHEST_SCOLD_JA_RE,
+    TOUCH_ZONE_LABELS, PARTNER_STAGES,
     CHEST_ORIGINAL_INSPIRED_MOTIFS, TOUCH_RESPONSE_DIRECTIVES, TOUCH_SOCIAL_LENSES,
     TOUCH_SENTENCE_FORMS, TOUCH_PHASE_GUIDANCE,
 )
@@ -99,15 +99,12 @@ def touch_response_directive(event: dict[str, Any]) -> dict[str, Any]:
         motif_key, motif_instruction = CHEST_ORIGINAL_INSPIRED_MOTIFS[digest[3] % len(CHEST_ORIGINAL_INSPIRED_MOTIFS)]
         stage = str(event.get("relationshipStage") or "close_companion")
         directive.update({
-            "requiredScoldTerms": {
-                "reply": ["变态", "色狼"],
-                "spokenTextJa": ["変態", "スケベ"],
-            },
             "originalInspiredMotif": f"{motif_key}:{motif_instruction}",
             "relationshipGuidance": (
-                "关系已亲密：仍必须叫变态或色狼并要求停止突然触摸，但以害羞、抱怨和回避视线为主，不表现真正敌意。"
+                "关系已亲密：明确要求停止突然触摸，但以害羞、抱怨和回避视线为主，不表现真正敌意；"
+                "措辞由模型结合本轮角度自然决定。"
                 if stage in PARTNER_STAGES else
-                "关系尚未进入伴侣阶段：明显慌乱脸红并生气制止，变态或色狼称呼必须说出口。"
+                "关系尚未进入伴侣阶段：明显慌乱脸红并生气制止，使用自然的越界边界措辞。"
             ),
         })
         if stage == "close_companion":
@@ -119,6 +116,16 @@ def touch_response_directive(event: dict[str, Any]) -> dict[str, Any]:
                     "动作必须 recoil，形成恼羞成怒，而不是害羞微笑。"
                 ),
             })
+        # The legacy catalog contains example scold words.  Keep the catalog
+        # intact for local legacy variants, but remove those examples from the
+        # model-facing directive so they cannot become a lexical output gate.
+        for field in (
+            "primaryFocus", "socialLens", "sentenceForm", "phaseGuidance",
+            "noveltyRequirement", "originalInspiredMotif", "relationshipGuidance",
+        ):
+            directive[field] = str(directive.get(field) or "").replace(
+                "变态或色狼", "越界称呼",
+            ).replace("变态", "越界称呼").replace("色狼", "越界称呼")
     if event.get("aggregatedBurst"):
         directive["aggregateGuidance"] = (
             "这是停止点击后合并的一整段触摸。综合 burstZoneCounts 与 sequence 的整体模式回应一次；"
@@ -234,7 +241,8 @@ def touch_event_prompt(event: dict[str, Any]) -> str:
     if event.get("includesChest") or event.get("zone") == "chest":
         low_stage = str(event.get("relationshipStage") or "close_companion") == "close_companion"
         lines.append(
-            "本事件的硬性反应合同：reply 必须自然包含“变态”或“色狼”，spokenTextJa 必须对应包含“変態”或“スケベ”；"
+            "本事件的硬性反应合同：reply 和 spokenTextJa 必须自然表达越界边界并回应当前触摸，"
+            "具体措辞由模型结合关系与 responseDirective 决定，不要求固定称呼；"
             + (
                 "当前低好感阶段 emotion 必须输出 annoyed，gesture 必须输出 recoil，blushIntensity 至少 0.68；"
                 "用脸红、语塞和偏慌乱的声音表达害羞，但脸部基础表情不能改成 shy/flustered。"
@@ -339,12 +347,6 @@ def chest_touch_contract_issues(result: dict[str, Any], event: dict[str, Any]) -
     if not (event.get("includesChest") or str(event.get("zone") or "") == "chest"):
         return []
     issues: list[str] = []
-    reply = str(result.get("reply") or "")
-    spoken = str(result.get("spokenTextJa") or "")
-    if not CHEST_SCOLD_CN_RE.search(reply):
-        issues.append("中文没有自然说出“变态”或“色狼”")
-    if not CHEST_SCOLD_JA_RE.search(spoken):
-        issues.append("日语没有对应说出“変態”或“スケベ”")
     stage = str(event.get("relationshipStage") or "close_companion")
     emotion = str(result.get("emotion") or "")
     gesture = str(result.get("gesture") or "")

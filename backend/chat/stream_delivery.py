@@ -6,7 +6,9 @@ HTTP 入口只提供 NDJSON 通道。请求去重/取消缓存仍由 ``RequestRu
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
+import json
 import threading
 import time
 import urllib.error
@@ -16,11 +18,271 @@ from typing import Any, Mapping, Protocol
 from agent.cognitive_brain import CognitiveProtocolError
 from agent.context_compatibility import ContextCompatibilityError
 from agent.persona_context import PersonaContextSnapshot
+from backend.chat.delivery import DeliveryError, require_delivery
 from backend.chat.errors import GroundingGateError
 from backend.chat.fast_candidate import FastCandidateFinalizer
 from backend.chat.fast_stream import FastStreamContext, FastStreamRunner, FastStreamServices
 from backend.providers.errors import UpstreamProtocolError
 from backend.runtime.requests import RequestValidationError
+
+
+_STREAM_RECEIPT_STATES = frozenset({"draft", "sending", "sent", "unknown", "failed", "rejected"})
+_STREAM_QUERY_TOOLS = frozenset({
+    "qq_status",
+    "qq_activity",
+    "qq_history",
+    "qq_identity",
+})
+_STREAM_SEND_ACTIONS = frozenset({"delegate", "send", "approve"})
+_STREAM_PREFLIGHT_ERRORS = frozenset({
+    "invalid_target_type",
+    "qq_request_id_required",
+    "invalid_qq_attachment_ids",
+    "qq_attachments_only_draft_send",
+    "invalid_qq_image_ids",
+    "qq_account_required",
+    "qq_account_changed",
+    "qq_attachment_import_failed",
+    "qq_attachment_not_found",
+    "invalid_imported_qq_image_ids",
+    "qq_image_selection_limit",
+    "qq_draft_required",
+})
+_STREAM_RECEIPT_FIELDS = (
+    "toolCallId",
+    "targetType",
+    "targetId",
+    "account",
+    "messageId",
+    "draftId",
+)
+
+
+def _stream_safe_token(value: Any, *, limit: int = 100) -> str:
+    text = str(value or "").strip()
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. :"
+    return text if text and len(text) <= limit and all(char in allowed for char in text) else ""
+
+
+def _stream_safe_id(value: Any, *, limit: int = 180) -> str:
+    text = str(value or "").strip()
+    return text if text and len(text) <= limit and text.isascii() else ""
+
+
+def _stream_signature_args(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Recover host-bound action arguments from the signed request envelope."""
+
+    signature = value.get("_cognitiveRequestSignature")
+    if isinstance(signature, Mapping):
+        args = signature.get("args")
+        return args if isinstance(args, Mapping) else {}
+    if not isinstance(signature, str):
+        return {}
+    try:
+        parsed = json.loads(signature)
+    except (TypeError, ValueError):
+        return {}
+    args = parsed.get("args") if isinstance(parsed, Mapping) else None
+    return args if isinstance(args, Mapping) else {}
+
+
+def _stream_tool_results(body: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Read host tool results left on this mutable turn body.
+
+    The failure envelope must not copy model prose or QQ message content.  It
+    only reads the same bounded execution result locations used by recovery.
+    """
+
+    results: list[Mapping[str, Any]] = []
+    evidence = body.get("_cognitiveEvidence")
+    if isinstance(evidence, Mapping):
+        for item in evidence.values():
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("historical"):
+                continue
+            receipt = item.get("receipt")
+            if isinstance(receipt, Mapping):
+                results.append(receipt)
+            elif item.get("sourceType") == "tool" and (
+                item.get("name") or item.get("deliveryState") or item.get("actionReceipt")
+            ):
+                results.append(item)
+    for key in ("_rescueToolResults", "_toolResults", "toolResults"):
+        value = body.get(key)
+        if isinstance(value, list):
+            results.extend(item for item in value if isinstance(item, Mapping))
+    return results
+
+
+def _stream_receipt_outcome(
+    *,
+    operation: str,
+    ok: bool | None,
+    delivery_state: str,
+    message_id: str,
+    sent: bool | None,
+) -> str:
+    if operation == "query":
+        return "completed" if ok is True else "failed" if ok is False else "unknown"
+    if operation == "draft":
+        return "draft" if delivery_state == "draft" or ok is True else "failed" if ok is False else "unknown"
+    if operation == "send":
+        # QQ's authoritative success contract is state=sent plus a platform
+        # message id.  A tool name, prose field, or bare sent flag is not
+        # sufficient evidence for a sent message.
+        if delivery_state == "sent" and message_id:
+            return "sent"
+        if delivery_state in {"sending", "unknown"} or sent is True:
+            return "unknown"
+        if delivery_state in {"failed", "rejected"} or ok is False:
+            return "failed"
+        return "unknown"
+    return "completed" if ok is True else "failed" if ok is False else "unknown"
+
+
+def _project_stream_tool_receipt(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    action_receipt = result.get("actionReceipt")
+    merged: dict[str, Any] = dict(result)
+    if isinstance(action_receipt, Mapping):
+        merged.update(action_receipt)
+    tool = _stream_safe_token(merged.get("name") or merged.get("tool"))
+    if not tool:
+        return None
+    signature_args = _stream_signature_args(merged)
+    ok_value = merged.get("ok")
+    ok = ok_value if isinstance(ok_value, bool) else None
+    delivery_state = str(merged.get("deliveryState") or "").strip().lower()
+    if delivery_state not in _STREAM_RECEIPT_STATES:
+        delivery_state = ""
+    message_id = _stream_safe_id(merged.get("messageId"))
+    draft_id = _stream_safe_id(merged.get("draftId"))
+    sent_value = merged.get("sent")
+    sent = sent_value if isinstance(sent_value, bool) else None
+    action = _stream_safe_token(
+        merged.get("action") or signature_args.get("action"), limit=40,
+    ).lower()
+    if tool in _STREAM_QUERY_TOOLS:
+        operation = "query"
+    elif delivery_state or message_id or draft_id or sent is not None:
+        operation = "draft" if delivery_state == "draft" else "send"
+    elif tool == "qq_manage" and action == "draft":
+        operation = "draft"
+    elif tool == "qq_manage" and action in _STREAM_SEND_ACTIONS:
+        operation = "send"
+    elif tool == "qq_manage":
+        operation = "action"
+    else:
+        operation = "tool"
+    outcome = _stream_receipt_outcome(
+        operation=operation,
+        ok=ok,
+        delivery_state=delivery_state,
+        message_id=message_id,
+        sent=sent,
+    )
+    projected: dict[str, Any] = {
+        "tool": tool,
+        "operation": operation,
+        "outcome": outcome,
+    }
+    if ok is not None:
+        projected["ok"] = ok
+    if action:
+        projected["action"] = action
+    if delivery_state:
+        projected["deliveryState"] = delivery_state
+    if sent is not None:
+        projected["sent"] = sent
+    if message_id:
+        projected["messageId"] = message_id
+    if draft_id:
+        projected["draftId"] = draft_id
+    error_code = _stream_safe_token(
+        merged.get("errorCode") or merged.get("error"), limit=80,
+    ).lower()
+    if not error_code:
+        envelope = merged.get("_toolResultEnvelope")
+        envelope_error = envelope.get("error") if isinstance(envelope, Mapping) else None
+        if isinstance(envelope_error, Mapping):
+            error_code = _stream_safe_token(
+                envelope_error.get("code"), limit=80,
+            ).lower()
+    if error_code:
+        projected["errorCode"] = error_code
+    if (
+        tool == "qq_manage"
+        and operation == "send"
+        and ok is False
+        and not delivery_state
+        and not message_id
+        and not draft_id
+        and sent is not True
+        and error_code in _STREAM_PREFLIGHT_ERRORS
+    ):
+        # This records a rejected argument before any gateway delivery state
+        # exists.  The browser may fold it only when a later receipt confirms
+        # a send to this same target; an actual failed/unknown send remains
+        # visible.
+        projected["preflightFailure"] = True
+    for key in _STREAM_RECEIPT_FIELDS:
+        if key in projected:
+            continue
+        raw_value = merged.get(key)
+        if key == "targetType" and not raw_value:
+            raw_value = signature_args.get("targetType")
+        if key == "targetId" and not raw_value:
+            raw_value = signature_args.get("targetId") or signature_args.get("target")
+        safe = _stream_safe_id(raw_value) if key != "targetType" else _stream_safe_token(raw_value, limit=30).lower()
+        if safe:
+            projected[key] = safe
+    return projected
+
+
+def project_stream_tool_receipts(
+    body: Mapping[str, Any], completed_tools: list[str] | tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Project bounded host receipts for a terminal stream failure.
+
+    ``completed_tools`` comes from the durable host receipt index.  It may
+    recover a read-only QQ query after the mutable evidence was compacted, but
+    it is deliberately never enough to claim that ``qq_manage`` sent a
+    message; that requires the explicit delivery state and message id above.
+    """
+
+    projected: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for result in _stream_tool_results(body):
+        receipt = _project_stream_tool_receipt(result)
+        if receipt is None:
+            continue
+        identity = (
+            str(receipt.get("tool") or ""),
+            str(receipt.get("operation") or ""),
+            str(receipt.get("outcome") or ""),
+            str(receipt.get("messageId") or receipt.get("draftId") or ""),
+            str(receipt.get("targetId") or ""),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        projected.append(receipt)
+    for raw_tool in completed_tools:
+        tool = _stream_safe_token(raw_tool)
+        if tool not in _STREAM_QUERY_TOOLS:
+            continue
+        receipt = {
+            "tool": tool,
+            "operation": "query",
+            "outcome": "completed",
+            "ok": True,
+            "receiptAuthority": "host_receipt_index",
+        }
+        identity = (tool, "query", "completed", "", "")
+        if identity not in seen:
+            seen.add(identity)
+            projected.append(receipt)
+    return projected[:32]
 
 
 class NdjsonResponse(Protocol):
@@ -49,6 +311,7 @@ class RequestPort(Protocol):
 class TurnPipelinePort(Protocol):
     """上下文准备、路由与完整生成链路。"""
 
+    def conversation_turn_scope(self, body: dict[str, Any], request_id: str) -> Any: ...
     def begin_persona_skill_record(self, body: dict[str, Any]) -> Any: ...
     def load_settings(self) -> dict[str, Any]: ...
     def streaming_user_message(
@@ -111,16 +374,31 @@ class StreamProtocolSession:
         *,
         turn_id: str,
         schema_version: int = 1,
+        receipt_body: Mapping[str, Any] | None = None,
     ) -> None:
         self.response = response
         self.request_id = request_id
         self.turn_id = turn_id
         self.schema_version = schema_version
+        self.receipt_body = receipt_body
         self.header_payload: dict[str, Any] = {}
         self.candidate_utterances: list[dict[str, Any]] = []
         self.delivered_answer_utterances = 0
 
     def emit(self, event_type: str, sequence: int, payload: dict[str, Any]) -> bool:
+        if event_type == "turn_trailer" and self.receipt_body is not None:
+            final_result = payload.get("finalResult")
+            projected = project_stream_tool_receipts(self.receipt_body)
+            if isinstance(final_result, Mapping) and projected:
+                # Keep this UI projection bounded and receipt-only. The cached
+                # request result remains the pipeline's canonical result; the
+                # stream envelope carries enough structured evidence for the
+                # client to suppress a pure QQ-send acknowledgement safely.
+                payload = dict(payload)
+                payload["finalResult"] = {
+                    **dict(final_result),
+                    "deliveryReceipts": projected,
+                }
         return self.response.send_ndjson_event({
             "type": event_type,
             "requestId": self.request_id,
@@ -194,6 +472,7 @@ class RecoveryCoordinator:
             else None
         )
         if controlled_action_result is not None:
+            controlled_action_result = require_delivery(controlled_action_result, settings=execution.settings, logger=self.runtime.write_log, request_id=request_id)
             self.requests.finish(request_id, controlled_action_result)
             sequence = session.recovery_sequence()
             if not session.header_payload:
@@ -228,13 +507,16 @@ class RecoveryCoordinator:
                 route_name=execution.route_name,
                 failure=error,
                 started_at=execution.started,
+                persona_snapshot=execution.fast_persona_snapshot,
             )
             if session.delivered_answer_utterances == 0
+            and not (isinstance(error, DeliveryError) and error.code == "leak_blocked")
             and self.recovery.pipeline_failure_allows_model_rescue(error)
             and not self.requests.cancelled(request_id)
             else None
         )
         if context_recovery_result is not None:
+            context_recovery_result = require_delivery(context_recovery_result, settings=execution.settings, logger=self.runtime.write_log, request_id=request_id)
             self.requests.finish(request_id, context_recovery_result)
             sequence = session.recovery_sequence()
             if not session.header_payload:
@@ -269,13 +551,16 @@ class RecoveryCoordinator:
                 request_id=request_id,
                 route_name=execution.route_name,
                 failure=error,
+                persona_snapshot=execution.fast_persona_snapshot,
             )
             if session.delivered_answer_utterances == 0
+            and not (isinstance(error, DeliveryError) and error.code == "leak_blocked")
             and self.recovery.pipeline_failure_allows_model_rescue(error)
             and not self.requests.cancelled(request_id)
             else None
         )
         if model_rescue_result is not None:
+            model_rescue_result = require_delivery(model_rescue_result, settings=execution.settings, logger=self.runtime.write_log, request_id=request_id)
             self.requests.finish(request_id, model_rescue_result)
             sequence = session.recovery_sequence()
             if not session.header_payload:
@@ -306,6 +591,7 @@ class RecoveryCoordinator:
         )
         if (
             self.runtime.backend_single_turn_recovery_enabled()
+            and not (isinstance(error, DeliveryError) and error.code == "leak_blocked")
             and (isinstance(error, UpstreamProtocolError) or recoverable_fast_http_error)
             and session.delivered_answer_utterances == 0
             and not body.get("_backendSingleTurnRecoveryAttempted")
@@ -340,6 +626,7 @@ class RecoveryCoordinator:
                         (self.runtime.perf_counter() - recovery_started) * 1000
                     ),
                 })
+                recovered_result = require_delivery(recovered_result, settings=execution.settings, logger=self.runtime.write_log, request_id=request_id)
                 self.requests.finish(request_id, recovered_result)
                 sequence = session.recovery_sequence()
                 if not session.header_payload:
@@ -402,6 +689,9 @@ class RecoveryCoordinator:
             if isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
             else str(error)[:500]
         )
+        completed_tools = self.pipeline.completed_tools_for_request(body)
+        if not isinstance(completed_tools, (list, tuple)):
+            completed_tools = []
         session.emit("turn_abort", sequence, {
             "reason": error_type,
             "errorType": error_type,
@@ -412,7 +702,8 @@ class RecoveryCoordinator:
             ),
             "stage": error_stage,
             "connectionFailure": connection_failure,
-            "completedTools": self.pipeline.completed_tools_for_request(body),
+            "completedTools": list(completed_tools),
+            "completedToolReceipts": project_stream_tool_receipts(body, completed_tools),
             "message": error_message,
             "discardPendingUtterances": session.delivered_answer_utterances == 0,
             "stopAudio": False,
@@ -480,6 +771,7 @@ class StreamChatDelivery:
             response,
             request_id,
             turn_id=f"{request_id or self.runtime.uuid_hex()}:turn",
+            receipt_body=body,
         )
         if claim == "cached" and isinstance(claim_value, dict):
             session.emit_header(0, {
@@ -523,6 +815,27 @@ class StreamChatDelivery:
         execution: StreamExecution,
         session: StreamProtocolSession,
     ) -> None:
+        scope_factory = getattr(self.pipeline, "conversation_turn_scope", None)
+        scope = (
+            scope_factory(execution.body, execution.request_id)
+            if callable(scope_factory)
+            else nullcontext()
+        )
+        # Keep older adapters and lightweight test ports usable while the
+        # production server supplies the shared turn serializer.  A plain
+        # mock/legacy return value is not a lease and must not be entered.
+        if not callable(getattr(scope, "__enter__", None)) or not callable(
+            getattr(scope, "__exit__", None)
+        ):
+            scope = nullcontext()
+        with scope:
+            self._deliver_owned_serialized(execution, session)
+
+    def _deliver_owned_serialized(
+        self,
+        execution: StreamExecution,
+        session: StreamProtocolSession,
+    ) -> None:
         body = execution.body
         request_id = execution.request_id
         settings = execution.settings
@@ -540,6 +853,9 @@ class StreamChatDelivery:
             user_message,
             request_id=request_id,
         )
+        from backend.chat.preparation_cache import remember_stream_preparation
+
+        remember_stream_preparation(body, settings)
         execution.preflight = self.pipeline.dignity_preflight(
             settings,
             user_message,
@@ -652,6 +968,7 @@ class StreamChatDelivery:
             stream_preamble=stream_preamble,
             progress_callback=emit_progress_utterance,
         )
+        result = require_delivery(result, settings=execution.settings, logger=self.runtime.write_log, request_id=execution.request_id)
         self.requests.finish(execution.request_id, result)
         session.emit("turn_trailer", sequence, {
             "route": route_name,

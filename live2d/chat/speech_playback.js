@@ -37,6 +37,8 @@
     const resolveAssistantMood = (...args) => rules.resolveAssistantMood(...args);
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
     const toNumber = (value, fallback) => {
+      if (value === null || value === undefined
+        || (typeof value === "string" && !value.trim())) return fallback;
       const number = Number(value);
       return Number.isFinite(number) ? number : fallback;
     };
@@ -224,9 +226,14 @@ function validatedSemanticSpeechUnits(text, supplied = null) {
 }
 
 function speechSegmentMeta(meta, segment, index, total, preparedTts = null) {
+  const unit = Array.isArray(meta.pipelineSpeechUnits)
+    ? (meta.pipelineSpeechUnits[index] || {})
+    : {};
   return {
     ...meta,
     spokenTextJa: segment,
+    speechPace: unit.speechPace ?? meta.speechPace,
+    speechSpeed: unit.speechSpeed ?? meta.speechSpeed,
     preparedTts,
     pipelineSegmentIndex: index + 1,
     pipelineSegmentTotal: total,
@@ -358,7 +365,11 @@ async function continueSegmentedSpeech(segments, voiceStyle, meta, pipelineToken
       if (pipelineToken !== speechPipelineGeneration) return;
       const segment = segments[index];
       const controller = speechPipelineAbortController;
-      const request = buildSpeechSegmentTtsRequest(segment, voiceStyle, meta);
+      // Prefetch must use the same per-unit acoustic contract as the later
+      // startSpeech call; otherwise the prepared key is built with the turn
+      // default and cannot be reused for the unit's actual speed.
+      const nextSegmentMeta = speechSegmentMeta(meta, segment, index, segments.length, null);
+      const request = buildSpeechSegmentTtsRequest(segment, voiceStyle, nextSegmentMeta);
       const preparedState = { ready: false, payload: null, error: null };
       preparedState.promise = requestPreparedTts(request, null, controller?.signal)
         .then(payload => {
@@ -387,9 +398,12 @@ async function continueSegmentedSpeech(segments, voiceStyle, meta, pipelineToken
       const previousBoundary = Array.isArray(meta.pipelineBoundaries)
         ? meta.pipelineBoundaries[index - 1]
         : "phrase_pause";
+      const previousUnit = Array.isArray(meta.pipelineSpeechUnits)
+        ? (meta.pipelineSpeechUnits[index - 1] || {})
+        : {};
       if (!await waitForSpeechBoundary(
         previousBoundary,
-        meta.speechPace,
+        previousUnit.speechPace ?? meta.speechPace,
         currentGeneration,
         pipelineToken,
       )) return;
@@ -470,12 +484,27 @@ function startSegmentedSpeech(text, voiceStyle = "calm", meta = {}) {
   const suppliedSegments = Array.isArray(meta.pipelineSpeechSegments)
     ? meta.pipelineSpeechSegments.map(item => String(item || "").trim()).filter(Boolean)
     : [];
+  const suppliedUnits = Array.isArray(meta.pipelineSpeechUnits)
+    ? meta.pipelineSpeechUnits.filter(item => item && typeof item === "object")
+    : [];
   const segments = getSettings().voiceEnabled && provider === "gpt-sovits"
     ? (suppliedSegments.length ? suppliedSegments : [String(text || "").trim()])
     : [String(text || "").trim()];
   if (segments.length <= 1) {
     const pipelineToken = speechPipelineGeneration;
-    const started = startSpeech(text, voiceStyle, meta);
+    // A single model speech unit still owns its acoustic override.  The
+    // multi-unit path applies this through speechSegmentMeta; keep the same
+    // contract when the frontend collapses the turn to one segment.
+    const singleUnitMeta = suppliedUnits.length === 1 && segments.length === 1
+      ? speechSegmentMeta(
+        { ...meta, pipelineSpeechUnits: suppliedUnits },
+        segments[0],
+        0,
+        1,
+        meta.preparedTts || null,
+      )
+      : meta;
+    const started = startSpeech(text, voiceStyle, singleUnitMeta);
     return meta.waitForCompletion
       ? started.then(ok => ok === true
         && waitForSpeechSegmentEnd(speechState.generation, pipelineToken, true))
@@ -483,6 +512,7 @@ function startSegmentedSpeech(text, voiceStyle = "calm", meta = {}) {
   }
   const pipelineMeta = {
     ...meta,
+    pipelineSpeechUnits: suppliedUnits.length === segments.length ? suppliedUnits : [],
     pipelineBoundaries: segments.map((_segment, index) => normalizeSpeechBoundary(
       Array.isArray(meta.pipelineBoundaries) ? meta.pipelineBoundaries[index] : "",
       index === segments.length - 1 ? "turn_pause" : "phrase_pause",
@@ -1589,7 +1619,10 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
         cancelled: false,
         cancellationReason: "",
         preparationStarted: false,
-        textOnly: Boolean(raw?.textOnly),
+        // Stream utterance events use the backend contract name; final fallback
+        // enqueue uses the shorter local name.  Preserve both at this boundary
+        // so a text-only unit is queued and revealed in ordinal order.
+        textOnly: Boolean(raw?.textOnly || raw?.textOnlyDelivery),
       };
       item.speechText = chooseSpeechText(item.textZh, item.spokenTextJa, item.speechLanguage);
       if (!item.textZh || (!item.speechText && !item.textOnly)) return;
@@ -1615,7 +1648,10 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
           ...unit,
           textZh: String(unit.textZh || "").trim(),
           spokenTextJa: String(unit.spokenTextJa || "").trim(),
-        })).filter(unit => unit.textZh && chooseSpeechText(unit.textZh, unit.spokenTextJa, result?.speechLanguage))
+        })).filter(unit => unit.textZh && (
+          Boolean(unit.textOnlyDelivery)
+          || chooseSpeechText(unit.textZh, unit.spokenTextJa, result?.speechLanguage)
+        ))
         : [];
       const units = contracted.length ? contracted : [{ textZh: reply, spokenTextJa: spoken }];
       units.forEach((unit, index) => this.enqueue({
@@ -1630,13 +1666,17 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
           index === units.length - 1 ? "turn_pause" : "phrase_pause",
         ),
         speechLanguage: normalizeSpeechLanguage(result?.speechLanguage || getSettings().speechLanguage),
-        speechPace: resolveSpeechPace(result || {}, ""),
-        speechSpeed: resolveSpeechSpeed(result || {}, "", resolveSpeechPace(result || {}, "")),
+        speechPace: unit.speechPace ?? resolveSpeechPace(result || {}, ""),
+        speechSpeed: unit.speechSpeed ?? resolveSpeechSpeed(
+          result || {},
+          "",
+          unit.speechPace ?? resolveSpeechPace(result || {}, ""),
+        ),
         textOnly: Boolean(result?.textOnlyDelivery) && !chooseSpeechText(
           unit.textZh,
           unit.spokenTextJa,
           result?.speechLanguage || getSettings().speechLanguage,
-        ),
+        ) || Boolean(unit.textOnlyDelivery),
       }));
     },
     setFinalResult(result) {

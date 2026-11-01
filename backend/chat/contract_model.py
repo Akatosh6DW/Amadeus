@@ -257,7 +257,8 @@ def rewrite_reply_to_turn_contract(
 ) -> dict[str, Any]:
     """让角色模型按合同重写一次；后端不自行编写答案正文。"""
 
-    nickname_contract = services.persona.nickname_reaction_prompt(
+    from backend.context.reply_layers import independent_persona
+    nickname_contract = '' if independent_persona(persona_snapshot) else services.persona.nickname_reaction_prompt(
         interpretation.original_text,
         request_id,
     )
@@ -366,12 +367,13 @@ def rewrite_reply_to_turn_contract(
             request_id=request_id,
             persona_snapshot=persona_snapshot,
         )
-    rewritten = services.persona.enforce_nickname_grounding(
-        interpretation.original_text,
-        rewritten,
-        reaction_key=request_id,
-        persona_snapshot=persona_snapshot,
-    )
+    if not independent_persona(persona_snapshot):
+        rewritten = services.persona.enforce_nickname_grounding(
+            interpretation.original_text,
+            rewritten,
+            reaction_key=request_id,
+            persona_snapshot=persona_snapshot,
+        )
     for key in (
         "_conversationToolResults",
         "_fileOutputs",
@@ -393,6 +395,7 @@ def rewrite_reply_to_turn_contract(
         "memoryUpdatesProvided",
         "_memoryCandidates",
         "_memoryUpdateTypes",
+        "questionSource",
         "_fileOutputExpected",
     ):
         if key in result and (
@@ -400,6 +403,8 @@ def rewrite_reply_to_turn_contract(
         ):
             rewritten[key] = result[key]
     attachment_delivery.preserve_attachment_delivery(result, rewritten)
+    from .gallery import preserve_gallery_selection
+    preserve_gallery_selection(result, rewritten)
     rewritten["turnContractRewrittenByModel"] = True
     if persona_snapshot is not None:
         rewritten["personaContextSnapshotId"] = persona_snapshot.snapshot_id

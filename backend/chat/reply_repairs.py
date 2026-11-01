@@ -15,6 +15,7 @@ from backend.context.reference import contextual_reference_prompt
 from backend.context.tool_evidence import tool_context_prompt
 from backend.providers.errors import UpstreamProtocolError
 from .response_rules import local_empty_reply
+from backend.context.reply_layers import reply_layer_messages, independent_persona
 
 @dataclass(frozen=True)
 class ReplyRepairPorts:
@@ -59,6 +60,7 @@ class ReplyRepairs:
         self,
         settings: dict[str, Any],
         result: dict[str, Any],
+        *, persona_snapshot: PersonaContextSnapshot | None = None,
     ) -> dict[str, Any]:
         """Separate unusable dialogue content from repairable runtime fields."""
 
@@ -71,7 +73,8 @@ class ReplyRepairs:
         else:
             spoken_probe = dict(result)
             spoken_probe["speechSegmentCountMissingFromModel"] = False
-            if self.ports.should_align(settings, spoken_probe):
+            if self.ports.should_align(settings, spoken_probe,
+                                      **({'persona_snapshot': persona_snapshot} if persona_snapshot is not None else {})):
                 invalid_fields.append("spokenTextJa")
         if result.get("emotionMissingFromModel"):
             missing_fields.append("emotion")
@@ -171,20 +174,22 @@ class ReplyRepairs:
             "temperature": 0.42,
             "max_tokens": min(3_200, turn_policy.max_output_tokens + 240),
             "messages": [
-                {"role": "system", "content": (
+                *([] if persona_snapshot is not None and persona_snapshot.reply_layers else [{"role": "system", "content": (
                     persona_snapshot.system_prompt
                     if persona_snapshot is not None and persona_snapshot.uses_hybrid_provider_context
                     else self.ports.system_prompt()
-                )},
-                {"role": "system", "content": self.ports.natural_style()},
+                )}, {"role": "system", "content": self.ports.natural_style()}]),
+                *(reply_layer_messages(persona_snapshot, self.ports.natural_style(), self.ports.emotion_rule())
+                  if persona_snapshot is not None and persona_snapshot.reply_layers else []),
                 {"role": "system", "content": self.ports.reply_rule()},
-                {"role": "system", "content": (
+                *([] if persona_snapshot is not None and persona_snapshot.reply_layers else [{"role": "system", "content": (
                     persona_snapshot.prompt_text
                     if persona_snapshot is not None and persona_snapshot.uses_hybrid_provider_context
                     else deep_persona_prompt
-                )},
+                )}]),
                 {"role": "system", "content": policy_prompt(turn_policy)},
-                {"role": "system", "content": self.ports.relationship_prompt(relationship_state)},
+                *([] if persona_snapshot is not None and independent_persona(persona_snapshot) else
+                  [{"role": "system", "content": self.ports.relationship_prompt(relationship_state)}]),
                 *([{
                     "role": "system",
                     "content": tool_context_prompt(
@@ -221,88 +226,11 @@ class ReplyRepairs:
         if isinstance(preserved_file_outputs, list):
             repaired["_fileOutputs"] = preserved_file_outputs
         preserve_attachment_delivery(result, repaired)
+        from .gallery import preserve_gallery_selection
+        preserve_gallery_selection(result, repaired)
         return repaired
 
 
-    def enforce_fast_dialogue_policy_once(
-        self,
-        settings: dict[str, Any],
-        user_message: str,
-        result: dict[str, Any],
-        turn_policy: TurnPolicy,
-        *,
-        messages: list[dict[str, Any]] | None = None,
-        request_id: str = "",
-        persona_snapshot: PersonaContextSnapshot | None = None,
-    ) -> dict[str, Any]:
-        """Block an over-budget fast reply before it can enter TTS.
-
-        The normal route already owns a model-authored, fact-preserving style
-        rewrite.  Fast streaming previously skipped that gate because accepted
-        text was frozen, so ``micro`` overflow was merely logged and delivered.
-        Reuse the same owner once, validate the replacement, and fail closed to the
-        bounded full-response recovery if it still violates policy.
-        """
-
-        validation = self.dialogue_validation_for_result(result, turn_policy, messages)
-        if not validation.needs_rewrite:
-            return dict(result)
-        self.ports.log(
-            "fast_dialogue_policy_repair_started",
-            requestId=request_id,
-            replyMode=turn_policy.reply_mode,
-            issues=list(validation.issues),
-            sentenceCount=validation.sentence_count,
-            characterCount=validation.character_count,
-        )
-        repaired = self.repair_dialogue_style_reply(
-            settings,
-            user_message,
-            result,
-            turn_policy,
-            [],
-            {},
-            self.ports.read_relationship(),
-            "",
-            persona_snapshot,
-        )
-        repaired_validation = self.dialogue_validation_for_result(
-            repaired,
-            turn_policy,
-            messages,
-        )
-        rejection_reasons = [
-            *repaired_validation.issues,
-            *reply_integrity_issues(repaired),
-        ]
-        if repaired_validation.needs_rewrite or rejection_reasons:
-            self.ports.log(
-                "fast_dialogue_policy_repair_rejected",
-                requestId=request_id,
-                replyMode=turn_policy.reply_mode,
-                issues=list(dict.fromkeys(str(item) for item in rejection_reasons)),
-            )
-            raise UpstreamProtocolError(
-                "fast dialogue policy rewrite did not satisfy the delivery contract"
-            )
-        for key in (
-            "_upstreamFinishReason", "_chatMetrics", "_conversationToolResults",
-            "epistemicPlan", "groundingGate",
-        ):
-            if key in result and key not in repaired:
-                repaired[key] = result[key]
-        repaired["dialoguePolicy"] = turn_policy.to_dict()
-        repaired["dialogueValidation"] = repaired_validation.to_dict()
-        repaired["dialogueStyleRepaired"] = True
-        repaired["fastDialoguePolicyRepaired"] = True
-        self.ports.log(
-            "fast_dialogue_policy_repair_completed",
-            requestId=request_id,
-            replyMode=turn_policy.reply_mode,
-            sentenceCount=repaired_validation.sentence_count,
-            characterCount=repaired_validation.character_count,
-        )
-        return repaired
 
 
     def repair_empty_reply(
@@ -327,7 +255,8 @@ class ReplyRepairs:
             "messages": [
                 *self.ports.persona_prefix(persona_snapshot, legacy_system_prompt=True),
                 {"role": "system", "content": self.ports.reply_rule()},
-                {"role": "system", "content": self.ports.emotion_rule()},
+                *([] if independent_persona(persona_snapshot) else
+                  [{"role": "system", "content": self.ports.emotion_rule()}]),
                 {"role": "system", "content": "当前长期记忆：\n" + "\n".join(f"- {item}" for item in memories)},
                 {"role": "system", "content": repair_prompt},
                 {"role": "user", "content": json.dumps({
@@ -349,7 +278,7 @@ class ReplyRepairs:
                 purpose="empty_reply_repair",
             )
             repaired = self.ports.normalize_reply(content, settings=settings)
-            validation = self.dialogue_output_validation(settings, repaired)
+            validation = self.dialogue_output_validation(settings, repaired, persona_snapshot=persona_snapshot)
             if not repaired.get("emptyReply") and not validation["requiresFieldRepair"]:
                 repaired["repairedEmptyReply"] = True
                 repaired["fullReplyRepairAttempted"] = True

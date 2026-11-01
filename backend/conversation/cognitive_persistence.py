@@ -91,6 +91,19 @@ def commit_turn_to_sqlite(
             .get("userAdaptations") or []
         )
         if isinstance(record, Mapping)
+    ) or any(
+        # The reducer normalizes a model ADD_USER_BELIEF carrying the
+        # structured engineering-purpose/user-scope declaration into an
+        # adaptation record.  Its original patch operation remains in the
+        # audit trail, so detect the resulting same-turn record here and
+        # commit the independent snapshot atomically.
+        record.get("sourceTurnId") == overlay.get("turnId")
+        for record in (
+            overlay.get("state", {})
+            .get("preferences", {})
+            .get("userAdaptations") or []
+        )
+        if isinstance(record, Mapping)
     ):
         preferences = overlay["state"]["preferences"]
         user_adaptation_snapshot = {

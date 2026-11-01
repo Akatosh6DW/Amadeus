@@ -7,6 +7,22 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function createThinkingIndicatorApi() {
   "use strict";
 
+  // Outreach waiting is owned by the proactive controller, not by request activity.
+  function renderProactiveWaitingIndicator(element, state = {}, enabled = true) {
+    if (!element) return;
+    const mode = !enabled ? "off"
+      : state.control?.status === "paused" ? "paused"
+        : state.waitingForUser === true ? "waiting" : "active";
+    element.hidden = mode === "off" || mode === "active";
+    element.dataset.waitingMode = mode;
+    const label = mode === "paused" ? "安静等待" : "等你回应";
+    const description = mode === "paused"
+      ? "已暂停主动搭话；你发消息仍会正常回答，允许她恢复主动互动后解除"
+      : "正在等你回应，暂不主动追问；你发消息后继续";
+    element.title = description;
+    element.setAttribute("aria-label", `${label}：${description}`);
+  }
+
   const PIPELINE_STAGES = Object.freeze({
     received: ["已接收请求", "消息已经进入处理队列", 0],
     attachments: ["读取输入", "正在读取消息与本轮附件", 0],
@@ -40,6 +56,19 @@
     let thinkingIndicator = null;
     let progressTimer = 0;
     let progressRequestId = "";
+    let deliveryState = "idle";
+
+    function setState(state = "idle") {
+      const next = ["idle", "thinking", "error"].includes(String(state))
+        ? String(state)
+        : "idle";
+      deliveryState = next;
+      if (dom.modelState) {
+        if (dom.modelState.dataset) dom.modelState.dataset.deliveryState = next;
+        dom.modelState.setAttribute?.("data-delivery-state", next);
+      }
+      return deliveryState;
+    }
 
     function stageDefinition(stage) {
       return PIPELINE_STAGES[String(stage || "").toLowerCase()] || ["处理中", "正在完成当前步骤", 1];
@@ -51,6 +80,7 @@
       if (generation && indicatorGeneration && generation !== indicatorGeneration) return;
       thinkingIndicator.remove();
       thinkingIndicator = null;
+      if (deliveryState !== "error") setState("idle");
     }
 
     function updateStage(stage, detail = "", elapsedMs = null) {
@@ -103,6 +133,7 @@
     function show(generation, stage = "context", detail = "") {
       if (!dom.chatLog) return;
       hide();
+      setState("thinking");
       const bubble = document.createElement("article");
       bubble.className = "msg assistant thinking-indicator";
       bubble.classList.toggle("developer-pipeline", isDeveloper());
@@ -151,6 +182,7 @@
       window.requestAnimationFrame?.(() => bubble.scrollIntoView?.({ block: "end", inline: "nearest" }));
     }
 
+    setState("idle");
     return Object.freeze({
       show,
       hide,
@@ -162,10 +194,12 @@
         generation: Number(thinkingIndicator?.dataset?.generation || 0),
         progressRequestId,
         progressActive: Boolean(progressTimer),
+        deliveryState,
       }),
+      setState,
       getStageDefinition: stageDefinition,
     });
   }
 
-  return Object.freeze({ createThinkingIndicatorController, pipelineStages: PIPELINE_STAGES });
+  return Object.freeze({ createThinkingIndicatorController, renderProactiveWaitingIndicator, pipelineStages: PIPELINE_STAGES });
 }));

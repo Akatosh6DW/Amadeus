@@ -15,7 +15,7 @@ from agent.dialogue_architecture import TurnContract, TurnPolicy, UtteranceInter
 from agent.epistemic_architecture import grounded_claim_gate_decision, knowledge_confidence_gate_decision
 from agent.research_architecture import EpistemicPlan, ResearchDecision, create_epistemic_plan
 from agent.turn_execution_plan import TurnExecutionPlan
-from backend.chat.errors import GroundingGateError
+from backend.chat.delivery import require_delivery
 from backend.common.values import safe_nonnegative_int
 from backend.research.review import needs_post_answer_research_audit
 from backend.providers.errors import UpstreamProtocolError
@@ -58,7 +58,6 @@ class ContextPort:
 class CompletionPort:
     """既有候选检查/收尾与重入流程；调用次数和恢复策略由服务执行体限定。"""
 
-    enforce_fast_dialogue_policy_once: Callable[..., dict[str, Any]]
     finalize_chat_response: Callable[..., dict[str, Any]]
     recover_final_projection_candidate: Callable[..., dict[str, Any]]
     process_chat_request_body: Callable[..., dict[str, Any]]
@@ -77,6 +76,17 @@ class FastCandidateFinalizer:
         self.update_progress = update_progress
 
     def finalize(self, ctx: FastCandidateContext, combined_candidate: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        # The shared boundary decides whether this candidate can be shown.  It
+        # may degrade optional speech fields, but semantic/context/style checks
+        # below are diagnostics and cannot replace accepted text.
+        delivered_candidate = require_delivery(
+            combined_candidate,
+            settings=ctx.settings,
+            logger=self.write_log,
+            request_id=ctx.request_id,
+        )
+        combined_candidate.clear()
+        combined_candidate.update(delivered_candidate)
         self.context.bind_turn_context_to_result(ctx.body, combined_candidate)
         if isinstance(ctx.body.get("_discourseLedger"), Mapping):
             combined_candidate["_referenceLedger"] = dict(
@@ -88,16 +98,6 @@ class FastCandidateFinalizer:
         combined_candidate["personaContextSnapshotId"] = (
             ctx.fast_persona_snapshot.snapshot_id
         )
-        if not (ctx.body.get("_cognitiveOutcomeVerification") or {}).get("valid"):
-            combined_candidate = self.completion.enforce_fast_dialogue_policy_once(
-                ctx.settings,
-                ctx.user_message,
-                combined_candidate,
-                ctx.fast_policy,
-                messages=ctx.messages,
-                request_id=ctx.request_id,
-                persona_snapshot=ctx.fast_persona_snapshot,
-            )
         combined_candidate.setdefault("_chatMetrics", {})["conversationEpoch"] = (
             safe_nonnegative_int(
                 ctx.body.get("contextEpoch")
@@ -142,39 +142,8 @@ class FastCandidateFinalizer:
                     combined_candidate.get("knowledgeConfidenceProvided")
                 ),
                 decision=confidence_gate.to_dict(),
+                deliveryOnly=True,
             )
-            if confidence_gate.status == "RESEARCH_ESCALATION":
-                ctx.body["_researchEscalation"] = {
-                    "reason": "model_knowledge_confidence_below_threshold",
-                    "queries": [],
-                    "unknownEntities": [],
-                    "verificationTargets": list(
-                        confidence_gate.missing_verification_targets
-                        or active_plan.verification_targets
-                        or ("uncertain external fact",)
-                    ),
-                    "confidence": (
-                        0.25
-                        if str(combined_candidate.get("knowledgeConfidence")) == "low"
-                        else 0.5
-                    ),
-                    "origin": "knowledge_confidence_gate",
-                }
-                self.update_progress(
-                    ctx.request_id,
-                    "research-escalation",
-                    "模型对外部事实把握不足，正在联网核实",
-                )
-                recovered = self.completion.process_chat_request_body(
-                    ctx.body,
-                    ctx.settings,
-                    request_id=ctx.request_id,
-                    started_at=ctx.started,
-                    preflight=ctx.preflight,
-                    persona_snapshot=ctx.fast_persona_snapshot,
-                )
-                recovered["researchEscalatedFromKnowledgeConfidence"] = True
-                return recovered, "research_loop"
             draft_gate = grounded_claim_gate_decision(
                 str(combined_candidate.get("reply") or ""),
                 active_plan.epistemic_state(),
@@ -185,65 +154,16 @@ class FastCandidateFinalizer:
                     else "forbidden"
                 ),
             )
+            combined_candidate["groundingGateDiagnostic"] = draft_gate.to_dict()
+            if confidence_gate.status == "RESEARCH_ESCALATION" or draft_gate.status == "RESEARCH_ESCALATION":
+                combined_candidate["researchEscalationSuppressed"] = True
+                combined_candidate["webEvidenceLimited"] = True
             if (
                 ctx.settings.get("permissionWebSearch")
                 and active_plan.research_policy != "forbidden"
-                and needs_post_answer_research_audit(
-                    active_plan,
-                    draft_gate,
-                    None,
-                )
+                and needs_post_answer_research_audit(active_plan, draft_gate, None)
             ):
-                try:
-                    semantic_audit = self.audit_research_need(
-                        ctx.settings,
-                        ctx.user_message,
-                        str(combined_candidate.get("reply") or ""),
-                        active_plan,
-                        request_id=ctx.request_id,
-                    )
-                    self.write_log(
-                        "post_answer_research_need_audit",
-                        requestId=ctx.request_id,
-                        route="fast_stream",
-                        **semantic_audit,
-                    )
-                    if semantic_audit.get("researchNeeded"):
-                        ctx.body["_researchEscalation"] = {
-                            "reason": "model_post_answer_semantic_audit",
-                            "queries": [semantic_audit["query"]],
-                            "unknownEntities": [],
-                            "verificationTargets": [
-                                "model-identified unsupported external claim"
-                            ],
-                            "confidence": 0.9,
-                            "origin": "post_answer_model_audit",
-                        }
-                        self.update_progress(
-                            ctx.request_id,
-                            "research-escalation",
-                            "模型审计发现回答依赖实时外部证据，正在核实",
-                        )
-                        recovered = self.completion.process_chat_request_body(
-                            ctx.body,
-                            ctx.settings,
-                            request_id=ctx.request_id,
-                            started_at=ctx.started,
-                            preflight=ctx.preflight,
-                            persona_snapshot=ctx.fast_persona_snapshot,
-                        )
-                        recovered["researchEscalatedFromSemanticAudit"] = True
-                        return recovered, "research_loop"
-                except Exception as audit_error:
-                    self.write_log(
-                        "post_answer_research_need_audit_failed",
-                        requestId=ctx.request_id,
-                        route="fast_stream",
-                        errorType=type(audit_error).__name__,
-                        error=str(audit_error)[:500],
-                    )
-                    combined_candidate["webEvidenceLimited"] = True
-                    combined_candidate["semanticResearchAuditFailed"] = True
+                combined_candidate["semanticResearchAuditSuppressed"] = True
         try:
             # The stream has already resolved the current task.  Do
             # not let the finalizer rebuild a weaker contract from an
@@ -305,31 +225,3 @@ class FastCandidateFinalizer:
             # those stale utterances; the repaired finalResult carries
             # the only accepted speech.
             return finalized, "cognitive_final_audit_repair"
-        except GroundingGateError as gate_error:
-            decision = gate_error.decision
-            if (
-                getattr(decision, "status", "") != "RESEARCH_ESCALATION"
-                or not ctx.settings.get("permissionWebSearch")
-            ):
-                raise
-            ctx.body["_researchEscalation"] = {
-                "reason": "grounding_gate_research_escalation",
-                "queries": [],
-                "unknownEntities": [],
-                "verificationTargets": list(
-                    getattr(decision, "missing_verification_targets", ())
-                    or ("unsupported external claims",)
-                ),
-                "confidence": 0.45,
-                "origin": "final_grounding_gate",
-            }
-            recovered = self.completion.process_chat_request_body(
-                ctx.body,
-                ctx.settings,
-                request_id=ctx.request_id,
-                started_at=ctx.started,
-                preflight=ctx.preflight,
-                persona_snapshot=ctx.fast_persona_snapshot,
-            )
-            recovered["researchEscalatedFromGroundingGate"] = True
-            return recovered, "research_loop"

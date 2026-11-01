@@ -11,6 +11,18 @@ from typing import Literal, Sequence
 
 RuntimeMode = Literal["development", "test", "release"]
 TEST_DATA_SENTINEL = ".amadeus-test-data"
+_qq_worker_root: Path | None = None
+
+
+def bind_qq_worker_root(root: Path) -> None:
+    """Called only by the isolated QQ entry point after its profile validation.
+
+    An environment variable cannot enable this override in the desktop process.
+    """
+    global _qq_worker_root
+    if 'server' in sys.modules or _qq_worker_root is not None:
+        raise RuntimeError('QQ worker scope must be bound once before server initialization')
+    _qq_worker_root = root.resolve()
 
 
 @dataclass(frozen=True)
@@ -45,6 +57,14 @@ def resolve_runtime_paths(
     explicit_mode = str(os.environ.get("AMADEUS_RUNTIME_MODE") or "").strip().lower()
     if explicit_mode and explicit_mode not in {"development", "test", "release"}:
         raise RuntimeError(f"Unsupported AMADEUS_RUNTIME_MODE: {explicit_mode}")
+    if _qq_worker_root is not None:
+        # A frozen helper shares application code, never the desktop data root.
+        root = _qq_worker_root
+        return RuntimePaths(mode='development', root=root,
+                            conversation_context=root / 'conversation_context.json',
+                            conversation_archive=root / 'conversation_archive.jsonl',
+                            state_database=root / 'amadeus_state.sqlite3',
+                            diagnostics_dir=root / 'diagnostics', cache_dir=root / 'cache')
     if release_mode and explicit_mode and explicit_mode != "release":
         raise RuntimeError(
             "AMADEUS_RUNTIME_MODE cannot override a packaged release; use release."

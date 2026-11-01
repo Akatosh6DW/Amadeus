@@ -12,8 +12,10 @@ from agent.visual_grounding import build_visual_evidence_packet
 from agent.cognitive_tools import tool_plan_violations
 from agent.cognitive_outcome import claim_contract_for_evidence, success_criteria_catalog
 from agent.cognitive_state import belief_evidence_problem
+from agent.belief_projection import belief_prompt_view, belief_in_current_scope
 from tools.web_links import compact_web_links
-from tools.web_text import project_web_text
+from tools.web_text import project_web_text, rebind_reading_summary
+from tools.web_metadata import page_navigation
 
 
 def evidence_url_key(value: Any) -> str:
@@ -64,6 +66,8 @@ _STRUCTURED_TOOL_FACT_FIELDS = {
 WEB_EVIDENCE_BODY_BUDGET = 32_000
 WEB_EVIDENCE_SOURCE_CAP = 8_000
 WEB_EVIDENCE_MIN_SOURCE_CHARS = 600
+HISTORICAL_WEB_SOURCE_CAP = 800
+HISTORICAL_WEB_BODY_BUDGET = 2_400
 
 
 def deduplicate_evidence_chunks(
@@ -104,8 +108,9 @@ def tool_result_body(result: Mapping[str, Any]) -> str:
         return str(text)
     if result.get("name") == "read_file":
         return str(result.get("contentPreview") or "")
+    from agent.tool_facts import public_tool_facts
     fields = _STRUCTURED_TOOL_FACT_FIELDS.get(str(result.get("name")), ())
-    facts = {key: result[key] for key in fields if key in result}
+    facts = public_tool_facts(result) or {key: result[key] for key in fields if key in result}
     return json.dumps(facts, ensure_ascii=False, separators=(",", ":")) if facts and result.get("ok") else ""
 
 
@@ -126,7 +131,10 @@ def collect_evidence(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str
             # the publication metadata supplied by the search engine. Keep that
             # metadata attached to the same URL, separately from retrieval time.
             previous = evidence.get(ref) or {}
-            for field in ("publishedAt", "publishedTimestamp", "dateEvidence", "snippet"):
+            for field in (
+                "publishedAt", "publishedTimestamp", "dateEvidence", "dateHint", "dateSource",
+                "providerDate", "providerDateSource", "snippet",
+            ):
                 if not entry.get(field) and previous.get(field):
                     entry[field] = deepcopy(previous[field])
             entry["body"] = str(source.get("body") or "")
@@ -142,6 +150,20 @@ def collect_evidence(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str
                     # projection can still rank the body when its reference
                     # resolution deliberately omits resolvedQuestion.
                     entry["researchQuery"] = source_query[:500]
+            # Explicit page windows are distinct observations of the same
+            # source. Preserve earlier windows rather than overwriting them
+            # with the latest continuation, while retaining the URL alias.
+            if entry.get("rangeExact") is True:
+                window_ref = f"{ref}#amadeus-read-{entry.get('startChar', 0)}-{entry.get('endChar', 0)}"
+                # Validate against the fetched source before assigning the
+                # derived observation identity. Rebind only validated quotes;
+                # the raw receipt keeps its original identity and body.
+                reading = rebind_reading_summary(entry, source_uid=window_ref,
+                                                url=str(entry.get("url") or entry.get("canonicalUrl") or ""))
+                if reading is not None:
+                    entry["readingSummary"] = reading
+                entry["sourceUid"] = window_ref
+                evidence[window_ref] = entry
             evidence[ref] = entry
             # Qualified IDs remain stable when a later search reuses S1/S2.
             short_id = str(source.get("id") or "")
@@ -163,7 +185,7 @@ def collect_evidence(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str
         if result.get("name") == "web_search":
             evidence[receipt_id]["searchDiagnostics"] = {
                 key: deepcopy(result[key]) for key in
-                ("query", "provider", "requestedProvider", "providerAttempts", "providerErrors", "dateFilter") if key in result
+                ("query", "provider", "requestedProvider", "providerAttempts", "providerErrors", "dateFilter", "pagination", "domains", "maxResults") if key in result
             }
         if result.get("name") in {"capture_screen", "capture_camera", "read_image"}:
             packet = build_visual_evidence_packet([result])
@@ -184,6 +206,8 @@ def collect_evidence(results: Sequence[Mapping[str, Any]]) -> dict[str, dict[str
 
 def _web_evidence_identity(ref: str, item: Mapping[str, Any]) -> str:
     """Return a stable page identity for deduplicating search/read aliases."""
+    if item.get("rangeExact") is True:
+        return evidence_url_key(item.get("url") or ref) + f"#read-{item.get('startChar', 0)}-{item.get('endChar', 0)}"
     return evidence_url_key(
         item.get("canonicalUrl")
         or item.get("url")
@@ -343,7 +367,8 @@ def compact_packet(
     """Keep current corrections visible while bounding ordinary-turn overhead."""
     beliefs = state.get("beliefs") or {}
     beliefs = list(beliefs.values()) if isinstance(beliefs, Mapping) else list(beliefs)
-    active = [item for item in beliefs if isinstance(item, Mapping) and item.get("status") == "active"]
+    active = [item for item in beliefs if isinstance(item, Mapping) and item.get("status") == "active"
+              and belief_in_current_scope(item, state, snapshot, evidence or {})]
     disputed = [item for item in beliefs if isinstance(item, Mapping) and item.get("status") in {
         "challenged", "stale", "retracted", "superseded",
     }]
@@ -454,7 +479,10 @@ def compact_packet(
                     *aliases,
                     *(ref for ref in (str(primary_ref), str(ref)) if ref),
                 ]))
-                if _web_evidence_quality(item) > _web_evidence_quality(primary_item):
+                if (_web_evidence_quality(item) > _web_evidence_quality(primary_item)
+                        or (_web_evidence_quality(item) == _web_evidence_quality(primary_item)
+                            and item.get("selectedForCurrentTurn")
+                            and not primary_item.get("selectedForCurrentTurn"))):
                     unique_evidence[matching_index] = (
                         str(ref), item, [alias for alias in merged_aliases if alias != str(ref)]
                     )
@@ -504,6 +532,8 @@ def compact_packet(
         # question, but retain both so model-owned and ordinary turns share
         # the same deterministic ranking behavior.
         source_query = str(item.get("researchQuery") or item.get("query") or "").strip()
+        if item.get("historical") and projection_query:
+            return projection_query[:1_200]
         return " ".join(item for item in (source_query, projection_query) if item)[:1_200]
 
     selected_evidence = _bounded_evidence_window(unique_evidence)
@@ -512,16 +542,33 @@ def compact_packet(
     # packet budget account for the normalized text returned to the model.
     web_full_projections: dict[str, dict[str, Any]] = {}
     web_target_lengths: dict[str, int] = {}
+    historical_remaining = HISTORICAL_WEB_BODY_BUDGET
     for ref, item, _aliases in selected_evidence:
         if item.get("sourceType") != "web":
             continue
+        historical = bool(item.get("historical")) and not item.get("selectedForCurrentTurn")
+        cap = min(HISTORICAL_WEB_SOURCE_CAP, historical_remaining) if historical else WEB_EVIDENCE_SOURCE_CAP
+        if cap <= 0:
+            continue
+        projection_source = item
+        if item.get("historical"):
+            # A reader report is specific to its original question. The raw
+            # page can be reused; an old generated synopsis is not fresh input.
+            projection_source = {key: value for key, value in item.items() if key != "readingSummary"}
         full_projection = project_web_text(
-            item,
+            projection_source,
             source_projection_query(item),
-            max_chars=WEB_EVIDENCE_SOURCE_CAP,
+            max_chars=cap,
             chunk_limit=4,
         )
         body_excerpt = str(full_projection.get("bodyExcerpt") or "")
+        if historical:
+            # Old observations stay durable in the journal. Only a bounded
+            # working view travels into a new turn; aliases cannot bypass it.
+            full_projection["bodyExcerpt"] = body_excerpt = body_excerpt[:cap]
+            full_projection["evidenceChunks"] = []
+            full_projection["bodyTruncated"] = len(body_excerpt) < len(str(item.get("body") or ""))
+            historical_remaining -= len(body_excerpt)
         if not body_excerpt:
             continue
         web_full_projections[ref] = full_projection
@@ -538,14 +585,15 @@ def compact_packet(
             web_projections[ref] = {
                 "bodyExcerpt": "",
                 "evidenceChunks": [],
-                "bodyTruncated": False,
+                "bodyTruncated": bool(item.get("body")),
                 "projectionMode": "empty",
             }
         elif budget >= target:
             web_projections[ref] = full_projection
         else:
             projection = project_web_text(
-                item,
+                ({key: value for key, value in item.items() if key != "readingSummary"}
+                 if item.get("historical") else item),
                 source_projection_query(item),
                 max_chars=budget,
                 chunk_limit=4,
@@ -560,18 +608,46 @@ def compact_packet(
             web_projections[ref] = projection
 
     def project_evidence(ref: str, item: Mapping[str, Any], aliases: list[str]) -> dict[str, Any]:
+        from agent.tool_facts import public_tool_facts, historical_operation_summary
         claim_contract = claim_contract_for_evidence(item, evidence_ref=ref, compact=True)
         belief_problem = belief_evidence_problem(item)
+        action_receipt = {key: value for key, value in (item.get('receipt', {}).get('actionReceipt') or {}).items()
+                          if key in {'actionId', 'actionGroupId', 'retryOfActionId', 'status', 'requestedTarget',
+                                     'resolvedTarget', 'error', 'tool', 'action', 'taskId', 'taskVersionBefore',
+                                     'taskVersionAfter', 'timeFacts', 'timeSpec'}} if isinstance(item.get('receipt'), Mapping) else None
+        if (item.get('historical') and not item.get('selectedForCurrentTurn')
+                and isinstance(item.get('receipt'), Mapping)):
+            # Old operations are memories, not live configuration. Do this on
+            # every new turn instead of waiting for context pressure. The raw
+            # journal/evidence stays intact for validation and explicit recall.
+            summary = historical_operation_summary(item['receipt'])
+            return {
+                'id': ref, 'aliases': aliases, 'ok': bool(item.get('ok')),
+                'sourceType': item.get('sourceType'), 'title': str(item.get('name') or '')[:160],
+                'historical': True, 'freshness': claim_contract['freshness'],
+                'observedAt': item.get('observedAt'), 'sourceTurnId': item.get('sourceTurnId'),
+                'answerCommitted': item.get('answerCommitted'),
+                'executionStatus': item.get('executionStatus'),
+                'actionReceipt': action_receipt,
+                'bodyExcerpt': json.dumps(summary, ensure_ascii=False, separators=(',', ':')),
+                'projectionMode': 'historical_operation_summary',
+                'claimContract': claim_contract,
+                'retrieval': {
+                    'sourceTurnId': item.get('sourceTurnId'), 'viewOnly': True,
+                    'instruction': '这里只记当时做了什么、说了什么及实际结果。完整回执留在原轮 trace 的 toolReceipts；'
+                                   '需要详情时读取原轮记录。旧摘要不是当前配置，操作前重新读取当前状态；'
+                                   '草稿、失败、未知结果均不能当成已经发送或完成。',
+                },
+            }
         web_projection = web_projections.get(ref, {}) if item.get("sourceType") == "web" else {}
         projection = {
             "id": ref, "ok": bool(item.get("ok")), "sourceType": item.get("sourceType"),
             "aliases": aliases,
             "authority": item.get("authority"),
-            "actionReceipt": {key: value for key, value in (item.get("receipt", {}).get("actionReceipt") or {}).items()
-                              if key in {"actionId", "actionGroupId", "retryOfActionId", "status", "requestedTarget", "resolvedTarget", "error",
-                                         "tool", "action", "taskId", "taskVersionBefore", "taskVersionAfter", "timeFacts", "timeSpec"}}
-                             if isinstance(item.get("receipt"), Mapping) else None,
+            "actionReceipt": action_receipt,
             "executionStatus": item.get("executionStatus"),
+            **({"toolFacts": public_tool_facts(item["receipt"])}
+               if isinstance(item.get("receipt"), Mapping) and public_tool_facts(item["receipt"]) else {}),
             "currentStateVerification": deepcopy(item.get("currentStateVerification")),
             "attempted": ((item.get("receipt") or {}).get("attempted", item.get("executionStatus") != "not_attempted")
                           if item.get("sourceType") in {"tool", "visual"} else None),
@@ -590,6 +666,10 @@ def compact_packet(
             "publishedAt": item.get("publishedAt"),
             "publishedTimestamp": item.get("publishedTimestamp"),
             "dateEvidence": item.get("dateEvidence"),
+            "dateHint": item.get("dateHint"),
+            "dateSource": item.get("dateSource"),
+            "providerDate": item.get("providerDate"),
+            "providerDateSource": item.get("providerDateSource"),
             "accessedAt": item.get("accessedAt"),
             "sourceTurnId": item.get("sourceTurnId"),
             "answerCommitted": item.get("answerCommitted"),
@@ -606,14 +686,33 @@ def compact_packet(
                                         "reason": belief_problem[0] if belief_problem else "readable_evidence"},
         }
         if item.get("sourceType") == "web":
+            if not projection["bodyExcerpt"]:
+                projection["beliefUpdateEligibility"] = {
+                    "allowed": False, "reason": "body_not_in_current_context",
+                }
             projection.update({
+                "pageNavigation": page_navigation(item),
                 "evidenceChunks": deduplicate_evidence_chunks(
                     web_projection.get("bodyExcerpt"),
                     web_projection.get("evidenceChunks") or [],
                 ),
                 "bodyTruncated": bool(web_projection.get("bodyTruncated")),
                 "projectionMode": str(web_projection.get("projectionMode") or "empty"),
+                "retrieval": {
+                    "sourceTurnId": item.get("sourceTurnId"),
+                    "url": item.get("url") or item.get("canonicalUrl"),
+                    "storedBodyChars": len(str(item.get("body") or "")),
+                    "viewOnly": True,
+                    "instruction": "Only the visible excerpt supports this turn's claims. Read the stored trace toolReceipts or the URL for omitted details; a past fetch is not current verification.",
+                },
             })
+            if web_projection.get("derivedSummary") and not item.get("historical"):
+                projection["readingSummary"] = {
+                    "kind": "derived_summary", "verified": False,
+                    "text": web_projection["derivedSummary"],
+                    "coverage": web_projection.get("readingCoverage", {}),
+                    "instruction": "Reading aid only. Verify claims against bodyExcerpt; retrieve omitted passages when needed.",
+                }
         return projection
     return {
         "conversationId": state.get("conversationId"),
@@ -627,8 +726,8 @@ def compact_packet(
         "lastDecisionDigest": deepcopy(state.get("lastDecisionDigest") or {}),
         "task": deepcopy(state.get("task") or {}),
         "successCriteriaCatalog": success_criteria_catalog(state.get("task") or {}),
-        "activeBeliefs": deepcopy(active[-16:]),
-        "withdrawnOrChallengedBeliefs": deepcopy(disputed[-8:]),
+        "activeBeliefs": [belief_prompt_view(item) for item in active[-16:]],
+        "withdrawnOrChallengedBeliefs": [belief_prompt_view(item) for item in disputed[-8:]],
         "references": deepcopy(state.get("references") or {}),
         "context": deepcopy(state.get("context") or {}),
         "preferences": preferences,

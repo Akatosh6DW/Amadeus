@@ -90,6 +90,9 @@ class _ResponseCapture:
     original_request: Any
     status_code: int | None = None
     body: str = ""
+    request_attempted: bool = False
+    response_received: bool = False
+    transport_exception: str = ""
 
     def restore(self) -> None:
         # The DDGS client is local to one search call. Restoring the instance
@@ -121,7 +124,20 @@ def _capture_engine_response(client: Any, engine_name: str) -> _ResponseCapture 
     capture = _ResponseCapture(engine, http_client, original_request)
 
     def request(*args: Any, **kwargs: Any) -> Any:
-        response = original_request(*args, **kwargs)
+        # Keep only the exception class. The exception text may contain a proxy
+        # URL, credentials, or other transport details that must not enter the
+        # evidence path.
+        capture.request_attempted = True
+        capture.status_code = None
+        capture.body = ""
+        capture.response_received = False
+        capture.transport_exception = ""
+        try:
+            response = original_request(*args, **kwargs)
+        except Exception as error:
+            capture.transport_exception = type(error).__name__
+            raise
+        capture.response_received = response is not None
         capture.status_code = getattr(response, "status_code", None)
         capture.body = str(getattr(response, "text", "") or "")
         return response
@@ -147,6 +163,9 @@ def _has_challenge(body: str) -> bool:
 def _provider_failure(engine: str, capture: _ResponseCapture | None) -> str | None:
     if capture is None:
         return None
+    if capture.request_attempted and not capture.response_received:
+        detail = capture.transport_exception or "no_response"
+        return f"{engine} search failed (transport {detail})"
     status = capture.status_code
     if status is not None and status != 200:
         suffix = " challenge" if _has_challenge(capture.body) else ""

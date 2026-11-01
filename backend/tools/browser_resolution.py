@@ -5,7 +5,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import re
-import unicodedata
 import urllib.parse
 import uuid
 from typing import Any, Callable, Mapping
@@ -15,11 +14,10 @@ from backend.context.recall import memory_keywords, retrieval_overlap_score
 from backend.research.intent import extract_public_web_url, is_external_factual_question
 from backend.research.planning import outbound_web_query
 from backend.research.query import web_query_is_context_only, web_query_overlap_tokens, web_search_query_from_message
-from backend.tools.browser_rules import browser_url_site_identity, semantic_task_mentions_site_identity, browser_explicit_search_query, browser_references_previous_source
+from backend.tools.browser_rules import browser_explicit_search_query, browser_references_previous_source
 from bookmark_store import resolve_bookmark
 from web_destination_store import resolve_learned_web_destination
 from tools.web_destinations import resolve_web_destination_alias
-from tools.safe_web import canonicalize_public_url
 
 @dataclass(frozen=True)
 class StateOperations:
@@ -150,52 +148,6 @@ class BrowserResolver:
             flags=re.I,
         ).strip(" ，。！？!?")
         return value[:240]
-
-
-    def browser_named_target_identity(self, text: str) -> str:
-        """Return one conservative ASCII identity from an explicit named target."""
-
-        phrase = self.browser_named_target_phrase(text)
-        phrase = re.sub(
-            r"(?:官方网站|官网|网站|网页|主页|网页版)$",
-            "",
-            phrase,
-            flags=re.I,
-        ).strip()
-        normalized = unicodedata.normalize("NFKC", phrase).casefold()
-        if not re.fullmatch(r"[a-z0-9][a-z0-9\s_.+\-]{0,119}", normalized):
-            return ""
-        return re.sub(r"[^a-z0-9]+", "", normalized)
-
-
-    def grounded_model_browser_url(
-        self,
-        value: Any,
-        user_message: str,
-        resolved_task: str = "",
-    ) -> str:
-        """Accept a model URL only when its site identity matches this turn's target.
-
-        This is positive current-turn grounding, not a general model-URL trust path.
-        Full public-network and SSRF validation still belongs to ``tool_open_browser``.
-        """
-
-        target_identities = {
-            identity
-            for identity in (
-                self.browser_named_target_identity(user_message),
-                self.browser_named_target_identity(resolved_task),
-            )
-            if identity
-        }
-        site_identity = browser_url_site_identity(value)
-        if (
-            site_identity not in target_identities
-            and not semantic_task_mentions_site_identity(resolved_task, site_identity)
-            and not semantic_task_mentions_site_identity(self.browser_named_target_phrase(user_message), site_identity)
-        ):
-            return ""
-        return canonicalize_public_url(str(value or "").strip())
 
 
     def known_browser_destination(self, text: str) -> dict[str, str] | None:

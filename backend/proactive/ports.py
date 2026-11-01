@@ -33,6 +33,5 @@ class ModelOperations:
 @dataclass(frozen=True)
 class VisualOperations:
     tool_capture_screen: Callable[..., Any]
-    tool_grounding_violation: Callable[..., Any]
     audit_visual_grounding_with_model: Callable[..., Any]
     compact_screen_capture_memory: Callable[..., Any]

@@ -16,6 +16,7 @@ from agent.context_architecture import (
     CompactionArtifact, canonical_turn_id, microcompact_turns, validate_compaction,
 )
 from agent.epistemic_architecture import user_claim_provenance
+from agent.turn_context import turn_messages
 from backend.common.values import safe_nonnegative_int
 
 
@@ -151,6 +152,12 @@ class ConversationSummaryService:
                     "summaryPurpose": "dialogue_continuity_only",
                     "longTermMemoryWritten": False,
                     "artifact": candidate.to_dict(),
+                    "sourceMessages": [
+                        {key: message[key] for key in ("conversationId", "turnId", "messageId", "role")}
+                        for index, turn in enumerate(turns)
+                        if canonical_turn_id(turn, index) in candidate.source_turn_ids
+                        for message in turn_messages(turn, index)
+                    ],
                 })
                 pressure = (
                     context.get("contextPressure")

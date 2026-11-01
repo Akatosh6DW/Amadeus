@@ -4,45 +4,42 @@ import json
 import re
 from typing import Any
 
+from backend.providers.reply_protocol import (
+    iter_json_values,
+    looks_like_truncated_reply_envelope,
+    parse_json_document,
+    parse_json_mapping,
+)
+
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
     candidate = str(text or "").strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, re.S | re.I)
-    if fenced:
-        candidate = fenced.group(1).strip()
-    for _ in range(3):
-        try:
-            value = json.loads(candidate)
-        except json.JSONDecodeError:
-            break
-        if isinstance(value, dict):
-            return value
-        if isinstance(value, str) and value.strip() and value.strip() != candidate:
-            candidate = value.strip()
-            continue
+    value = parse_json_mapping(candidate)
+    if value is not None:
+        return dict(value)
+    # A response that starts as a JSON container but fails the whole-document
+    # check is malformed/truncated.  Do not recover a later inner object or the
+    # first of several adjacent documents from it.
+    if candidate.startswith(("{", "[")):
         return None
-    match = re.search(r"\{.*\}", candidate, re.S)
-    if not match:
-        return None
-    try:
-        value = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, dict) else None
+    # Compatibility callers historically accepted a prose prefix around one
+    # complete object.  Iterate decoder-confirmed values instead of using a
+    # greedy ``{.*}`` expression that could cross unrelated objects.
+    for embedded in iter_json_values(candidate):
+        if isinstance(embedded, dict):
+            return embedded
+    return None
 
 
 def looks_like_incomplete_structured_reply(text: Any) -> bool:
     """Distinguish broken response transport from an intentional plain-text answer."""
 
     candidate = str(text or "").strip()
-    candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.I)
-    if not candidate.startswith(("{", "[")):
-        return False
-    return bool(re.search(
-        r'["\'](?:reply|spokenTextJa|emotion|gesture|toolRequests|knowledgeConfidence)["\']\s*:',
-        candidate,
-        flags=re.I,
-    ))
+    if candidate.startswith("```"):
+        newline = candidate.find("\n")
+        if newline >= 0:
+            candidate = candidate[newline + 1 :].lstrip()
+    return looks_like_truncated_reply_envelope(candidate)
 
 
 def extract_complete_json_string_field(text: Any, field: str) -> str:

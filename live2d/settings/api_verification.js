@@ -23,6 +23,9 @@
     let apiVerification = "unverified";
     let apiConfigurationRevision = 0;
     let bound = false;
+    const optionalElement = name => elements[name] || globalThis.document?.getElementById?.(name) || null;
+    const contextLimitInput = () => optionalElement("apiContextLimitInput");
+    const compactThresholdInput = () => optionalElement("apiContextCompactThresholdInput");
 
     function label() {
       const settings = getSettings();
@@ -48,7 +51,8 @@
 
     function apiSettingsChanged(update, previousSettings) {
       const previous = previousSettings || {};
-      return ["apiEndpoint", "apiModel", "apiNetworkMode", "apiProxyUrl", "useResponseFormat"]
+      return ["apiEndpoint", "apiModel", "apiNetworkMode", "apiProxyUrl", "useResponseFormat",
+        "apiContextLimit", "apiContextCompactThreshold"]
         .some(key => Object.hasOwn(update, key) && update[key] !== previous[key])
         || (Object.hasOwn(update, "apiKey") && update.apiKey !== "__KEEP__");
     }
@@ -80,6 +84,8 @@
 
     async function saveFromForm() {
       try {
+        const contextLimit = contextLimitInput();
+        const compactThreshold = compactThresholdInput();
         await saveSettings({
           apiEndpoint: elements.apiEndpointInput.value.trim(),
           apiModel: elements.apiModelInput.value.trim(),
@@ -90,6 +96,8 @@
           apiNetworkMode: elements.apiNetworkModeInput?.value || "auto",
           apiProxyUrl: elements.apiProxyUrlInput?.value.trim() || "",
           useResponseFormat: elements.responseFormatInput.checked,
+          ...(contextLimit ? { apiContextLimit: contextLimit.value.trim() } : {}),
+          ...(compactThreshold ? { apiContextCompactThreshold: compactThreshold.value.trim() || null } : {}),
         }, "API 设置已保存");
       } catch (error) {
         notify(`API 设置保存失败：${error.message}`);

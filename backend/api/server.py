@@ -46,6 +46,7 @@ class HttpRuntime:
     clean_path: Callable[[str], Path | None]
     content_type: Callable[[Path], str]
     parse_json: Callable[[bytes], dict[str, Any]]
+    publish_qq_owner_endpoint: Callable[[Any], None] = lambda address: None
 
 @dataclass(frozen=True)
 class HttpChat:
@@ -58,6 +59,7 @@ class HttpChat:
     completed_tools: Callable[..., list[Any]]
     stream: Callable[..., None]
     atomic: Callable[..., None]
+    qq_owner: Callable[..., None] | None = None
 
 @dataclass(frozen=True)
 class HttpErrors:
@@ -86,6 +88,11 @@ class AmadeusHTTPServer(ThreadingHTTPServer):
         self._active_requests = 0
         self._last_request_activity = time.monotonic()
         super().__init__(*args, **kwargs)
+        services = getattr(self.RequestHandlerClass, 'services', None)
+        if services is not None:
+            publish = getattr(services.runtime, 'publish_qq_owner_endpoint', None)
+            if publish is not None:
+                publish(self.server_address)
 
     def request_activity_started(self) -> None:
         with self._activity_lock:
@@ -258,6 +265,9 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
                 return
             if parsed_path == "/api/chat":
                 self.handle_chat(body)
+                return
+            if parsed_path == "/api/qq/owner-chat" and self.services.chat.qq_owner is not None:
+                self.services.chat.qq_owner(self, body)
                 return
             self.send_error(404)
         except ContextCompatibilityError as error:

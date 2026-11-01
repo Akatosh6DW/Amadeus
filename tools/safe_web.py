@@ -44,6 +44,8 @@ USER_AGENT = "AMADEUS-Research/1.0 (+local desktop assistant)"
 MAX_WIRE_BYTES = 20 * 1024 * 1024
 MAX_TEXT_BYTES = 20 * 1024 * 1024
 MAX_PAGE_CHARS = 14_000
+MAX_SEARCH_RESULTS = 20
+MAX_SEARCH_CANDIDATES = 60
 PAGE_ACCEPT = "text/markdown,text/html;q=0.9,application/xhtml+xml;q=0.9,text/plain;q=0.9,application/json;q=0.8,application/pdf;q=0.8"
 MAX_REDIRECTS = 3
 TRACKING_QUERY_KEYS = {
@@ -72,10 +74,80 @@ BLOCKED_HOST_SUFFIXES = (
 )
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = threading.Lock()
+_PUBLIC_DNS_CACHE: dict[str, tuple[float, tuple[str, ...]]] = {}
+_VIRTUAL_DNS_NETWORKS = (ipaddress.ip_network("198.18.0.0/15"), ipaddress.ip_network("2001:2::/48"))
 _PAGE_CACHE = PageReadCache()
 _PROVIDER_RETRY_AFTER: dict[tuple[str, str], float] = {}
 SUPPORTED_FRESHNESS = frozenset({"pd", "pw", "pm", "py"})
 DUCKDUCKGO_DATE_FILTER = {"pd": "d", "pw": "w", "pm": "m", "py": "y"}
+
+
+def _normalize_domains(value: Any) -> tuple[str, ...]:
+    """Normalize model-supplied domain constraints to host suffixes.
+
+    Domain constraints are applied to result URLs after provider parsing as a
+    second safety boundary.  They are also passed as ``site:`` terms to
+    maintained engines so they can return enough candidates for filtering.
+    """
+
+    if value is None or value == "":
+        return ()
+    if isinstance(value, str):
+        # regex-purpose: format
+        values = [item for item in re.split(r"[,\s]+", value.strip()) if item]
+    else:
+        try:
+            values = list(value)
+        except TypeError as error:
+            raise SafeWebError("域名过滤格式无效") from error
+    domains: list[str] = []
+    for raw in values:
+        domain = str(raw or "").strip().lower().rstrip(".")
+        if not domain:
+            continue
+        if "://" in domain:
+            raise SafeWebError("域名过滤只接受主机名，不接受 URL")
+        if "/" in domain or "@" in domain or any(char.isspace() for char in domain):
+            raise SafeWebError("域名过滤格式无效")
+        if domain.startswith("*."):
+            domain = domain[2:]
+        try:
+            domain = domain.encode("idna").decode("ascii")
+        except UnicodeError as error:
+            raise SafeWebError("域名过滤格式无效") from error
+        if not domain or "." not in domain or len(domain) > 253:
+            raise SafeWebError("域名过滤格式无效")
+        try:
+            parsed = ipaddress.ip_address(domain)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            raise SafeWebError("域名过滤不接受 IP 地址")
+        labels = domain.split(".")
+        # regex-purpose: format
+        if any(not label or len(label) > 63 or not re.fullmatch(r"[a-z0-9-]+", label) or label.startswith("-") or label.endswith("-") for label in labels):
+            raise SafeWebError("域名过滤格式无效")
+        if domain not in domains:
+            domains.append(domain)
+    return tuple(domains)
+
+
+def _domain_matches_url(url: str, domains: tuple[str, ...]) -> bool:
+    if not domains:
+        return True
+    try:
+        host = (urllib.parse.urlsplit(str(url or "")).hostname or "").rstrip(".").lower()
+        host = host.encode("idna").decode("ascii")
+    except (UnicodeError, ValueError):
+        return False
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
+def _constrained_query(query: str, domains: tuple[str, ...]) -> str:
+    if not domains:
+        return query
+    clauses = " OR ".join(f"site:{domain}" for domain in domains)
+    return f"{query} ({clauses})"
 
 
 class SafeWebError(RuntimeError):
@@ -175,11 +247,69 @@ def _is_public_ip(value: str) -> bool:
     return bool(address.is_global)
 
 
-def validate_public_url(url: str) -> tuple[urllib.parse.SplitResult, list[str]]:
-    """Validate a URL and resolve it to public IP addresses.
+def _is_virtual_dns_ip(value: str) -> bool:
+    try:
+        address = ipaddress.ip_address(value)
+        return any(address in network for network in _VIRTUAL_DNS_NETWORKS)
+    except ValueError:
+        return False
 
-    Every returned address is public. Callers must connect to one of these
-    addresses directly instead of resolving the hostname again.
+
+class _NoDNSRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _public_dns_addresses(host: str, timeout: float) -> tuple[str, ...]:
+    """Check a virtual DNS destination against independent, TLS-verified DNS.
+
+    Only the hostname is sent to the fixed resolver, never a page URL, query,
+    API key or request headers. This bootstrap cannot use safe_http_request:
+    the system may map the resolver itself to a virtual address too.
+    """
+    with _CACHE_LOCK:
+        cached = _PUBLIC_DNS_CACHE.get(host)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+    deadline = time.monotonic() + min(6.0, timeout)
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_web_tls_context()), _NoDNSRedirect(),
+    )
+    addresses: list[str] = []
+    ttls: list[int] = []
+    try:
+        for kind in ("A", "AAAA"):
+            url = "https://cloudflare-dns.com/dns-query?" + urllib.parse.urlencode({"name": host, "type": kind})
+            request = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
+            with opener.open(request, timeout=_remaining_time(deadline)) as response:
+                payload = response.read(65537)
+            if len(payload) > 65536:
+                raise ValueError("DNS response too large")
+            data = json.loads(payload)
+            if data.get("Status") != 0 or data.get("TC"):
+                raise ValueError("DNS lookup failed")
+            for answer in data.get("Answer", []):
+                if answer.get("type") in (1, 28):
+                    addresses.append(str(answer.get("data") or ""))
+                    ttls.append(max(0, int(answer.get("TTL", 0))))
+    except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException) as error:
+        raise SafeWebError("虚拟 DNS 环境的公网域名核对失败，请检查网络") from error
+    if not addresses or any(not _is_public_ip(address) for address in addresses):
+        raise UnsafeUrlError("域名没有可用的公网地址，已拒绝访问")
+    result = tuple(dict.fromkeys(addresses))
+    with _CACHE_LOCK:
+        if len(_PUBLIC_DNS_CACHE) >= 512:
+            _PUBLIC_DNS_CACHE.clear()
+        _PUBLIC_DNS_CACHE[host] = (time.monotonic() + min(60, *ttls), result)
+    return result
+
+
+def validate_public_url(url: str, *, timeout: float = 6) -> tuple[urllib.parse.SplitResult, list[str]]:
+    """Validate a public destination and return its approved transport addresses.
+
+    Ordinary DNS is pinned. Virtual DNS addresses are accepted only for a
+    named domain independently confirmed public; they require hostname
+    transport with peer checking, and normal certificate verification on TLS.
     """
 
     raw = str(url or "").strip()
@@ -215,7 +345,9 @@ def validate_public_url(url: str) -> tuple[urllib.parse.SplitResult, list[str]]:
     except (UnicodeError, socket.gaierror, OSError) as error:
         raise SafeWebError(f"域名解析失败：{hostname}") from error
     addresses = list(dict.fromkeys(str(record[4][0]).split("%", 1)[0] for record in records))
-    if not addresses or any(not _is_public_ip(address) for address in addresses):
+    if addresses and all(_is_virtual_dns_ip(address) for address in addresses):
+        _public_dns_addresses(ascii_host, timeout)
+    elif not addresses or any(not _is_public_ip(address) for address in addresses):
         raise UnsafeUrlError("域名解析到了非公网地址，已拒绝访问")
     return parsed, addresses
 
@@ -347,6 +479,8 @@ def _validated_hostname_socket(
     port: int,
     timeout: float,
     allowed_addresses: list[str] | tuple[str, ...],
+    *,
+    virtual_dns: bool = False,
 ) -> socket.socket:
     """Connect through the hostname while preserving the DNS safety boundary.
 
@@ -360,14 +494,21 @@ def _validated_hostname_socket(
     allowed = {
         str(ipaddress.ip_address(str(value).split("%", 1)[0]))
         for value in allowed_addresses
-        if _is_public_ip(str(value))
+        if _is_public_ip(str(value)) or (virtual_dns and _is_virtual_dns_ip(str(value)))
     }
     if not allowed:
         raise UnsafeUrlError("域名没有可用的已验证公网地址")
     raw = socket.create_connection((host, port), timeout)
     try:
         peer = str(ipaddress.ip_address(str(raw.getpeername()[0]).split("%", 1)[0]))
-        if peer not in allowed or not _is_public_ip(peer):
+        if virtual_dns and peer not in allowed and _is_virtual_dns_ip(peer):
+            # The virtual pool can remap a hostname while the independent DNS
+            # lookup is in flight. Check the current mapping, never accept an
+            # arbitrary peer merely because it belongs to the virtual pool.
+            current = {str(record[4][0]).split("%", 1)[0] for record in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)}
+            if current and all(_is_virtual_dns_ip(address) for address in current):
+                allowed.update(str(ipaddress.ip_address(address)) for address in current)
+        if peer not in allowed:
             raise UnsafeUrlError("主机名连接到了未经验证的地址，已拒绝访问")
         return raw
     except BaseException:
@@ -382,9 +523,12 @@ class _ValidatedHostHTTPConnection(http.client.HTTPConnection):
         addresses: list[str],
         port: int,
         timeout: float,
+        *,
+        virtual_dns: bool = False,
     ):
         super().__init__(host, port=port, timeout=timeout)
         self._addresses = tuple(addresses)
+        self._virtual_dns = virtual_dns
 
     def connect(self) -> None:
         self.sock = _validated_hostname_socket(
@@ -392,6 +536,7 @@ class _ValidatedHostHTTPConnection(http.client.HTTPConnection):
             self.port,
             self.timeout,
             self._addresses,
+            virtual_dns=self._virtual_dns,
         )
 
 
@@ -402,6 +547,8 @@ class _ValidatedHostHTTPSConnection(http.client.HTTPSConnection):
         addresses: list[str],
         port: int,
         timeout: float,
+        *,
+        virtual_dns: bool = False,
     ):
         super().__init__(
             host,
@@ -410,6 +557,7 @@ class _ValidatedHostHTTPSConnection(http.client.HTTPSConnection):
             context=_web_tls_context(),
         )
         self._addresses = tuple(addresses)
+        self._virtual_dns = virtual_dns
 
     def connect(self) -> None:
         deadline = time.monotonic() + self.timeout
@@ -418,6 +566,7 @@ class _ValidatedHostHTTPSConnection(http.client.HTTPSConnection):
             self.port,
             self.timeout,
             self._addresses,
+            virtual_dns=self._virtual_dns,
         )
         try:
             raw.settimeout(_remaining_time(deadline))
@@ -511,7 +660,7 @@ def _request_once(
     timeout: float,
 ) -> tuple[int, dict[str, str], bytes]:
     deadline = time.monotonic() + timeout
-    parsed, addresses = validate_public_url(url)
+    parsed, addresses = validate_public_url(url, timeout=_remaining_time(deadline))
     host = (parsed.hostname or "").encode("idna").decode("ascii")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     # Search engines may return an IRI whose path contains Chinese/Japanese
@@ -539,6 +688,20 @@ def _request_once(
             proxy, parsed, path=path, method=method, body=body,
             headers=request_headers, timeout=_remaining_time(deadline),
         )
+    if addresses and all(_is_virtual_dns_ip(address) for address in addresses):
+        # A TUN/proxy DNS mapping represents the public hostname, not a server
+        # on that reserved IP. Preserve the hostname so the network can route it.
+        factory = _ValidatedHostHTTPSConnection if parsed.scheme == "https" else _ValidatedHostHTTPConnection
+        connection = factory(host, addresses, port, _remaining_time(deadline), virtual_dns=True)
+        try:
+            return _read_connection_response(
+                connection, method=method, path=path, body=body,
+                headers=request_headers, deadline=deadline,
+            )
+        except (OSError, http.client.HTTPException) as error:
+            raise SafeWebError(f"虚拟 DNS 网络连接失败（{type(error).__name__}）") from error
+        finally:
+            connection.close()
     last_error: Exception | None = None
     permission_denied = False
     for address in addresses:
@@ -626,7 +789,7 @@ def safe_http_request(
             if not allow_http_redirects and urllib.parse.urlsplit(current).scheme == "https" and urllib.parse.urlsplit(redirected).scheme == "http":
                 raise UnsafeUrlError("拒绝从 HTTPS 降级重定向到 HTTP")
             current = redirected
-            validate_public_url(current)
+            validate_public_url(current, timeout=_remaining_time(deadline))
             if status == 303 or (status in {301, 302} and current_method == "POST"):
                 current_method, current_body = "GET", None
             continue
@@ -655,6 +818,7 @@ class _ReadableHtmlParser(HTMLParser):
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
         self.links: list[dict[str, str]] = []
+        self.metadata: dict[str, str] = {}
         self._skip_depth = 0
         self._in_title = False
         self._tables: list[dict[str, Any]] = []
@@ -690,6 +854,28 @@ class _ReadableHtmlParser(HTMLParser):
         if tag in self.SKIP_TAGS:
             self._skip_depth += 1
         attributes = dict(attrs)
+        if not self._skip_depth and tag == "meta":
+            key = str(
+                attributes.get("property")
+                or attributes.get("name")
+                or attributes.get("itemprop")
+                or ""
+            ).strip().casefold()
+            content = str(attributes.get("content") or "").strip()
+            if content and key in {
+                "article:published_time",
+                "citation_publication_date",
+                "date",
+                "datepublished",
+                "dc.date",
+                "dc.date.issued",
+                "parsely-pub-date",
+                "pubdate",
+                "publishdate",
+                "published_time",
+            }:
+                self.metadata.setdefault("publishedAt", content[:160])
+                self.metadata.setdefault("dateSource", f"meta:{key}"[:80])
         role_tokens = str(attributes.get("role") or "").lower().split()
         content_region = tag in {"main", "article"} or "main" in role_tokens
         if tag not in self.VOID_TAGS:
@@ -775,6 +961,7 @@ def extract_readable_document(
     *,
     base_url: str = "",
     max_chars: int = MAX_PAGE_CHARS,
+    metadata: dict[str, str] | None = None,
 ) -> tuple[str, str, list[dict[str, str]]]:
     if content_type == "application/pdf":
         from pypdf import PdfReader
@@ -817,6 +1004,8 @@ def extract_readable_document(
     parser = _ReadableHtmlParser()
     parser.feed(text)
     title = re.sub(r"\s+", " ", " ".join(parser.title_parts)).strip()[:300]
+    if metadata is not None:
+        metadata.update(parser.metadata)
     lines = [re.sub(r"\s+", " ", line).strip() for line in "".join(parser.text_parts).splitlines()]
     # These lines are HTML block boundaries, not typographic line wrapping.
     # Retain them as paragraphs so later bounded projections keep complete
@@ -869,9 +1058,10 @@ def _load_web_page(url: str, *, timeout: float) -> dict[str, Any]:
     }, allow_http_redirects=True)  # Anonymous public pages may redirect through HTTP.
     content_header = response["headers"].get("content-type", "")
     charset_match = re.search(r"charset\s*=\s*['\"]?([^;'\"\s]+)", content_header, re.I)
+    page_metadata: dict[str, str] = {}
     title, text, links = extract_readable_document(
         response["body"], response["contentType"], charset_match.group(1) if charset_match else "",
-        base_url=response["url"],
+        base_url=response["url"], metadata=page_metadata,
         max_chars=MAX_TEXT_BYTES,
     )
     if len(text) < 40:
@@ -880,7 +1070,7 @@ def _load_web_page(url: str, *, timeout: float) -> dict[str, Any]:
     if fetch_status != "success":
         raise SafeWebError(f"网页正文不可用：{fetch_status}")
     parsed = urllib.parse.urlsplit(response["url"])
-    return {
+    page = {
         "requestedUrl": str(url or "").strip(),
         "url": canonicalize_public_url(response["url"]),
         "finalUrl": response["url"],
@@ -894,9 +1084,115 @@ def _load_web_page(url: str, *, timeout: float) -> dict[str, Any]:
         "extractedChars": len(text),
         "_cache_ttl": _page_cache_ttl(response["headers"]),
     }
+    published_at = str(page_metadata.get("publishedAt") or "").strip()
+    if published_at:
+        page["publishedAt"] = published_at[:160]
+        page["dateEvidence"] = published_at[:160]
+        page["dateSource"] = str(page_metadata.get("dateSource") or "page_metadata")[:80]
+        _hint, published_timestamp = search_result_date_metadata(published_at)
+        if published_timestamp:
+            page["publishedTimestamp"] = published_timestamp
+    return page
 
 
-def read_web_page(url: str, *, timeout: float = 12, query: str = "") -> dict[str, Any]:
+def _find_text_positions(text: str, needle: str) -> list[dict[str, Any]]:
+    """Return bounded, absolute positions for a literal case-insensitive find."""
+
+    value = str(needle or "")
+    if not value:
+        return []
+    positions: list[dict[str, Any]] = []
+    # regex-purpose: projection
+    # regex-boundary: re.escape keeps the needle literal; fetched page text is bounded by safe_web response limits.
+    for match in re.finditer(re.escape(value), text, flags=re.IGNORECASE):
+        start, end = match.span()
+        positions.append({
+            "startChar": start,
+            "endChar": end,
+            # Short aliases make the location useful to clients that already
+            # use ordinary start/end terminology, while absolute camel-case
+            # fields remain the canonical API names.
+            "start": start,
+            "end": end,
+            "text": text[start:end],
+        })
+        if len(positions) >= 200:
+            break
+    return positions
+
+
+def _page_window_metadata(
+    *,
+    total_chars: int,
+    start_char: int,
+    end_char: int,
+    has_more: bool,
+    matches: list[dict[str, Any]],
+    find: str,
+    range_exact: bool = True,
+    projection_mode: str = "window",
+    continuation_start_char: int | None = None,
+    continuation_max_chars: int | None = None,
+) -> dict[str, Any]:
+    if range_exact:
+        range_value: dict[str, int] | None = {
+            "startChar": start_char,
+            "endChar": end_char,
+            "start": start_char,
+            "end": end_char,
+        }
+        next_start = end_char if has_more else None
+        public_start: int | None = start_char
+        public_end: int | None = end_char
+    else:
+        range_value = None
+        next_start = continuation_start_char if has_more else None
+        public_start = None
+        public_end = None
+    continuation = None
+    if has_more and not range_exact and continuation_start_char is not None:
+        continuation = {
+            "mode": "sequential",
+            "startChar": continuation_start_char,
+            "maxChars": continuation_max_chars,
+        }
+    return {
+        "totalChars": total_chars,
+        "range": range_value,
+        "rangeExact": bool(range_exact),
+        "projectionMode": projection_mode,
+        "startChar": public_start,
+        "endChar": public_end,
+        "nextStartChar": next_start,
+        "continuationStartChar": continuation_start_char,
+        "continuationMaxChars": continuation_max_chars,
+        "continuation": continuation,
+        "hasMore": bool(has_more),
+        "find": str(find or ""),
+        "matchCount": len(matches),
+        "matches": matches,
+        "matchPositions": matches,
+        "findMatches": matches,
+    }
+
+
+def read_web_page(
+    url: str,
+    *,
+    timeout: float = 12,
+    query: str = "",
+    find: str = "",
+    start_char: int | None = None,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    """Read a safe page, optionally selecting a contiguous cached window.
+
+    The fetch/cache path always retains the complete extracted document.  A
+    caller that supplies ``find`` or ``start_char`` receives an absolute text
+    slice and can continue with ``nextStartChar``; the legacy query projection
+    remains the default when no navigation argument is supplied.
+    """
+
     # Keep the complete extracted document in the cache. A follow-up query must
     # be able to select a different section without downloading the URL again.
     requested = str(url or "").strip()
@@ -911,13 +1207,80 @@ def read_web_page(url: str, *, timeout: float = 12, query: str = "") -> dict[str
         raise SafeWebError("等待共享网页读取超过总等待时限") from error
     page.pop("_cache_ttl", None)
     page["requestedUrl"] = requested
-    text = page["text"]
-    if len(text) > MAX_PAGE_CHARS:
-        text = project_web_text({"body": text}, query, max_chars=MAX_PAGE_CHARS, chunk_limit=10)["bodyExcerpt"]
+    full_text = str(page["text"] or "")
+    total_chars = len(full_text)
+    start_was_provided = start_char is not None
+    if start_was_provided:
+        try:
+            requested_start = int(start_char)
+        except (TypeError, ValueError) as error:
+            raise SafeWebError("startChar 必须是非负整数") from error
+    else:
+        requested_start = 0
+    if requested_start < 0:
+        raise SafeWebError("startChar 必须是非负整数")
+    if max_chars is None:
+        window_chars = MAX_PAGE_CHARS
+    else:
+        try:
+            window_chars = int(max_chars)
+        except (TypeError, ValueError) as error:
+            raise SafeWebError("maxChars 必须是正整数") from error
+        if window_chars <= 0:
+            raise SafeWebError("maxChars 必须是正整数")
+        window_chars = min(window_chars, MAX_PAGE_CHARS)
+
+    find_value = str(find or "")
+    matches = _find_text_positions(full_text, find_value)
+    explicit_window = bool(find_value or start_was_provided or max_chars is not None)
+    if explicit_window:
+        # ``find`` provides a direct navigation target when no continuation
+        # offset was supplied. An explicit startChar always wins so a client
+        # can request context around a previously returned match.
+        effective_start = requested_start
+        if not start_was_provided and matches:
+            effective_start = int(matches[0]["startChar"])
+        effective_start = min(effective_start, total_chars)
+        text = full_text[effective_start:effective_start + window_chars]
+        end_char = effective_start + len(text)
+        has_more = end_char < total_chars
+        range_exact = True
+        projection_mode = "window"
+        continuation_start_char = None
+        continuation_max_chars = None
+    else:
+        text = full_text
+        if len(text) > MAX_PAGE_CHARS:
+            text = project_web_text({"body": text}, query, max_chars=MAX_PAGE_CHARS, chunk_limit=10)["bodyExcerpt"]
+        # Query-aware and lead/tail projections may contain several
+        # non-contiguous source windows. Do not present the projection length
+        # as an absolute source range. A caller can restart at zero with a
+        # bounded maxChars window for exact sequential continuation.
+        effective_start = 0
+        end_char = min(total_chars, len(text))
+        has_more = total_chars > len(text)
+        range_exact = len(text) == total_chars
+        projection_mode = "full" if range_exact else (
+            "query_projection" if query else "lead_tail_projection"
+        )
+        continuation_start_char = 0 if has_more else None
+        continuation_max_chars = MAX_PAGE_CHARS if has_more else None
     page.update(
         text=text, truncated=page["extractedChars"] > len(text),
         promptInjectionMarkers=prompt_injection_markers(text), cacheHit=cache_hit,
     )
+    page.update(_page_window_metadata(
+        total_chars=total_chars,
+        start_char=effective_start,
+        end_char=end_char,
+        has_more=has_more,
+        matches=matches,
+        find=find_value,
+        range_exact=range_exact,
+        projection_mode=projection_mode,
+        continuation_start_char=continuation_start_char,
+        continuation_max_chars=continuation_max_chars,
+    ))
     return page
 
 
@@ -968,10 +1331,16 @@ class _DuckDuckGoParser(HTMLParser):
                 self._current.get("snippet", ""),
             )
             if hint:
+                # Keep the parser's legacy provider-card fields for callers
+                # that consume raw adapter results.  ``dateSource`` marks
+                # them as title/snippet-only; public ``web_search`` removes
+                # them from reliable publication fields during normalization.
                 self._current["publishedAt"] = hint
+                if published_timestamp:
+                    self._current["publishedTimestamp"] = published_timestamp
+                self._current["dateHint"] = hint
                 self._current["dateEvidence"] = hint
-            if published_timestamp:
-                self._current["publishedTimestamp"] = published_timestamp
+                self._current["dateSource"] = "search_title_or_snippet"
             self.results.append(self._current)
         self._current = None
         self._capture = ""
@@ -983,7 +1352,8 @@ _MONTH_PATTERN = (
     r"Nov(?:ember)?|Dec(?:ember)?"
 )
 _SEARCH_DATE_PATTERNS = (
-    re.compile(r"\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b"),
+    # regex-purpose: format
+    re.compile(r"\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}(?=\D|$)"),
     re.compile(r"(?:19|20)\d{2}年\s*\d{1,2}月\s*\d{1,2}日?"),
     re.compile(rf"\b(?:{_MONTH_PATTERN})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+(?:19|20)\d{{2}}\b", re.I),
     re.compile(rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_MONTH_PATTERN})\s+(?:19|20)\d{{2}}\b", re.I),
@@ -1070,10 +1440,23 @@ def _search_duckduckgo(
     max_results: int,
     timeout: float,
     freshness: str = "",
+    *,
+    domains: tuple[str, ...] = (),
+    offset: int = 0,
 ) -> list[dict[str, str]]:
+    constrained_query = _constrained_query(query, domains)
     if metasearch.available():
-        return _search_maintained_engine(query, max_results, timeout, "duckduckgo", freshness)
-    params = {"q": query, "kl": "wt-wt"}
+        # DDGS exposes a result count but no stable offset/page cursor. Keep
+        # explicit offsets out of the request instead of presenting a locally
+        # sliced first page as provider pagination.
+        return _search_maintained_engine(
+            query, max_results, timeout, "duckduckgo", freshness,
+            domains=domains,
+        )
+    params = {"q": constrained_query, "kl": "wt-wt"}
+    if offset:
+        # The public Lite endpoint uses ``s`` as its result start offset.
+        params["s"] = str(offset)
     date_filter = DUCKDUCKGO_DATE_FILTER.get(str(freshness or "").strip().lower())
     if date_filter:
         params["df"] = date_filter
@@ -1090,8 +1473,11 @@ def _search_duckduckgo(
 
 def _search_maintained_engine(
     query: str, max_results: int, timeout: float, engine: str, freshness: str = "",
+    *,
+    domains: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     proxy = _system_proxy_for("https://html.duckduckgo.com/" if engine == "duckduckgo" else f"https://{engine}.com/")
+    query = _constrained_query(query, domains)
     try:
         return metasearch.search(
             query, engine=engine, max_results=max_results, timeout=timeout,
@@ -1101,8 +1487,10 @@ def _search_maintained_engine(
         raise SafeWebError(str(error)) from error
 
 
-def _search_google(query: str, max_results: int, timeout: float) -> list[dict[str, Any]]:
-    return _search_maintained_engine(query, max_results, timeout, "google")
+def _search_google(
+    query: str, max_results: int, timeout: float, *, domains: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    return _search_maintained_engine(query, max_results, timeout, "google", domains=domains)
 
 
 class _BingParser(HTMLParser):
@@ -1169,11 +1557,21 @@ class _BingParser(HTMLParser):
         self._finish_current()
 
 
-def _search_bing(query: str, max_results: int, timeout: float) -> list[dict[str, str]]:
+def _search_bing(
+    query: str,
+    max_results: int,
+    timeout: float,
+    *,
+    domains: tuple[str, ...] = (),
+    offset: int = 0,
+    locale: str = "",
+) -> list[dict[str, str]]:
+    setlang = str(locale or "").strip() or "zh-Hans"
     url = "https://www.bing.com/search?" + urllib.parse.urlencode({
-        "q": query,
+        "q": _constrained_query(query, domains),
         "count": max_results,
-        "setlang": "zh-Hans",
+        "setlang": setlang,
+        **({"first": offset + 1} if offset else {}),
     })
     response = safe_http_request(url, timeout=timeout)
     parser = _BingParser()
@@ -1238,8 +1636,19 @@ class _BaiduParser(HTMLParser):
             ).strip()
 
 
-def _search_baidu(query: str, max_results: int, timeout: float) -> list[dict[str, str]]:
-    url = "https://www.baidu.com/s?" + urllib.parse.urlencode({"wd": query, "rn": max_results})
+def _search_baidu(
+    query: str,
+    max_results: int,
+    timeout: float,
+    *,
+    domains: tuple[str, ...] = (),
+    offset: int = 0,
+) -> list[dict[str, str]]:
+    url = "https://www.baidu.com/s?" + urllib.parse.urlencode({
+        "wd": _constrained_query(query, domains),
+        "rn": max_results,
+        **({"pn": offset} if offset else {}),
+    })
     response = safe_http_request(url, timeout=timeout)
     parser = _BaiduParser()
     parser.feed(response["body"].decode("utf-8", errors="replace"))
@@ -1291,12 +1700,23 @@ class _YahooParser(HTMLParser):
             ).strip()
 
 
-def _search_yahoo(query: str, max_results: int, timeout: float) -> list[dict[str, str]]:
+def _search_yahoo(
+    query: str,
+    max_results: int,
+    timeout: float,
+    *,
+    domains: tuple[str, ...] = (),
+    offset: int = 0,
+) -> list[dict[str, str]]:
     if metasearch.available():
-        return _search_maintained_engine(query, max_results, timeout, "yahoo")
+        return _search_maintained_engine(
+            query, max_results, timeout, "yahoo",
+            domains=domains,
+        )
     url = "https://search.yahoo.com/search?" + urllib.parse.urlencode({
-        "p": query,
+        "p": _constrained_query(query, domains),
         "n": max_results,
+        **({"b": offset + 1} if offset else {}),
     })
     response = safe_http_request(url, timeout=timeout)
     parser = _YahooParser()
@@ -1323,13 +1743,23 @@ def _decode_bing_target(url: str) -> str:
     return decoded if decoded.startswith(("http://", "https://")) else url
 
 
-def _search_wikipedia(query: str, max_results: int, timeout: float, locale: str) -> list[dict[str, str]]:
+def _search_wikipedia(
+    query: str,
+    max_results: int,
+    timeout: float,
+    locale: str,
+    *,
+    domains: tuple[str, ...] = (),
+    offset: int = 0,
+) -> list[dict[str, str]]:
     language = str(locale or "en").strip().lower().replace("_", "-").split("-")[0]
     if not re.fullmatch(r"[a-z]{2,3}", language):
         raise SafeWebError("百科检索 locale 必须使用语言代码，例如 zh、ja、en")
     origin = f"https://{language}.wikipedia.org"
-    params = {"action": "query", "list": "search", "srsearch": query,
+    params = {"action": "query", "list": "search", "srsearch": _constrained_query(query, domains),
               "srlimit": max_results, "srnamespace": 0, "format": "json"}
+    if offset:
+        params["sroffset"] = offset
     response = safe_http_request(
         origin + "/w/api.php?" + urllib.parse.urlencode(params), timeout=timeout,
     )
@@ -1348,10 +1778,26 @@ def _search_wikipedia(query: str, max_results: int, timeout: float, locale: str)
     return results
 
 
-def _search_brave(query: str, api_key: str, max_results: int, timeout: float, freshness: str) -> list[dict[str, str]]:
+def _search_brave(
+    query: str,
+    api_key: str,
+    max_results: int,
+    timeout: float,
+    freshness: str,
+    *,
+    domains: tuple[str, ...] = (),
+    offset: int = 0,
+) -> list[dict[str, str]]:
     if not api_key:
         raise SafeWebError("Brave Search API Key 未配置")
-    params: dict[str, Any] = {"q": query, "count": max_results, "safesearch": "moderate", "text_decorations": "false"}
+    params: dict[str, Any] = {
+        "q": _constrained_query(query, domains),
+        "count": min(max_results, 20),
+        "safesearch": "moderate",
+        "text_decorations": "false",
+    }
+    if offset:
+        params["offset"] = offset
     if freshness in {"pd", "pw", "pm", "py"}:
         params["freshness"] = freshness
     response = safe_http_request(
@@ -1367,6 +1813,7 @@ def _search_brave(query: str, api_key: str, max_results: int, timeout: float, fr
             "title": str(item.get("title") or ""),
             "snippet": re.sub(r"<[^>]+>", "", str(item.get("description") or "")),
             "publishedAt": str(item.get("page_age") or ""),
+            "providerDateSource": "brave.page_age",
         }
         for item in raw_results[:max_results]
         if isinstance(item, dict) and item.get("url")
@@ -1432,20 +1879,38 @@ def web_search(
     freshness: str = "",
     locale: str = "",
     region: str = "",
+    domains: Any = None,
+    offset: int = 0,
+    page_cursor: str = "",
     source_policy_id: str = "",
 ) -> dict[str, Any]:
     clean_query = re.sub(r"\s+", " ", str(query or "")).strip()[:500]
     if len(clean_query) < 2:
         raise SafeWebError("搜索词过短")
     provider = str(provider or "duckduckgo").strip().lower()
-    max_results = max(1, min(int(max_results), 8))
+    max_results = max(1, min(int(max_results), MAX_SEARCH_RESULTS))
     read_top_pages = max(0, min(int(read_top_pages), 3, max_results))
+    try:
+        requested_offset = int(offset)
+    except (TypeError, ValueError) as error:
+        raise SafeWebError("offset 必须是非负整数") from error
+    if requested_offset < 0:
+        raise SafeWebError("offset 必须是非负整数")
+    requested_page_cursor = str(page_cursor or "").strip()[:512]
+    requested_domains = _normalize_domains(domains)
+    candidate_limit = min(
+        MAX_SEARCH_CANDIDATES,
+        max(max_results, max_results * (3 if requested_domains else 1)),
+    )
     route_key = hashlib.sha256(json.dumps(urllib.request.getproxies(), sort_keys=True).encode()).hexdigest()
     cache_key = json.dumps(
         [
             provider,
             clean_query,
             max_results,
+            requested_domains,
+            requested_offset,
+            requested_page_cursor,
             read_top_pages,
             freshness,
             locale,
@@ -1468,18 +1933,74 @@ def web_search(
     skipped_providers: list[str] = []
     effective_provider = provider
     requested_freshness = str(freshness or "").strip().lower()
+    # Provider pagination is capability-based. DDGS's maintained adapters only
+    # accept a result count, while the direct public endpoints and Brave expose
+    # native offsets. A page cursor is currently not exposed by any selected
+    # provider and is therefore reported as unsupported below.
+    maintained_route = metasearch.available()
+    def provider_offset_supported(name: str) -> bool:
+        if name == "brave":
+            return True
+        if name == "wikipedia":
+            return True
+        if name in {"duckduckgo", "yahoo", "google"}:
+            return not maintained_route
+        return name in {"bing", "baidu"}
+
+    def invoke_search(
+        name: str,
+        function: Any,
+        attempt_timeout: float,
+        *,
+        freshness_value: str = "",
+    ) -> list[dict[str, Any]]:
+        native_offset = requested_offset if provider_offset_supported(name) and not requested_page_cursor else 0
+        # Preserve the old positional call shape when no new search controls
+        # were requested; several deployments provide lightweight provider
+        # test doubles with the original signatures.
+        if name == "wikipedia":
+            if requested_domains or native_offset:
+                return function(
+                    clean_query, candidate_limit, attempt_timeout, locale,
+                    domains=requested_domains, offset=native_offset,
+                )
+            return function(clean_query, candidate_limit, attempt_timeout, locale)
+        if name == "brave":
+            if requested_domains or native_offset:
+                return function(
+                    clean_query, api_key, candidate_limit, attempt_timeout,
+                    freshness_value, domains=requested_domains, offset=native_offset,
+                )
+            return function(clean_query, api_key, candidate_limit, attempt_timeout, freshness_value)
+        if name == "duckduckgo":
+            if requested_domains or native_offset:
+                return function(
+                    clean_query, candidate_limit, attempt_timeout, freshness_value,
+                    domains=requested_domains, offset=native_offset,
+                )
+            return function(clean_query, candidate_limit, attempt_timeout, freshness_value)
+        if requested_domains or native_offset or (name == "bing" and locale):
+            return function(
+                clean_query, candidate_limit, attempt_timeout,
+                domains=requested_domains, offset=native_offset,
+                **({"locale": locale} if name == "bing" and locale else {}),
+            )
+        return function(clean_query, candidate_limit, attempt_timeout)
+
     if provider == "wikipedia":
         provider_attempts.append("wikipedia")
-        raw_results = _search_wikipedia(clean_query, max_results, timeout, locale)
+        raw_results = invoke_search("wikipedia", _search_wikipedia, timeout)
     elif provider == "brave":
         provider_attempts.append("brave")
-        raw_results = _search_brave(clean_query, api_key, max_results, timeout, requested_freshness)
+        raw_results = invoke_search(
+            "brave", _search_brave, timeout, freshness_value=requested_freshness,
+        )
     elif provider == "yahoo":
         provider_attempts.append("yahoo")
-        raw_results = _search_yahoo(clean_query, max_results, timeout)
+        raw_results = invoke_search("yahoo", _search_yahoo, timeout)
     elif provider == "bing":
         provider_attempts.append("bing")
-        raw_results = _search_bing(clean_query, max_results, timeout)
+        raw_results = invoke_search("bing", _search_bing, timeout)
     elif provider == "duckduckgo":
         # The free release must work on networks where one public search host is
         # blocked. Keep the total search-stage deadline close to the configured
@@ -1516,11 +2037,21 @@ def web_search(
             attempt_timeout = min(per_provider_timeout, remaining)
             provider_attempts.append(candidate)
             try:
-                candidate_results = (
-                    search_function(clean_query, max_results, attempt_timeout, requested_freshness)
-                    if candidate == "duckduckgo"
-                    else search_function(clean_query, max_results, attempt_timeout)
+                candidate_results = invoke_search(
+                    candidate, search_function, attempt_timeout,
+                    freshness_value=requested_freshness,
                 )
+                if requested_domains:
+                    candidate_results = [
+                        item for item in candidate_results
+                        if _domain_matches_url(str(item.get("url") or ""), requested_domains)
+                    ]
+                    if not candidate_results:
+                        provider_errors.append({
+                            "provider": candidate,
+                            "error": "搜索服务返回的结果不符合请求域名",
+                        })
+                        continue
                 if candidate_results:
                     raw_results = candidate_results
                     effective_provider = candidate
@@ -1562,17 +2093,36 @@ def web_search(
         "fallbackUnfiltered": bool(requested_freshness and not applied_freshness),
     }
     sources: list[dict[str, Any]] = []
+    raw_result_count = len(raw_results)
     for item in raw_results:
+        raw_url = str(item.get("url") or "")
+        if requested_domains and not _domain_matches_url(raw_url, requested_domains):
+            continue
         try:
-            parsed, _ = validate_public_url(str(item.get("url") or ""))
+            parsed, _ = validate_public_url(raw_url)
         except SafeWebError:
             continue
-        date_hint, published_timestamp = search_result_date_metadata(
-            item.get("publishedAt"),
-            item.get("dateEvidence"),
-            item.get("title"),
-            item.get("snippet"),
-        )
+        date_source = str(item.get("dateSource") or "").strip()[:80]
+        date_hint = str(item.get("dateHint") or "").strip()[:80]
+        if not date_hint:
+            date_hint, _ = search_result_date_metadata(
+                item.get("title"), item.get("snippet"),
+            )
+        hint_only = date_source == "search_title_or_snippet"
+        provider_date = "" if hint_only else str(item.get("publishedAt") or "").strip()
+        provider_timestamp = "" if hint_only else str(item.get("publishedTimestamp") or "").strip()
+        provider_date_source = str(item.get("providerDateSource") or "").strip()[:80]
+        if provider_date and not provider_date_source:
+            provider_date_source = "provider_metadata"
+        if provider_date and not provider_timestamp:
+            _provider_hint, provider_timestamp = search_result_date_metadata(provider_date)
+        provider_date_evidence = ""
+        if provider_date or provider_timestamp:
+            provider_date_evidence = str(item.get("dateEvidence") or "").strip()[:120]
+        if provider_date or provider_timestamp:
+            date_source = provider_date_source or "provider_metadata"
+        elif date_hint:
+            date_source = date_source or "search_title_or_snippet"
         source = {
             "id": f"S{len(sources) + 1}",
             "title": re.sub(r"\s+", " ", html.unescape(str(item.get("title") or parsed.hostname or "网页"))).strip()[:300],
@@ -1581,9 +2131,13 @@ def web_search(
             ),
             "domain": parsed.hostname or "",
             "snippet": re.sub(r"\s+", " ", html.unescape(str(item.get("snippet") or ""))).strip()[:800],
-            "publishedAt": str(item.get("publishedAt") or date_hint)[:80],
-            "publishedTimestamp": str(item.get("publishedTimestamp") or published_timestamp)[:80],
-            "dateEvidence": str(item.get("dateEvidence") or date_hint)[:120],
+            "publishedAt": provider_date[:80],
+            "publishedTimestamp": provider_timestamp[:80],
+            "dateEvidence": (provider_date_evidence or provider_date or date_hint)[:120],
+            "dateHint": date_hint[:80],
+            "dateSource": date_source,
+            "providerDate": provider_date[:80],
+            "providerDateSource": provider_date_source,
             "searchProvider": effective_provider,
             "searchBackend": str(item.get("searchBackend") or effective_provider),
             "requestedFreshness": requested_freshness,
@@ -1596,6 +2150,47 @@ def web_search(
             break
     if not sources:
         raise SafeWebError("搜索服务没有返回可验证的公网来源")
+    offset_supported = provider_offset_supported(effective_provider)
+    offset_applied = bool(
+        requested_offset
+        and offset_supported
+        and not requested_page_cursor
+    )
+    pagination_supported = bool(offset_supported and not requested_page_cursor)
+    pagination_reason = ""
+    if requested_page_cursor:
+        pagination_reason = "provider_does_not_expose_stable_page_cursor"
+    elif requested_offset and not offset_supported:
+        pagination_reason = "provider_does_not_support_offset"
+    has_more: bool | None
+    next_offset: int | None
+    if pagination_supported:
+        has_more = raw_result_count >= candidate_limit
+        next_offset = requested_offset + raw_result_count if has_more else None
+    else:
+        has_more = None
+        next_offset = None
+    pagination = {
+        "requestedOffset": requested_offset,
+        "requestedPageCursor": requested_page_cursor,
+        "appliedOffset": requested_offset if offset_applied else 0,
+        "appliedPageCursor": None,
+        "offsetSupported": bool(offset_supported),
+        "pageCursorSupported": False,
+        "supported": pagination_supported,
+        "applied": bool(offset_applied),
+        "hasMore": has_more,
+        "nextOffset": next_offset,
+        "nextPageCursor": None,
+        "reason": pagination_reason,
+    }
+    domain_filter = {
+        "requested": list(requested_domains),
+        "supported": True,
+        "applied": bool(requested_domains),
+        "candidateLimit": candidate_limit,
+        "matchedResults": len(sources),
+    }
     read_candidates = sorted(
         enumerate(sources),
         key=lambda pair: _page_read_priority(pair[1], clean_query, pair[0], requested_freshness),
@@ -1627,6 +2222,19 @@ def web_search(
             source["truncated"] = bool(page.get("truncated"))
             source["promptInjectionMarkers"] = list(page.get("promptInjectionMarkers") or [])
             source["links"] = list(page.get("links") or [])
+            if str(page.get("dateSource") or "").startswith("meta:") or page.get("dateSource") == "page_metadata":
+                source["publishedAt"] = str(page.get("publishedAt") or "")[:160]
+                source["publishedTimestamp"] = str(page.get("publishedTimestamp") or "")[:80]
+                source["dateEvidence"] = str(page.get("dateEvidence") or "")[:160]
+                source["dateSource"] = str(page.get("dateSource") or "page_metadata")[:80]
+            for field in (
+                "totalChars", "range", "startChar", "endChar", "nextStartChar",
+                "rangeExact", "projectionMode", "continuationStartChar",
+                "continuationMaxChars", "continuation", "hasMore", "find",
+                "matchCount", "matches", "matchPositions", "findMatches",
+            ):
+                if field in page:
+                    source[field] = page[field]
             return 1
         if error is not None:
             source["bodyError"] = str(error)[:240]
@@ -1662,6 +2270,9 @@ def web_search(
         "providerErrors": provider_errors,
         "providerSkipped": skipped_providers,
         "dateFilter": date_filter,
+        "domains": list(requested_domains),
+        "domainFilter": domain_filter,
+        "pagination": pagination,
         "sources": sources,
         "searchedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "cacheHit": False,

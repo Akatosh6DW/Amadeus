@@ -8,6 +8,7 @@ live2d-check.png
 .env
 .cache/
 .pytest_tmp/
+/.pytest-tmp-*/
 /.tmp/
 /tmp/
 /exports/

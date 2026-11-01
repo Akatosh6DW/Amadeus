@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any, Mapping
 from agent.proactive_control import PROACTIVE_DIRECTIVES
+from agent.memory_purpose import is_personal_memory, memory_purpose
 from backend.common.values import clamp_float, clamp_int
 
 
@@ -130,7 +131,7 @@ def normalize_memory_candidate(value: Any) -> dict[str, Any] | None:
     cardinality = str(raw.get("cardinality") or "multi").strip().lower()
     if cardinality not in {"single", "multi"}:
         cardinality = "multi"
-    should_save = bool(raw.get("should_save", raw.get("shouldSave", True)))
+    should_save = bool(raw.get("should_save", raw.get("shouldSave", True))) and is_personal_memory(raw)
     source_turn_values = raw.get("sourceTurnIds", raw.get("source_turn_ids", ()))
     if not isinstance(source_turn_values, (list, tuple)):
         source_turn_values = ()
@@ -143,10 +144,34 @@ def normalize_memory_candidate(value: Any) -> dict[str, Any] | None:
             turn_id = str(item.get("turnId") or item.get("turn_id") or "").strip()[:120]
             quote = str(item.get("quote") or "").strip()[:800]
             if turn_id and quote:
-                evidence.append({"turnId": turn_id, "quote": quote})
+                evidence_item = {"turnId": turn_id, "quote": quote}
+                for key in (
+                    "sourceMessageId", "sourceTurnId", "sourceRole", "sourceType",
+                    "origin", "role", "speaker",
+                ):
+                    value = item.get(key)
+                    if value not in (None, ""):
+                        evidence_item[key] = str(value).strip()[:120]
+                evidence.append(evidence_item)
+    source_role = str(
+        raw.get("sourceRole") or raw.get("source_role") or raw.get("speaker") or ""
+    ).strip().lower()[:40]
+    source_type = str(
+        raw.get("sourceType") or raw.get("source_type") or raw.get("origin") or ""
+    ).strip().lower()[:80]
+    source_message_id = str(
+        raw.get("sourceMessageId") or raw.get("source_message_id") or ""
+    ).strip()[:160]
+    source_turn_id = str(
+        raw.get("sourceTurnId") or raw.get("source_turn_id") or ""
+    ).strip()[:160]
+    subject_source = raw.get("subjectSource") or raw.get("subject_source")
+    if not isinstance(subject_source, Mapping):
+        subject_source = None
     return {
         "content": content[:600],
         "type": memory_type,
+        "memoryPurpose": memory_purpose(raw),
         "importance": importance,
         "shouldSave": should_save,
         "subject": str(raw.get("subject") or "").strip()[:120],
@@ -165,6 +190,11 @@ def normalize_memory_candidate(value: Any) -> dict[str, Any] | None:
             if str(item).strip()
         )),
         "evidence": evidence,
+        **({"sourceRole": source_role} if source_role else {}),
+        **({"sourceType": source_type} if source_type else {}),
+        **({"sourceMessageId": source_message_id} if source_message_id else {}),
+        **({"sourceTurnId": source_turn_id} if source_turn_id else {}),
+        **({"subjectSource": dict(subject_source)} if subject_source else {}),
     }
 
 

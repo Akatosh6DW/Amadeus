@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-VISION_MODEL = "deepseek-v4-flash-vision-exp"
+VISION_MODEL = "deepseek-flash"
 VISION_ENDPOINT = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_ENDPOINT_HOST = "api.deepseek.com"
 GOOGLE_ENDPOINT_HOST = "generativelanguage.googleapis.com"

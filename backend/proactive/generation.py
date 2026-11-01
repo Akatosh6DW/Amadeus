@@ -4,18 +4,14 @@
 只在已有条件下进行日语对齐和视觉审计，提示、思考参数、重试次数均沿用原协议。
 """
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 import json
 import time
-from agent.dialogue_architecture import choose_turn_policy
-from agent.epistemic_architecture import proactive_external_claim_risks
+from backend.chat.delivery import DeliveryError, require_delivery
 from backend.chat.parsing import parse_json_object
-from backend.chat.completion import visual_grounding_text_fingerprint
-from backend.conversation.questions import terminal_answerable_question
-from backend.proactive.rules import proactive_private_topic_violation, proactive_reply_duplicate, proactive_outreach_context_key
-from backend.proactive.catalog import PROACTIVE_SCREEN_QUESTION
+from backend.proactive.rules import proactive_outreach_context_key
 from backend.proactive.persona import PersonaResources
+from backend.proactive.catalog import PROACTIVE_SCREEN_QUESTION as PROACTIVE_SCREEN_QUESTION
 from backend.proactive.prepared import PreparedProactiveTurn
 from backend.proactive.ports import ContextOperations, ModelOperations, VisualOperations
 
@@ -34,28 +30,21 @@ class ProactiveGenerator:
         body = prepared.body
         context = prepared.context
         settings = prepared.settings
-        messages = prepared.messages
-        previous_prompt = prepared.previous_prompt
         unanswered_count = prepared.unanswered_count
         kind = prepared.kind
         silence_check_in = prepared.silence_check_in
         recent_replies = prepared.recent_replies
         resolution = prepared.resolution
         loaded_modules = prepared.loaded_modules
-        proactive_persona_policy = prepared.proactive_persona_policy
-        recent_user_texts = prepared.recent_user_texts
-        pending_todo_topic_id = prepared.pending_todo_topic_id
         screen_result = prepared.screen_result
         screen_evidence = prepared.screen_evidence
         allowed_topic_source_ids = prepared.allowed_topic_source_ids
-        silence_topic_id = prepared.silence_topic_id
         pending_question_text = prepared.pending_question_text
         exchange_status = prepared.exchange_status
         generation_rule = prepared.generation_rule
         prompt_input = prepared.prompt_input
         last_error = ""
         duplicate_candidate = ""
-        proactive_policy = choose_turn_policy("你最近想聊什么？")
         started = time.perf_counter()
         for attempt in range(2):
             retry_rule = ""
@@ -97,164 +86,15 @@ class ProactiveGenerator:
                 raw_candidate = parse_json_object(content)
                 raw_candidate = raw_candidate if isinstance(raw_candidate, dict) else {}
                 result = self.model.normalize_model_reply(content, settings=settings)
-                reply = str(result.get("reply") or "").strip()
-                if result.get("emptyReply") or not reply:
-                    last_error = "upstream_returned_empty_proactive_reply"
-                    continue
-                epistemic_risks = proactive_external_claim_risks(
-                    reply,
-                    declared_external_claims=[
-                        *(
-                            raw_candidate.get("externalFactClaims")
-                            if isinstance(raw_candidate.get("externalFactClaims"), list)
-                            else []
-                        ),
-                        *(
-                            raw_candidate.get("researchActionClaims")
-                            if isinstance(raw_candidate.get("researchActionClaims"), list)
-                            else []
-                        ),
-                    ],
-                )
-                if epistemic_risks:
-                    last_error = f"proactive_epistemic_risk:{','.join(epistemic_risks)}"
-                    duplicate_candidate = reply
-                    self.write_log(
-                        "proactive_candidate_rejected",
-                        attempt=attempt + 1,
-                        reason="proactive_unsupported_external_claim",
-                        epistemicRisks=list(epistemic_risks),
-                    )
-                    continue
-                if not terminal_answerable_question(reply):
-                    last_error = "proactive_reply_missing_terminal_open_question"
-                    duplicate_candidate = reply
-                    continue
-                proactive_act = str(raw_candidate.get("proactiveAct") or "").strip()
-                allowed_proactive_acts = {
-                    "ask_new_question",
-                    "ask_unanswered_followup",
-                    "share_observation_and_ask",
-                    "check_in_on_silence",
-                }
-                if proactive_act not in allowed_proactive_acts:
-                    last_error = "proactive_reply_missing_valid_act"
-                    duplicate_candidate = reply
-                    continue
-                if silence_check_in and proactive_act != "check_in_on_silence":
-                    last_error = "proactive_silence_check_in_not_followed"
-                    duplicate_candidate = reply
-                    continue
-                if (
-                    not result.get("requiresUserResponseProvided")
-                    or not result.get("requiresUserResponse")
-                    or result.get("expectedResponseType") != "free_text"
-                ):
-                    last_error = "proactive_reply_missing_response_contract"
-                    duplicate_candidate = reply
-                    continue
-                topic_source_id = str(raw_candidate.get("topicSourceId") or "").strip()
+                result = require_delivery(result, settings=settings, logger=self.write_log,
+                                          request_id=str(body.get("requestId") or "proactive"))
+                canonical_reply = result["reply"]
+                proactive_act = str(raw_candidate.get("proactiveAct") or "share_observation")
+                topic_source_id = str(raw_candidate.get("topicSourceId") or "")
                 if topic_source_id not in allowed_topic_source_ids:
-                    last_error = "proactive_reply_missing_grounded_topic_source"
-                    duplicate_candidate = reply
-                    self.write_log(
-                        "proactive_candidate_rejected",
-                        attempt=attempt + 1,
-                        reason=last_error,
-                        topicSourceId=topic_source_id,
-                    )
-                    continue
-                if silence_check_in and topic_source_id != silence_topic_id:
-                    last_error = "proactive_silence_topic_not_followed"
-                    duplicate_candidate = reply
-                    continue
-                if pending_todo_topic_id and topic_source_id != pending_todo_topic_id:
-                    last_error = "proactive_pending_todo_not_followed_up"
-                    duplicate_candidate = reply
-                    self.write_log(
-                        "proactive_candidate_rejected",
-                        attempt=attempt + 1,
-                        reason=last_error,
-                        topicSourceId=topic_source_id,
-                        requiredTopicSourceId=pending_todo_topic_id,
-                    )
-                    continue
-                if screen_evidence and topic_source_id != "screen:current":
-                    last_error = "proactive_screen_observation_not_used"
-                    duplicate_candidate = reply
-                    self.write_log(
-                        "proactive_candidate_rejected",
-                        attempt=attempt + 1,
-                        reason=last_error,
-                        topicSourceId=topic_source_id,
-                    )
-                    continue
-                if screen_evidence and self.visual.tool_grounding_violation(
-                    raw_candidate,
-                    [screen_result] if screen_result else [],
-                    PROACTIVE_SCREEN_QUESTION,
-                    self.context.read_relationship_state(),
-                ):
-                    last_error = "proactive_screen_reply_not_grounded"
-                    duplicate_candidate = reply
-                    self.write_log(
-                        "proactive_candidate_rejected",
-                        attempt=attempt + 1,
-                        reason=last_error,
-                        topicSourceId=topic_source_id,
-                    )
-                    continue
-                if raw_candidate.get("usesPrivatePersonaAsTopic") is not False:
-                    last_error = "proactive_private_topic_not_explicitly_excluded"
-                    duplicate_candidate = reply
-                    self.write_log(
-                        "proactive_candidate_rejected",
-                        attempt=attempt + 1,
-                        reason=last_error,
-                        topicSourceId=topic_source_id,
-                    )
-                    continue
-                private_violation, private_rule = proactive_private_topic_violation(
-                    reply,
-                    recent_user_texts,
-                    proactive_persona_policy,
-                )
-                if private_violation:
-                    last_error = f"proactive_private_topic_violation:{private_rule}"
-                    duplicate_candidate = reply
-                    self.write_log(
-                        "proactive_candidate_rejected",
-                        attempt=attempt + 1,
-                        reason="proactive_private_topic_violation",
-                        privacyRule=private_rule,
-                        topicSourceId=topic_source_id,
-                    )
-                    continue
-                if (
-                    exchange_status == "completed"
-                    and raw_candidate.get("reopensCompletedTurn") is not False
-                ):
-                    last_error = "proactive_reply_reopened_completed_turn"
-                    duplicate_candidate = reply
-                    continue
-                duplicate, matched = proactive_reply_duplicate(
-                    reply,
-                    recent_replies,
-                    previous_prompt=previous_prompt,
-                )
-                if duplicate:
-                    last_error = "proactive_reply_too_similar"
-                    duplicate_candidate = matched
-                    continue
-                style_validation = self.model.dialogue_validation_for_result(
-                    result,
-                    proactive_policy,
-                    messages,
-                )
-                if style_validation.needs_rewrite:
-                    last_error = "proactive_reply_violated_dialogue_policy"
-                    duplicate_candidate = reply
-                    continue
+                    result["proactiveTopicUnverified"] = True
+                # Topic relevance and question/style shape are generation guidance,
+                # never permission to discard a valid answer or generate repeatedly.
                 latest_proactive_control = self.context.normalize_proactive_control(
                     self.context.read_conversation_context().get("proactiveControl")
                 )
@@ -271,36 +111,13 @@ class ProactiveGenerator:
                         "reason": "proactive_paused_during_generation",
                         "proactiveControl": latest_proactive_control,
                     }
-                result = self.model.align_spoken_text_ja(settings, result)
-                if screen_result and screen_evidence:
-                    try:
-                        proactive_visual_audit = self.visual.audit_visual_grounding_with_model(
-                            settings,
-                            PROACTIVE_SCREEN_QUESTION,
-                            result,
-                            [screen_result],
-                            request_id=str(body.get("requestId") or "proactive-screen"),
-                        )
-                    except Exception as error:
-                        proactive_visual_audit = {
-                            "passes": False,
-                            "reasons": ["proactive_visual_audit_unavailable"],
-                            "errorType": type(error).__name__,
-                        }
-                    self.write_log(
-                        "proactive_visual_semantic_grounding_audit",
-                        attempt=attempt + 1,
-                        decision=proactive_visual_audit,
-                    )
-                    if not proactive_visual_audit.get("passes"):
-                        last_error = "proactive_screen_reply_failed_semantic_grounding"
-                        # Do not feed unsupported visual prose into the next model
-                        # attempt; the typed currentScreenObservation is sufficient.
-                        duplicate_candidate = ""
-                        continue
-                    result["visualGroundingAudit"] = proactive_visual_audit
-                    result["visualGroundingVerification"] = "proactive_independent_semantic_audit"
-                    result["visualGroundingTextFingerprint"] = visual_grounding_text_fingerprint(result)
+                try:
+                    result = self.model.align_spoken_text_ja(settings, result)
+                except Exception:
+                    result["speechUnavailableReason"] = "spoken_alignment_failed"
+                result["reply"] = canonical_reply
+                result = require_delivery(result, settings=settings, logger=self.write_log,
+                                          request_id=str(body.get("requestId") or "proactive"))
                 latest_proactive_control = self.context.normalize_proactive_control(
                     self.context.read_conversation_context().get("proactiveControl")
                 )
@@ -350,6 +167,10 @@ class ProactiveGenerator:
                         "_conversationToolResults": [screen_result],
                     })
                 return result
+            except DeliveryError as error:
+                last_error = error.code
+                if error.code == "leak_blocked":
+                    break
             except Exception as error:
                 last_error = f"{type(error).__name__}: {error}"[:500]
         self.write_log(
@@ -365,5 +186,5 @@ class ProactiveGenerator:
         return {
             "ok": False,
             "error": "proactive_generation_failed",
-            "message": f"主动聊天没有取得可用的新问题；未使用本地固定题目。{last_error}"[:700],
+            "message": f"主动聊天没有取得可用的回复；未使用本地固定题目。{last_error}"[:700],
         }

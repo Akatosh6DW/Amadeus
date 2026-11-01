@@ -1,0 +1,5 @@
+# Optional QQ gateway only. AstrBot has a separate environment and its own deps.
+aiohttp>=3.11.18,<4
+Pillow>=11
+# QQ Space uses ManualCookieProvider; the existing gateway provides authentication.
+qzone-sdk==1.0.1

@@ -111,6 +111,8 @@ const NATIVE_MOTION_CONTROLLER = window.AmadeusNativeMotionController;
 if (!NATIVE_MOTION_CONTROLLER) throw new Error("character/native_motion_controller.js is required");
 const CHAT_CONTROLLER = window.AmadeusChatController;
 if (!CHAT_CONTROLLER) throw new Error("chat/chat_controller.js is required");
+const DELIVERY_PROJECTION = window.AmadeusDeliveryProjection;
+if (!DELIVERY_PROJECTION) throw new Error("chat/delivery_projection.js is required");
 const THINKING_INDICATOR = window.AmadeusThinkingIndicator;
 if (!THINKING_INDICATOR) throw new Error("chat/thinking_indicator.js is required");
 const CONVERSATION_STATE = window.AmadeusConversationState;
@@ -157,7 +159,7 @@ const PROACTIVE_FREQUENCY_PROFILES = Object.freeze({
 
 const DEFAULT_SETTINGS = {
   apiEndpoint: "https://api.deepseek.com/chat/completions",
-  apiModel: "deepseek-v4-flash-vision-exp",
+  apiModel: "deepseek-flash",
   cognitiveRepairModel: "follow",
   apiKey: "",
   apiKeySet: false,
@@ -201,7 +203,7 @@ const DEFAULT_SETTINGS = {
   gptSovitsCondaEnv: "",
   gptSovitsRoot: "",
   gptSovitsModelPreset: "emotionclarity_v7_retrained_short",
-  voicePresetRevision: 9,
+  voicePresetRevision: 10,
   gptSovitsGptModel: "",
   gptSovitsSovitsModel: "",
   gptSovitsRefAudio: "",
@@ -218,12 +220,15 @@ const DEFAULT_SETTINGS = {
   permissionReadSystemTime: true,
   permissionWebSearch: true,
   permissionFileRead: true,
+  permissionQqControl: false,
   permissionFileWrite: true,
   permissionOpenBrowser: true,
   agentFileWorkspace: "data\\agent-workspace",
-  webSearchProvider: "duckduckgo",
+  webSearchProvider: "deepseek",
+  webSearchFallbackProvider: "bing",
   webSearchApiKey: "",
   webSearchApiKeySet: false,
+  deepseekSearchApiKeySet: false,
   webSearchMaxResults: 5,
   webReadTopPages: 2,
   webRequestTimeout: 12,
@@ -379,6 +384,9 @@ let messageView = null;
 let apiVerificationController = null;
 let modelProfileController = null;
 let settingsController = null;
+let qqSetupController = null;
+let qqActivityController = null;
+let toolPickerController = null;
 let updateController = null;
 let todoController = null;
 let modelTransformController = null;
@@ -396,6 +404,7 @@ let firstRunApiSetupOpened = false;
 let activeConversationGroup = "";
 let activeConversationInputs = [];
 let activeConversationAttachments = [];
+let activeConversationTools = [];
 let activeConversationReplyAnchor = null;
 let activeConversationFocus = null;
 let activeConversationUserMessageId = "";
@@ -932,6 +941,12 @@ conversationStateController = CONVERSATION_STATE.createConversationStateControll
   clamp,
   toNumber,
   requestHistory: (...args) => storageScopedFetch(...args),
+  isSyncBusy: () => Boolean(
+    answerIsBusy()
+    || proactiveController?.isRequestInFlight()
+    || touchInteractionController?.isRequestInFlight()
+    || reminderPollingController?.isInFlight()
+  ),
   hydrateContext: (data, previousConversationId) => {
     hydrateProactiveConversationContext(data, previousConversationId);
   },
@@ -1020,6 +1035,7 @@ function bindDom() {
   Object.assign(dom, {
     canvas: document.getElementById("stage"),
     modelState: document.getElementById("modelState"),
+    proactiveWaitingIndicator: document.getElementById("proactiveWaitingIndicator"),
     hud: document.getElementById("hud"),
     settingsBtn: document.getElementById("settingsBtn"),
     newConversationBtn: document.getElementById("newConversationBtn"),
@@ -1095,7 +1111,7 @@ function bindDom() {
     todoEditor: document.getElementById("todoEditor"),
     todoEditorTitle: document.getElementById("todoEditorTitle"),
     todoEditorDetails: document.getElementById("todoEditorDetails"),
-    todoEditorOnDue: document.getElementById("todoEditorOnDue"),
+    todoEditorMode: document.getElementById("todoEditorMode"),
     todoEditorDueAt: document.getElementById("todoEditorDueAt"),
     todoEditorDueDate: document.getElementById("todoEditorDueDate"),
     todoEditorPriority: document.getElementById("todoEditorPriority"),
@@ -1342,10 +1358,12 @@ function bindDom() {
     permissionReadSystemTimeInput: document.getElementById("permissionReadSystemTimeInput"),
     permissionWebSearchInput: document.getElementById("permissionWebSearchInput"),
     permissionFileReadInput: document.getElementById("permissionFileReadInput"),
+    permissionQqControlInput: document.getElementById("permissionQqControlInput"),
     permissionFileWriteInput: document.getElementById("permissionFileWriteInput"),
     permissionOpenBrowserInput: document.getElementById("permissionOpenBrowserInput"),
     agentFileWorkspaceInput: document.getElementById("agentFileWorkspaceInput"),
     webSearchProviderInput: document.getElementById("webSearchProviderInput"),
+    webSearchFallbackProviderInput: document.getElementById("webSearchFallbackProviderInput"),
     webSearchApiKeyInput: document.getElementById("webSearchApiKeyInput"),
     webSearchMaxResultsInput: document.getElementById("webSearchMaxResultsInput"),
     webSearchStatus: document.getElementById("webSearchStatus"),
@@ -1571,7 +1589,7 @@ function bindMessageView() {
       const speechText = metaData.speechText || metaData.spokenTextJa;
       if (!speechText) return "";
       const label = normalizeSpeechLanguage(metaData.speechLanguage) === "zh-CN" ? "ZH" : "JA";
-      return `${label}: ${stripVisibleStageDirections(speechText)}`;
+      return `${label}: ${projectSpeechText(speechText)}`;
     },
     setTimer: window.setTimeout.bind(window),
     requestAnimationFrame,
@@ -1637,7 +1655,8 @@ function bindTodoController() {
       quickForm: dom.todoQuickForm,
       list: dom.todoList,
       editor: dom.todoEditor,
-      editorOnDue: dom.todoEditorOnDue,
+      editorMode: dom.todoEditorMode,
+      editorDetails: dom.todoEditorDetails,
       editorDueAt: dom.todoEditorDueAt,
       editorDueDate: dom.todoEditorDueDate,
       editorCancel: dom.todoEditorCancelBtn,
@@ -1669,8 +1688,9 @@ function bindTodoController() {
         const recurrence = TODO_CONTROLLER.normalizeRecurrenceEditorValue(item.recurrenceRule);
         preservedTodoRecurrenceRule = recurrence.preservedRule;
         dom.todoEditorTitle.value = String(item.title || "");
-        dom.todoEditorDetails.value = String(item.details || "");
-        dom.todoEditorOnDue.value = String(item.onDue || "");
+        dom.todoEditorDetails.value = String(item.instructions ?? (item.onDue || item.details || ""));
+        dom.todoEditorMode.value = item.onDue ? "execute" : "remind";
+        dom.todoEditorDetails.required = Boolean(item.onDue);
         dom.todoEditorDueAt.value = todoDateTimeInputValue(item.dueAt);
         dom.todoEditorDueDate.value = String(item.dueDate || "");
         dom.todoEditorPriority.value = String(item.priority || "normal");
@@ -1681,8 +1701,8 @@ function bindTodoController() {
       },
       readEditor: () => ({
         title: dom.todoEditorTitle.value,
-        details: dom.todoEditorDetails.value,
-        onDue: dom.todoEditorOnDue.value,
+        instructions: dom.todoEditorDetails.value,
+        executeOnDue: dom.todoEditorMode.value === "execute",
         dueAt: dom.todoEditorDueAt.value,
         dueDate: dom.todoEditorDueDate.value,
         priority: dom.todoEditorPriority.value,
@@ -2246,6 +2266,7 @@ function bindChatController() {
       toast: message => toast(message),
       onStart: ({ generation, requestId }) => {
         syncChatSubmitButton();
+        thinkingIndicatorController?.setState?.("thinking", generation);
         setEmotion("thinking", "nod", { restart: true });
         thinkingIndicatorController?.show?.(generation, "context", "正在整理当前对话与记忆");
         thinkingIndicatorController?.startProgress?.(requestId, generation);
@@ -2380,11 +2401,13 @@ function bindProactiveControllers() {
     delivery: { applyAssistant: (...args) => applyAssistant(...args) },
     reminder: { isInFlight: () => reminderPollingController?.isInFlight() },
     feedback: {
+      onWaitingStateChange: snapshot => updateProactiveWaitingIndicator(snapshot),
       warn: (...args) => console.warn(...args),
       toast: message => toast(message),
       updateConnectionStatus: data => updateConnectionStatus(data),
     },
   });
+  updateProactiveWaitingIndicator();
 }
 
 function bindTouchInteraction() {
@@ -2521,7 +2544,14 @@ function bindEvents() {
     }
     sendMessage();
   });
-  dom.attachFileBtn?.addEventListener("click", () => dom.attachmentInput?.click());
+  toolPickerController = window.AmadeusToolPicker.createController({
+    button: dom.attachFileBtn, menu: document.getElementById("toolPickerMenu"),
+    chips: document.getElementById("composerTools"), input: dom.userInput, fileInput: dom.attachmentInput,
+    getSettings: () => settings,
+    onChanged: () => qqActivityController?.poll(),
+    openSettings: tab => { openSettings(); activateSettingsTab(tab); },
+  });
+  document.getElementById("qqConfigureBtn")?.addEventListener("click", () => { openSettings(); activateSettingsTab("qq"); });
   dom.cancelReplyAnchorBtn?.addEventListener("click", clearPendingReplyAnchor);
   dom.attachmentInput?.addEventListener("change", () => {
     addPendingAttachments([...dom.attachmentInput.files]);
@@ -2552,6 +2582,10 @@ function bindEvents() {
   dom.saveVoiceBtn.addEventListener("click", saveVoiceSettings);
   dom.savePermissionsBtn.addEventListener("click", savePermissionsSettings);
   dom.testWebSearchBtn?.addEventListener("click", testWebSearchConnection);
+  dom.webSearchProviderInput?.addEventListener("change", () => {
+    dom.webSearchApiKeyInput.value = "";
+    refreshWebSearchKeyPlaceholder();
+  });
   dom.proactiveInteractionsEnabledInput?.addEventListener("change", updateProactiveTopicControls);
   dom.proactiveScreenObservationEnabledInput?.addEventListener("change", updateProactiveTopicControls);
   dom.proactiveTopicInputs?.forEach(input => input.addEventListener("change", updateProactiveTopicControls));
@@ -2803,6 +2837,7 @@ async function boot() {
   await loadLive2DModelRegistry();
   await loadMemory();
   await hydrateConversationHistory();
+  conversationStateController?.startSync();
   await loadTodos();
   await bookmarksController?.load();
   if (!settings.releaseMode) {
@@ -2814,6 +2849,23 @@ async function boot() {
   startTodoReminderPolling();
   syncPendingProactiveConversationEvents();
   startConnectionWatchdog();
+  qqActivityController = window.AmadeusQqActivity.createController({
+    element: document.getElementById("qqActivity"),
+    request: (...args) => storageScopedFetch(...args),
+    isEnabled: () => Boolean(settings.permissionQqControl),
+    isVisible: () => Boolean(toolPickerController?.has("qq")),
+    notify: message => toast(message),
+  });
+  qqActivityController.start();
+  qqSetupController = window.AmadeusQqSetup.createController({
+    element: document.getElementById("qqSetup"),
+    request: (...args) => storageScopedFetch(...args),
+    isVisible: () => !dom.settingsModal.classList.contains("hidden") && document.getElementById("qqSetup").classList.contains("active"),
+    isEnabled: () => Boolean(settings.permissionQqControl),
+    enablePermission: () => saveSettings({permissionQqControl: true}, "已启用 QQ 状态与管理权限"),
+    onChanged: () => qqActivityController?.poll(),
+  });
+  qqSetupController.start();
   applySettingsToUi();
   fillSettingsForm();
   if (DEV_MODE) {
@@ -3370,7 +3422,7 @@ function renderTodoItems(items = []) {
     const recurrenceLabel = todoRecurrenceLabel(recurrenceRule);
     if (recurrenceLabel) details.push(isPaused ? `${recurrenceLabel}（已暂停）` : recurrenceLabel);
     else if (isPaused) details.push("已暂停");
-    details.push(item.onDue ? `到点执行：${todoTextSnippet(item.onDue)}` : "仅提醒");
+    details.push(item.onDue ? `到点执行：${todoTextSnippet(item.instructions || item.onDue)}` : "仅提醒");
     if (item.snoozedUntil) details.push("推迟至 " + todoLocalDateTime(item.snoozedUntil));
     const lastExecution = todoLastExecutionSummary(item);
     if (lastExecution) details.push("最近执行：" + lastExecution);
@@ -3552,12 +3604,16 @@ function normalizeSettings(raw) {
     permissionReadSystemTime: Boolean(merged.permissionReadSystemTime),
     permissionWebSearch: Boolean(merged.permissionWebSearch),
     permissionFileRead: Boolean(merged.permissionFileRead),
+    permissionQqControl: Boolean(merged.permissionQqControl),
     permissionFileWrite: Boolean(merged.permissionFileWrite),
     permissionOpenBrowser: Boolean(merged.permissionOpenBrowser),
     agentFileWorkspace: String(merged.agentFileWorkspace || DEFAULT_SETTINGS.agentFileWorkspace),
-    webSearchProvider: ["duckduckgo", "bing", "brave"].includes(String(merged.webSearchProvider).toLowerCase())
-      ? String(merged.webSearchProvider).toLowerCase() : "duckduckgo",
+    webSearchProvider: ["deepseek", "duckduckgo", "bing", "brave"].includes(String(merged.webSearchProvider).toLowerCase())
+      ? String(merged.webSearchProvider).toLowerCase() : "deepseek",
+    webSearchFallbackProvider: ["none", "duckduckgo", "bing"].includes(String(merged.webSearchFallbackProvider).toLowerCase())
+      ? String(merged.webSearchFallbackProvider).toLowerCase() : "bing",
     webSearchApiKeySet: Boolean(merged.webSearchApiKeySet),
+    deepseekSearchApiKeySet: Boolean(merged.deepseekSearchApiKeySet),
     webSearchMaxResults: clamp(toNumber(merged.webSearchMaxResults, 5), 1, 8),
     webReadTopPages: clamp(toNumber(merged.webReadTopPages, 2), 0, 3),
     webRequestTimeout: clamp(toNumber(merged.webRequestTimeout, 12), 3, 30),
@@ -3622,16 +3678,25 @@ function fillSettingsForm() {
   dom.permissionReadSystemTimeInput.checked = settings.permissionReadSystemTime;
   dom.permissionWebSearchInput.checked = settings.permissionWebSearch;
   dom.permissionFileReadInput.checked = settings.permissionFileRead;
+  dom.permissionQqControlInput.checked = settings.permissionQqControl;
   dom.permissionFileWriteInput.checked = settings.permissionFileWrite;
   dom.permissionOpenBrowserInput.checked = settings.permissionOpenBrowser;
   dom.agentFileWorkspaceInput.value = settings.agentFileWorkspace || DEFAULT_SETTINGS.agentFileWorkspace;
-  dom.webSearchProviderInput.value = settings.webSearchProvider || "duckduckgo";
+  const webSearchProvider = settings.webSearchProvider || "deepseek";
+  dom.webSearchProviderInput.value = webSearchProvider;
+  if (dom.webSearchFallbackProviderInput) dom.webSearchFallbackProviderInput.value = settings.webSearchFallbackProvider || "bing";
   dom.webSearchApiKeyInput.value = "";
-  dom.webSearchApiKeyInput.placeholder = settings.webSearchApiKeySet
-    ? "留空保留已保存的搜索 Key" : "DuckDuckGo 不需要填写";
+  const webSearchLabels = {
+    deepseek: "DeepSeek Search",
+    brave: "Brave",
+    bing: "Bing",
+    duckduckgo: "DuckDuckGo",
+  };
+  const webSearchLabel = webSearchLabels[webSearchProvider] || "DeepSeek Search";
+  refreshWebSearchKeyPlaceholder();
   dom.webSearchMaxResultsInput.value = settings.webSearchMaxResults;
   dom.webSearchStatus.textContent = settings.permissionWebSearch
-    ? `${{brave: "Brave", bing: "Bing", duckduckgo: "DuckDuckGo"}[settings.webSearchProvider] || "DuckDuckGo"} 已授权` : "权限关闭";
+    ? `${webSearchLabel} 已授权` : "权限关闭";
   if (dom.proactiveInteractionsEnabledInput) {
     dom.proactiveInteractionsEnabledInput.checked = settings.proactiveInteractionsEnabled;
   }
@@ -3701,33 +3766,18 @@ function syncLayoutSizeInputs() {
 
 function renderVoicePresetOptions() {
   if (!dom.gptSovitsPresetInput) return;
-  const presets = settings.voicePresets || {};
-  const current = settings.gptSovitsModelPreset || dom.gptSovitsPresetInput.value;
-  const orderedIds = Object.keys(presets).filter(id => id !== "custom");
-  if (Object.prototype.hasOwnProperty.call(presets, "custom")) orderedIds.push("custom");
-  if (!orderedIds.length) return;
-  dom.gptSovitsPresetInput.replaceChildren(...orderedIds.map(id => {
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = presets[id]?.label || id;
-    return option;
-  }));
-  dom.gptSovitsPresetInput.value = orderedIds.includes(current) ? current : "custom";
+  dom.gptSovitsPresetInput.value = DEFAULT_SETTINGS.gptSovitsModelPreset;
 }
 
 function updateVoicePresetHint() {
   if (!dom.gptSovitsPresetHint) return;
   const presetId = dom.gptSovitsPresetInput.value;
   const preset = settings.voicePresets?.[presetId];
-  if (presetId === "custom") {
-    dom.gptSovitsPresetHint.textContent = "自定义模式会使用下面填写的权重和参考文件。";
-    return;
-  }
-  const description = preset?.description || "自定义路径不会自动改写下方字段。";
-  dom.gptSovitsPresetHint.textContent = `${description} 选择预设只载入表单；需点击“保存并启动/重启模型”才会切换。`;
+  dom.gptSovitsPresetHint.textContent = preset?.description || "中文使用清晰发音方案，日文沿用原有发音方式。";
 }
 
 function applySettingsToUi() {
+  updateProactiveWaitingIndicator();
   setChatCollapsed(settings.hudCollapsed, { scroll: false });
   document.body.classList.toggle("full-layout", settings.layoutMode === "full");
   document.body.classList.toggle("lite-layout", settings.layoutMode !== "full");
@@ -4064,7 +4114,7 @@ function collectVoiceSettings() {
     gptSovitsPort: toNumber(dom.gptSovitsPortInput.value, settings.gptSovitsPort),
     gptSovitsCondaEnv: dom.gptSovitsCondaEnvInput.value.trim(),
     gptSovitsRoot: dom.gptSovitsRootInput.value.trim(),
-    gptSovitsModelPreset: dom.gptSovitsPresetInput.value,
+    gptSovitsModelPreset: DEFAULT_SETTINGS.gptSovitsModelPreset,
     gptSovitsGptModel: dom.gptSovitsGptModelInput.value.trim(),
     gptSovitsSovitsModel: dom.gptSovitsSovitsModelInput.value.trim(),
     gptSovitsRefAudio: dom.gptSovitsRefAudioInput.value.trim(),
@@ -4074,7 +4124,29 @@ function collectVoiceSettings() {
   };
 }
 
+function refreshWebSearchKeyPlaceholder() {
+  const provider = dom.webSearchProviderInput?.value || "deepseek";
+  let official = false;
+  try { official = new URL(String(settings.apiEndpoint || "")).hostname.toLowerCase() === "api.deepseek.com"; } catch (_) {}
+  const usesMainKey = provider === "deepseek" && official && settings.apiKeySet;
+  dom.webSearchApiKeyInput.disabled = usesMainKey || ["duckduckgo", "bing"].includes(provider);
+  if (usesMainKey) {
+    dom.webSearchApiKeyInput.placeholder = "已复用 API 设置中的 DeepSeek Key，无需填写";
+  } else if (provider === "deepseek") {
+    dom.webSearchApiKeyInput.placeholder = settings.deepseekSearchApiKeySet
+      ? "留空保留已保存的 DeepSeek Search Key"
+      : "填写独立 DeepSeek Search Key，或在 API 设置中配置官方 DeepSeek Key";
+  } else if (provider === "brave") {
+    dom.webSearchApiKeyInput.placeholder = settings.webSearchApiKeySet
+      ? "留空保留已保存的 Brave Key" : "填写 Brave Search API Key";
+  } else {
+    dom.webSearchApiKeyInput.placeholder = "DuckDuckGo / Bing 不需要填写";
+  }
+}
+
 function collectPermissionsSettings() {
+  const webSearchProvider = dom.webSearchProviderInput.value;
+  const searchKey = dom.webSearchApiKeyInput.disabled ? "" : dom.webSearchApiKeyInput.value.trim();
   return {
     permissionReadScreen: dom.permissionReadScreenInput.checked,
     permissionReadCamera: dom.permissionReadCameraInput.checked,
@@ -4082,11 +4154,15 @@ function collectPermissionsSettings() {
     permissionReadSystemTime: dom.permissionReadSystemTimeInput.checked,
     permissionWebSearch: dom.permissionWebSearchInput.checked,
     permissionFileRead: dom.permissionFileReadInput.checked,
+    permissionQqControl: dom.permissionQqControlInput.checked,
     permissionFileWrite: dom.permissionFileWriteInput.checked,
     permissionOpenBrowser: dom.permissionOpenBrowserInput.checked,
     agentFileWorkspace: dom.agentFileWorkspaceInput.value.trim() || settings.agentFileWorkspace,
-    webSearchProvider: dom.webSearchProviderInput.value,
-    webSearchApiKey: dom.webSearchApiKeyInput.value.trim(),
+    webSearchProvider,
+    webSearchFallbackProvider: dom.webSearchFallbackProviderInput?.value || settings.webSearchFallbackProvider || "bing",
+    ...(webSearchProvider === "deepseek"
+      ? { deepseekSearchApiKey: searchKey }
+      : webSearchProvider === "brave" ? { webSearchApiKey: searchKey } : {}),
     webSearchMaxResults: clamp(toNumber(dom.webSearchMaxResultsInput.value, settings.webSearchMaxResults), 1, 8),
   };
 }
@@ -4101,12 +4177,23 @@ async function savePermissionsSettings() {
     dom.permissionReadSystemTimeInput.checked = settings.permissionReadSystemTime;
     dom.permissionWebSearchInput.checked = settings.permissionWebSearch;
     dom.permissionFileReadInput.checked = settings.permissionFileRead;
+    dom.permissionQqControlInput.checked = settings.permissionQqControl;
     dom.permissionFileWriteInput.checked = settings.permissionFileWrite;
     dom.permissionOpenBrowserInput.checked = settings.permissionOpenBrowser;
     dom.agentFileWorkspaceInput.value = settings.agentFileWorkspace;
+    const webSearchProvider = settings.webSearchProvider || "deepseek";
+    dom.webSearchProviderInput.value = webSearchProvider;
+    if (dom.webSearchFallbackProviderInput) dom.webSearchFallbackProviderInput.value = settings.webSearchFallbackProvider || "bing";
     dom.webSearchApiKeyInput.value = "";
+    const webSearchLabels = {
+      deepseek: "DeepSeek Search",
+      brave: "Brave",
+      bing: "Bing",
+      duckduckgo: "DuckDuckGo",
+    };
+    refreshWebSearchKeyPlaceholder();
     dom.webSearchStatus.textContent = settings.permissionWebSearch
-      ? `${{brave: "Brave", bing: "Bing", duckduckgo: "DuckDuckGo"}[settings.webSearchProvider] || "DuckDuckGo"} 已授权` : "权限关闭";
+      ? `${webSearchLabels[webSearchProvider] || "DeepSeek Search"} 已授权` : "权限关闭";
   } catch (error) {
     fillSettingsForm();
     toast(`权限设置保存失败：${error.message}`);
@@ -4447,6 +4534,7 @@ function resetActiveConversationRequestState() {
 }
 
 function prepareForConversationNavigation() {
+  toolPickerController?.clear();
   invalidateConversationHistoryHydration();
   chatController?.invalidateForContextChange({ notifyBackend: true, interruptSpeech: false });
   resetActiveConversationRequestState();
@@ -4521,6 +4609,19 @@ function messageIdentityMeta(result, role) {
 }
 
 function bindCompletedTurnIdentity(result, assistantMessage = null) {
+  // regex-purpose: protocol
+  if (String(result?.toolUsed || "").split(/[,\s]+/).includes("voice_configure")) {
+    void settingsController?.refreshFields(
+      ["speechLanguage", "voiceLocale", "gptSovitsTargetLanguage", "voiceEnabled"],
+      next => {
+        dom.speechLanguageInput.value = next.speechLanguage;
+        dom.voiceLocaleInput.value = next.voiceLocale;
+        dom.gptSovitsTargetLanguageInput.value = next.gptSovitsTargetLanguage;
+        dom.voiceEnabledInput.checked = next.voiceEnabled;
+        dom.alignSpokenJaInput.disabled = next.speechLanguage !== "ja-JP";
+      },
+    ).catch(() => toast("语音设置页面同步失败，请重新打开设置核对"));
+  }
   const userIdentity = messageIdentityMeta(result, "user");
   const assistantIdentity = messageIdentityMeta(result, "assistant");
   if (userIdentity.messageId) {
@@ -4692,6 +4793,7 @@ function openSettings() {
   backgroundDraft = newBackgroundDraft();
   fillSettingsForm();
   dom.settingsModal.classList.remove("hidden");
+  qqSetupController?.refresh();
   modelProfileController?.refresh().catch(() => {});
   backgroundEditor?.refresh();
   refreshGptSovitsStatus().catch(error => {
@@ -4727,6 +4829,7 @@ function activateSettingsTab(tab) {
   if (tab !== "memory") closeSalieriWindow();
   dom.settingsTabs.forEach(button => button.classList.toggle("active", button.dataset.tab === tab));
   dom.tabPages.forEach(page => page.classList.toggle("active", page.dataset.page === tab));
+  if (tab === "qq") qqSetupController?.refresh();
   backgroundEditor?.refresh();
 }
 
@@ -5612,6 +5715,8 @@ function updateConnectionStatus(data = {}) {
     connectionStatus = `${apiLabel} / MEM ${memoryCount}`;
   } else if (data.connectionState === "reconnecting") {
     connectionStatus = `API RECONNECT ${data.attempt || 1}/${data.attempts || 3} / MEM ${memoryCount}`;
+  } else if (data.connectionState === "context-limit") {
+    connectionStatus = `上下文预算不足 / MEM ${memoryCount}`;
   } else if (data.connectionState === "failed") {
     const code = String(data.connectionCode || "CONNECTION").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24);
     connectionStatus = `${apiLabel} (${code || "CONNECTION"}) / MEM ${memoryCount}`;
@@ -5756,6 +5861,7 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
       boundaryAfter: item.boundaryAfter,
       kind: "chat",
       sources: Array.isArray(finalResult?.sources) ? finalResult.sources : [],
+      galleryMedia: Array.isArray(finalResult?.galleryMedia) ? finalResult.galleryMedia : [],
       files: Array.isArray(finalResult?.files) ? finalResult.files : [],
       streamedUtterance: true,
       utteranceId: item.utteranceId,
@@ -5811,6 +5917,7 @@ function createChatUtterancePlayback(generation, requestStartedAt, requestId = "
             ? { ...result.todoContext }
             : null,
           sources: Array.isArray(result?.sources) ? result.sources : [],
+      galleryMedia: Array.isArray(result?.galleryMedia) ? result.galleryMedia : [],
           files: Array.isArray(result?.files) ? result.files : [],
           dialoguePolicy: result?.dialoguePolicy || null,
           dialogueValidation: result?.dialogueValidation || null,
@@ -5836,6 +5943,17 @@ function updateModelStateLabel() {
   if (!dom.modelState) return;
   const expression = expressionSnapshot();
   dom.modelState.textContent = runtimeModeStateLabel(`${expression.currentEmotion.toUpperCase()} / ${expression.activeGesture || "IDLE"} / ${connectionStatus}`);
+}
+
+function updateProactiveWaitingIndicator(snapshot = null) {
+  THINKING_INDICATOR.renderProactiveWaitingIndicator(
+    dom.proactiveWaitingIndicator,
+    snapshot || proactiveController?.getState() || {
+      waitingForUser: state.waitingForUser,
+      control: state.proactiveControl,
+    },
+    settings.proactiveInteractionsEnabled,
+  );
 }
 
 const MAX_CHAT_ATTACHMENTS = 6;
@@ -6203,6 +6321,7 @@ async function sendMessage() {
   activeConversationFocus = visibleFocus;
   activeConversationUserMessageId = createClientMessageId();
   activeConversationInputs.push(displayText);
+  activeConversationTools = toolPickerController?.selected() || [];
   activeConversationAttachments.push(...serializedAttachments);
   addMessage("user", displayText, {
     conversationGroup: activeConversationGroup,
@@ -6223,20 +6342,73 @@ async function sendMessage() {
 
 async function handleChatRequestError(error, { generation, requestId, inputs, proactiveContext }) {
   if (!chatController?.isCurrent(generation)) return;
+  thinkingIndicatorController?.setState?.("error", generation);
   const detail = connectionErrorSummary(error);
   const completedTools = Array.isArray(error?.completedTools) ? error.completedTools : [];
+  const completedToolReceipts = Array.isArray(error?.completedToolReceipts)
+    ? error.completedToolReceipts
+    : [];
+  const completedToolNames = new Set([
+    ...completedTools.map(item => String(item || "")),
+    ...completedToolReceipts
+      .filter(item => item && typeof item === "object")
+      .map(item => String(item.tool || item.name || "")),
+  ].filter(Boolean));
+  const hasCompletedEvidence = completedToolNames.size > 0;
+  const operationFailureSummary = (() => {
+    const receipts = completedToolReceipts.filter(item => item && typeof item === "object");
+    const qqReceipts = receipts.filter(item => String(item.tool || "") === "qq_manage");
+    const queryCompleted = receipts.some(item => (
+      ["qq_status", "qq_activity", "qq_history", "qq_identity"].includes(String(item.tool || ""))
+      && item.operation === "query"
+      && item.outcome === "completed"
+      && item.ok === true
+    ));
+    const sends = qqReceipts.filter(item => item.operation === "send");
+    const drafts = qqReceipts.filter(item => item.operation === "draft");
+    const sent = sends.some(item => (
+      item.outcome === "sent"
+      && item.deliveryState === "sent"
+      && Boolean(String(item.messageId || "").trim())
+    ));
+    const unknown = sends.some(item => item.outcome === "unknown");
+    const failed = sends.some(item => item.outcome === "failed");
+    const prefix = queryCompleted ? "QQ 状态查询已完成，" : "";
+    if (sent) return `${prefix}消息已确认发送，但后续回复生成失败。`;
+    if (drafts.some(item => item.outcome === "draft")) {
+      return `${prefix}消息已保存为草稿，尚未发送。`;
+    }
+    if (unknown) return `${prefix}消息发送结果未知，请先核对 QQ，暂不要重复发送。`;
+    if (failed) return `${prefix}消息发送未完成。`;
+    if (queryCompleted) return "QQ 状态查询已完成，但消息尚未发送。";
+    if (qqReceipts.length || completedToolNames.has("qq_manage")) {
+      return "QQ 操作已完成，但没有确认消息发送。";
+    }
+    return "";
+  })();
   const typedPipelineFailure = completedTools.length > 0
+    || completedToolReceipts.length > 0
     || (Boolean(error?.streamErrorType) && !error?.connectionFailure);
   if (typedPipelineFailure) {
     const errorType = String(error.streamErrorType || "internal_pipeline_failed");
     const stage = String(error.streamErrorStage || "pipeline");
     const upstreamFailure = errorType === "upstream_http_failed";
+    const contextOverflow = errorType === "context_budget_exceeded";
     if (upstreamFailure) updateConnectionStatus({ connectionState: "failed", connectionCode: error.code });
-    const message = upstreamFailure
-      ? `${completedTools.length ? "已有操作完成，但后续模型请求失败。" : ""}${detail}`
-      : completedTools.includes("open_browser")
+    if (contextOverflow) updateConnectionStatus({ connectionState: "context-limit", connectionCode: "CONTEXT_LIMIT" });
+    const message = operationFailureSummary
+      ? upstreamFailure
+        ? `${operationFailureSummary}${detail}`
+        : contextOverflow
+          ? `${operationFailureSummary}整理后的上下文仍超过本机设置的输入预算，本次尚未向模型发送请求。聊天记录已保留；可检查上下文上限设置，或新建会话后继续。`
+          : operationFailureSummary
+      : upstreamFailure
+      ? `${hasCompletedEvidence ? "已有操作完成，但后续模型请求失败。" : ""}${detail}`
+      : contextOverflow
+      ? `${hasCompletedEvidence ? "本轮已有操作完成。" : ""}整理后的上下文仍超过本机设置的输入预算，本次尚未向模型发送请求。聊天记录已保留；可检查上下文上限设置，或新建会话后继续。`
+      : completedToolNames.has("open_browser")
       ? "网页已打开，但后续回复生成失败。"
-      : completedTools.length > 0
+      : hasCompletedEvidence
       ? "已有操作成功完成，但后续回复生成失败。"
       : errorType === "cognitive_revision_failed"
       ? "本次回复没有生成成功。"
@@ -6253,6 +6425,7 @@ async function handleChatRequestError(error, { generation, requestId, inputs, pr
       errorType,
       errorStage: stage,
       completedTools,
+      completedToolReceipts,
       noSpeech: true,
     });
     recordVoiceDiagnostic(
@@ -6312,6 +6485,7 @@ async function requestConversationReply() {
     proactiveContext,
     messages: history,
     attachments: activeConversationAttachments,
+    selectedTools: activeConversationTools.slice(),
     contextEpoch: Math.max(0, Number(state.contextEpoch) || 0),
   };
   const common = {
@@ -6421,13 +6595,21 @@ async function applyAssistant(data, userMessage = "") {
     thinkingIndicatorController?.hide?.(Number(data.clientChatGeneration || 0));
     return true;
   }
+  if (DELIVERY_PROJECTION.isPureQqSendConfirmation(data)) {
+    // A confirmed QQ send is an external side effect, not another answer for
+    // the desktop chat. Keep the structured result for persistence/diagnostics,
+    // but do not add a message or start speech for the confirmation sentence.
+    updateDeveloperExchange("", "", data);
+    thinkingIndicatorController?.hide?.(Number(data.clientChatGeneration || 0));
+    return true;
+  }
   const reply = String(data.reply || "……你这个问题，倒也不是不能回答。");
   const spokenTextJa = String(data.spokenTextJa || data.spoken_text_ja || "").trim();
   const speechText = chooseSpeechText(reply, spokenTextJa);
   const mood = resolveAssistantMood(data, userMessage, reply);
   if (data.relationshipTone) relationshipTone = String(data.relationshipTone);
-  const speechPace = resolveSpeechPace(data, userMessage);
-  const speechSpeed = resolveSpeechSpeed(data, userMessage, speechPace);
+  const speechPace = resolveSpeechPace(data);
+  const speechSpeed = resolveSpeechSpeed(data, "", speechPace);
   if (Array.isArray(data.memories)) {
     state.memories = unique(data.memories).slice(0, MAX_MEMORIES);
   } else if (Array.isArray(data.memoryUpdates)) {
@@ -6462,6 +6644,7 @@ async function applyAssistant(data, userMessage = "") {
       : null,
     proactivePersisted: false,
     sources: Array.isArray(data.sources) ? data.sources : [],
+      galleryMedia: Array.isArray(data.galleryMedia) ? data.galleryMedia : [],
     files: Array.isArray(data.files) ? data.files : [],
     dialoguePolicy: data.dialoguePolicy || data.pipelineMetrics?.turnPolicy || null,
     dialogueValidation: data.dialogueValidation || null,
@@ -6484,18 +6667,32 @@ async function applyAssistant(data, userMessage = "") {
       ...unit,
       textZh: String(unit.textZh || "").trim(),
       spokenTextJa: String(unit.spokenTextJa || "").trim(),
-    })).filter(unit => unit.textZh && chooseSpeechText(unit.textZh, unit.spokenTextJa, data.speechLanguage))
+    })).filter(unit => unit.textZh && (
+      Boolean(unit.textOnlyDelivery)
+      || chooseSpeechText(unit.textZh, unit.spokenTextJa, data.speechLanguage)
+    ))
     : [];
-  const progressivePlan = contractedSpeechUnits.length > 1
+  const playableSpeechUnits = contractedSpeechUnits.filter(unit => (
+    !Boolean(unit.textOnlyDelivery)
+    && Boolean(chooseSpeechText(unit.textZh, unit.spokenTextJa, data.speechLanguage))
+  ));
+  const progressivePlan = playableSpeechUnits.length > 1
     ? {
       progressive: true,
-      displaySegments: contractedSpeechUnits.map(unit => unit.textZh),
-      speechSegments: contractedSpeechUnits.map(unit => chooseSpeechText(unit.textZh, unit.spokenTextJa)),
+      displaySegments: playableSpeechUnits.map(unit => unit.textZh),
+      speechSegments: playableSpeechUnits.map(unit => chooseSpeechText(unit.textZh, unit.spokenTextJa)),
+      speechUnits: playableSpeechUnits,
     }
     : {
       progressive: false,
       displaySegments: [reply],
       speechSegments: [speechText],
+      speechUnits: playableSpeechUnits.length ? playableSpeechUnits : [{
+        textZh: reply,
+        spokenTextJa,
+        speechPace,
+        speechSpeed,
+      }],
     };
   let progressiveMessage = null;
   const revealPipelineSegment = (index, displaySegment, spokenSegment, total) => {
@@ -6562,13 +6759,14 @@ async function applyAssistant(data, userMessage = "") {
     waitForCompletion: Boolean(data.source === "todo-reminder" && data.scheduledExecutionStatus),
     requestStartedAt: Number(data.clientRequestStartedAt || 0),
     pipelineSpeechSegments: progressivePlan.speechSegments,
+    pipelineSpeechUnits: progressivePlan.speechUnits,
     pipelineDisplaySegments: progressivePlan.displaySegments,
-    pipelineBoundaries: contractedSpeechUnits.map((unit, index) => normalizeSpeechBoundary(
+    pipelineBoundaries: playableSpeechUnits.map((unit, index) => normalizeSpeechBoundary(
       unit.boundaryAfter,
-      index === contractedSpeechUnits.length - 1 ? "turn_pause" : "phrase_pause",
+      index === playableSpeechUnits.length - 1 ? "turn_pause" : "phrase_pause",
     )),
-    semanticUnits: contractedSpeechUnits.length
-      ? contractedSpeechUnits.map(unit => chooseSpeechText(unit.textZh, unit.spokenTextJa))
+    semanticUnits: playableSpeechUnits.length
+      ? playableSpeechUnits.map(unit => chooseSpeechText(unit.textZh, unit.spokenTextJa))
       : semanticSpeechUnits(speechText),
     onPipelineSegmentStarted: revealPipelineSegment,
     onPipelineSegmentFailed: revealFailedPipelineSegment,
@@ -6693,6 +6891,10 @@ function chooseSpeechText(reply, spokenTextJa, speechLanguage = settings.speechL
   return assistantPresentationController?.chooseSpeechText?.(reply, spokenTextJa, speechLanguage) ?? reply;
 }
 
+function projectSpeechText(value) {
+  return assistantPresentationController?.projectSpeechText?.(value) ?? String(value || "");
+}
+
 function normalizeVoiceIntensity(value) {
   return assistantPresentationController?.normalizeVoiceIntensity?.(value) || "normal";
 }
@@ -6727,41 +6929,16 @@ function normalizeEmotion(value) {
 
 function speakPulse(length) { return speechPlayback.speakPulse(length); }
 
-const VISIBLE_STAGE_DIRECTION_TERMS = /(?:眯(?:起)?眼|睁(?:开)?眼|闭(?:上)?眼|眼神|视线|目光|嘴角|偏(?:过)?头|歪(?:了)?头|低头|抬头|转头|别开(?:脸|视线)|移开视线|看向|望向|盯着|注视|微笑|苦笑|冷笑|笑意|笑容|轻笑|叹气|脸红|红晕|皱眉|挑眉|耸肩|抱臂|点头|摇头|后退|前倾|轻哼|沉默|语气|声音|表情|神情|动作|姿势|心想|心里|心中|脑海|内心|心理|暗自|假装|故作|装作|目を|目線|視線|顔を|首を|俯く|笑み|ため息|頬|赤ら|そっぽ|smiles?|sighs?|looks?\s+away|tilts?\s+(?:her\s+)?head|blush(?:es|ed)?)/i;
-const VISIBLE_STAGE_BLOCK_PATTERNS = [
-  /（([^（）\r\n]{1,220})）/g,
-  /\(([^()\r\n]{1,220})\)/g,
-  /【([^【】\r\n]{1,220})】/g,
-  /\[([^\[\]\r\n]{1,220})\]/g,
-  /\*([^*\r\n]{1,220})\*/g,
-];
-
 function stripVisibleStageDirections(value) {
-  let text = String(value || "").trim();
-  for (const pattern of VISIBLE_STAGE_BLOCK_PATTERNS) {
-    text = text.replace(pattern, (whole, inner) => (
-      VISIBLE_STAGE_DIRECTION_TERMS.test(String(inner || "")) ? "" : whole
-    ));
-  }
-  text = text.replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  const quotePairs = [["\"", "\""], ["“", "”"], ["‘", "’"], ["「", "」"], ["『", "』"]];
-  let unwrapped = true;
-  while (unwrapped && text.length >= 2) {
-    unwrapped = false;
-    for (const [opening, closing] of quotePairs) {
-      if (text.startsWith(opening) && text.endsWith(closing)) {
-        text = text.slice(opening.length, -closing.length).trim();
-        unwrapped = true;
-        break;
-      }
-    }
-  }
-  return text;
+  // Historical name retained for developer diagnostics and external ports.
+  // It is a speech projection only; message content never calls it.
+  return projectSpeechText(value);
 }
 
 function visibleMessageContent(role, content) {
-  const text = String(content || "");
-  return role === "assistant" ? stripVisibleStageDirections(text) : text;
+  // Display and persistence use the canonical reply verbatim.  Stage
+  // directions may be projected for audio, but are never deleted here.
+  return String(content || "");
 }
 
 function beginProgressiveAssistantMessage(content, meta = {}) {
@@ -6910,6 +7087,8 @@ function smoothstep(value) {
 }
 
 function toNumber(value, fallback) {
+  if (value === null || value === undefined
+    || (typeof value === "string" && !value.trim())) return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }

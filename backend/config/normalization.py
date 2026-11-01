@@ -12,8 +12,13 @@ from typing import Any, Callable, Mapping, Collection
 
 from agent.cognitive_repair_routing import COGNITIVE_MODEL_DEFAULTS, normalize_cognitive_model_choice
 from agent.deepseek_vision import vision_model
+from agent.research_budget import normalize_research_budgets
 from backend.chat.presentation import normalize_speech_language, normalize_speech_prosody, SPEECH_LANGUAGE_PROFILES
 from backend.common.values import clamp_float, clamp_int
+from backend.model_capacity import (
+    LEGACY_DEFAULT_CONTEXT_LIMIT,
+    normalize_model_capacity_settings,
+)
 from desktop_window_geometry import normalize_window_size
 
 from backend.common.text import unique_strings
@@ -100,6 +105,16 @@ def normalize_settings(
     settings["apiEndpoint"] = str(settings.get("apiEndpoint") or "").strip() or defaults["apiEndpoint"]
     settings["apiModel"] = str(settings.get("apiModel") or "").strip() or defaults["apiModel"]
     settings["apiKey"] = str(settings.get("apiKey") or "").strip()
+    # Resolve a larger limit only for a verified provider/model route.  A
+    # custom gateway keeps the conservative legacy fallback unless the user
+    # explicitly supplies a limit; this prevents a familiar model name from
+    # silently widening an unknown provider's request budget.
+    settings.update(normalize_model_capacity_settings(
+        raw,
+        endpoint=settings["apiEndpoint"],
+        model=settings["apiModel"],
+        fallback_limit=LEGACY_DEFAULT_CONTEXT_LIMIT,
+    ))
     network_mode = str(settings.get("apiNetworkMode") or "auto").strip().lower()
     settings["apiNetworkMode"] = network_mode if network_mode in {
         "auto", "direct", "system_proxy", "explicit_proxy"
@@ -236,6 +251,7 @@ def normalize_settings(
     settings["permissionReadSystemTime"] = bool(settings.get("permissionReadSystemTime", True))
     settings["permissionWebSearch"] = bool(settings.get("permissionWebSearch", True))
     settings["permissionFileRead"] = bool(settings.get("permissionFileRead", True))
+    settings["permissionQqControl"] = bool(settings.get("permissionQqControl", False))
     settings["permissionFileWrite"] = bool(settings.get("permissionFileWrite", True))
     settings["permissionOpenBrowser"] = bool(settings.get("permissionOpenBrowser", True))
     workspace_text = re.sub(
@@ -253,12 +269,16 @@ def normalize_settings(
     except (OSError, ValueError):
         workspace_path = Path(defaults["agentFileWorkspace"]).resolve()
     settings["agentFileWorkspace"] = str(workspace_path)
-    web_provider = str(settings.get("webSearchProvider") or "duckduckgo").strip().lower()
-    settings["webSearchProvider"] = web_provider if web_provider in {"duckduckgo", "bing", "brave"} else "duckduckgo"
+    web_provider = str(settings.get("webSearchProvider") or "deepseek").strip().lower()
+    settings["webSearchProvider"] = web_provider if web_provider in {"deepseek", "duckduckgo", "bing", "brave"} else "deepseek"
+    fallback = str(settings.get("webSearchFallbackProvider", "bing") or "none").strip().lower()
+    settings["webSearchFallbackProvider"] = fallback if fallback in {"none", "bing", "duckduckgo"} else "bing"
     settings["webSearchApiKey"] = str(settings.get("webSearchApiKey") or "").strip()
+    settings["deepseekSearchApiKey"] = str(settings.get("deepseekSearchApiKey") or "").strip()
     settings["webSearchMaxResults"] = clamp_int(settings.get("webSearchMaxResults"), 1, 8, 5)
     settings["webReadTopPages"] = clamp_int(settings.get("webReadTopPages"), 0, 3, 2)
     settings["webRequestTimeout"] = clamp_int(settings.get("webRequestTimeout"), 3, 30, 12)
+    settings["webResearchBudgets"] = normalize_research_budgets(settings.get("webResearchBudgets"))
     settings["proactiveInteractionsEnabled"] = bool(settings.get("proactiveInteractionsEnabled", True))
     settings["proactiveScreenObservationEnabled"] = bool(
         settings.get("proactiveScreenObservationEnabled", True)

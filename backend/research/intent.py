@@ -54,15 +54,29 @@ _PUBLIC_SOURCE_REQUEST = re.compile(
     r"(?:给出|提供|附上|需要|要).{0,32}(?:来源|出处|引用|证据|链接|资料)",
     re.I,
 )
+# The public-intent classifier is a hint, not an unbounded parser.  Keep the
+# expensive identifier scan finite while the direct explicit/disable checks
+# above remain available over the complete (already linearly scanned) text.
+_PUBLIC_INTENT_SCAN_LIMIT = 16_384
+# regex-purpose: projection
+# regex-boundary: scan_text is capped at _PUBLIC_INTENT_SCAN_LIMIT; each repeated segment starts with a non-digit separator before \d+.
 _VERSIONED_PUBLIC_IDENTIFIER = re.compile(
     r"(?<![A-Za-z0-9])"
     r"(?:"
-    r"[A-Za-z]{2,}[A-Za-z]*v?\d+(?:[-_./]\d+)*"
+    r"[A-Za-z]{2,}v?\d+(?:[-_./]\d+)*"
     r"|"
     r"[A-Za-z]{2,}(?:[ \t._/-]+[A-Za-z0-9]+){0,2}[ \t._/-]+v?\d+"
     r"(?:[._/-]\d+)*"
     r")"
     r"(?![A-Za-z0-9])",
+    re.I,
+)
+# regex-purpose: projection
+_ACTION_TARGET_IDENTIFIER = re.compile(
+    r"(?:向|给|发给|发送(?:给|到)?|联系|通知|告诉|回复|私聊|群发)"
+    r"\s*(?:(?:[A-Za-z]{2,}|[\u3400-\u9fff]{1,8})[ \t._:/-]*)?\d{5,}(?!\d)|"
+    r"(?:send|message|contact|notify|reply|dm)\s+(?:to\s+)?"
+    r"(?:(?:[A-Za-z]{2,}|[\u3400-\u9fff]{1,8})[ \t._:/-]*)?\d{5,}(?!\d)",
     re.I,
 )
 _LOCAL_OR_ATTACHMENT_REFERENCE = re.compile(
@@ -91,7 +105,6 @@ def user_explicitly_requests_public_web_research(text: str) -> bool:
         not normalized
         or extract_public_web_url(raw)
         or web_research_explicitly_disabled(raw)
-        or _LOCAL_OR_ATTACHMENT_REFERENCE.search(normalized)
     ):
         return False
     direct_public_lookup = re.search(
@@ -102,15 +115,28 @@ def user_explicitly_requests_public_web_research(text: str) -> bool:
     )
     if direct_public_lookup:
         return True
+    # A local object can still be the subject of an explicit public lookup:
+    # "看下我屏幕上的报错，上网查一下怎么解决" needs both capabilities.
+    # Local/attachment references only suppress an otherwise implicit lookup.
+    if _LOCAL_OR_ATTACHMENT_REFERENCE.search(normalized):
+        return False
+    lookup = _PUBLIC_LOOKUP_VERB.search(normalized)
+    public_marker = _PUBLIC_SOURCE_MARKER.search(normalized)
+    # A long numeric identifier after an action/recipient phrase is an
+    # address, account, or other local target.  It must not be promoted to a
+    # public document version merely because the same sentence says "确认"
+    # or "检查".  Keep standalone public identifiers (RFC8259, JSON Schema
+    # 2020-12, etc.) eligible when no action-target boundary is present.
+    scan_text = raw[:_PUBLIC_INTENT_SCAN_LIMIT]
+    action_targets = list(_ACTION_TARGET_IDENTIFIER.finditer(scan_text))
+    versioned_identifier = next((
+        candidate for candidate in _VERSIONED_PUBLIC_IDENTIFIER.finditer(scan_text)
+        if not any(target.start() <= candidate.start() and candidate.end() <= target.end()
+                   for target in action_targets)
+    ), None)
     return bool(
         _PUBLIC_SOURCE_REQUEST.search(normalized)
-        or (
-            _PUBLIC_LOOKUP_VERB.search(normalized)
-            and (
-                _PUBLIC_SOURCE_MARKER.search(normalized)
-                or _VERSIONED_PUBLIC_IDENTIFIER.search(raw)
-            )
-        )
+        or (lookup and (public_marker or versioned_identifier))
     )
 
 
@@ -122,7 +148,6 @@ def user_explicitly_requests_web_research(text: str) -> bool:
         not normalized
         or extract_public_web_url(text)
         or web_research_explicitly_disabled(text)
-        or _LOCAL_OR_ATTACHMENT_REFERENCE.search(normalized)
     ):
         return False
     explicit = re.search(
@@ -134,7 +159,11 @@ def user_explicitly_requests_web_research(text: str) -> bool:
         r"websearch|searchonline|lookuponline",
         normalized,
     )
-    return bool(explicit or user_explicitly_requests_public_web_research(text))
+    if explicit:
+        return True
+    if _LOCAL_OR_ATTACHMENT_REFERENCE.search(normalized):
+        return False
+    return user_explicitly_requests_public_web_research(text)
 
 
 def is_web_search_query(text: str) -> bool:

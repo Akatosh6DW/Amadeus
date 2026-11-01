@@ -16,7 +16,7 @@ SettingsMapping = Mapping[str, Any]
 Settings = dict[str, Any]
 Normalize = Callable[[Settings], Settings]
 
-_SECRET_KEYS = {"apiKey", "webSearchApiKey", "visionApiKey"}
+_SECRET_KEYS = {"apiKey", "webSearchApiKey", "deepseekSearchApiKey", "visionApiKey"}
 
 
 def load_settings_record(

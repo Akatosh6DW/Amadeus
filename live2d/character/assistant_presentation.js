@@ -28,7 +28,12 @@
       : (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
     const toNumber = typeof options.toNumber === "function"
       ? options.toNumber
-      : (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+      : (value, fallback) => {
+        if (value === null || value === undefined
+          || (typeof value === "string" && !value.trim())) return fallback;
+        const number = Number(value);
+        return Number.isFinite(number) ? number : fallback;
+      };
 
     function normalizeEmotion(value) {
       return hasEmotion(value) ? value : "neutral";
@@ -99,7 +104,7 @@
       return requested;
     }
 
-    function normalizeSpeechPace(value) {
+    function normalizeSpeechPace(value, speechSpeed = 1) {
       const pace = String(value || "").toLowerCase();
       const aliases = {
         slower: "slow",
@@ -110,9 +115,13 @@
         veryfast: "very_fast",
       };
       const normalized = aliases[pace] || pace;
-      return ["very_slow", "slow", "normal", "fast", "very_fast"].includes(normalized)
-        ? normalized
-        : "normal";
+      if (["very_slow", "slow", "normal", "fast", "very_fast"].includes(normalized)) return normalized;
+      const speed = toNumber(speechSpeed, 1);
+      if (speed <= 0.7) return "very_slow";
+      if (speed < 0.92) return "slow";
+      if (speed >= 1.26) return "very_fast";
+      if (speed > 1.08) return "fast";
+      return "normal";
     }
 
     function speedForSpeechPace(pace) {
@@ -125,28 +134,32 @@
       }[normalizeSpeechPace(pace)] || 1;
     }
 
-    function resolveSpeechPace(data = {}, userMessage = "") {
-      if (/慢慢念|慢慢说|慢点|慢一点|说慢|放慢|ゆっくり|slow/i.test(userMessage)) {
-        return /慢慢|ゆっくり/i.test(userMessage) ? "very_slow" : "slow";
-      }
-      if (/快点|快一点|说快|加快|很快|超快|早口|fast/i.test(userMessage)) {
-        return /很快|超快|早口/i.test(userMessage) ? "very_fast" : "fast";
-      }
-      const requested = normalizeSpeechPace(data.speechPace || data.speech_pace || "");
-      if (requested !== "normal") return requested;
-      return "normal";
+    function resolveSpeechPace(data = {}, _userMessage = "") {
+      const structured = data.speechPace ?? data.speech_pace;
+      if (String(structured || "").trim()) return normalizeSpeechPace(structured);
+      const configured = getSettings()?.speechPace ?? getSettings()?.speech_pace;
+      if (String(configured || "").trim()) return normalizeSpeechPace(configured);
+      // The existing range control is the user's current setting.  It is the
+      // only fallback when the optional model field is absent.
+      return normalizeSpeechPace("", getSettings()?.speechRate);
     }
 
-    function explicitlyRequestedSpeechPace(userMessage = "") {
-      return /慢慢念|慢慢说|慢点|慢一点|说慢|放慢|快点|快一点|说快|加快|很快|超快|早口|ゆっくり|slow|fast/i.test(userMessage);
+    function explicitlyRequestedSpeechPace(_userMessage = "") {
+      // Kept as a compatibility port for callers that used to inspect this
+      // flag.  User prose no longer controls delivery speed.
+      return false;
     }
 
-    function resolveSpeechSpeed(data = {}, userMessage = "", speechPace = "normal") {
+    function resolveSpeechSpeed(data = {}, _userMessage = "", speechPace = "normal") {
       const paceSpeed = speedForSpeechPace(speechPace);
-      if (explicitlyRequestedSpeechPace(userMessage) || String(data.speechPaceSource || "") === "user_request") {
-        return clamp(paceSpeed, 0.62, 1.45);
+      const rawRequested = data.speechSpeed ?? data.speech_speed;
+      const requested = toNumber(rawRequested, NaN);
+      const structured = data.speechPace ?? data.speech_pace;
+      if (!Number.isFinite(requested) && !String(structured || "").trim()) {
+        const configuredSpeed = Number(getSettings()?.speechRate);
+        if (Number.isFinite(configuredSpeed)) return clamp(configuredSpeed, 0.62, 1.45);
       }
-      const requested = toNumber(data.speechSpeed, paceSpeed);
+      if (!Number.isFinite(requested)) return clamp(paceSpeed, 0.62, 1.45);
       const paceBounds = {
         very_slow: [0.66, 0.78],
         slow: [0.82, 0.92],
@@ -157,16 +170,63 @@
       return clamp(requested, paceBounds[0], paceBounds[1]);
     }
 
+    const speechStagePatterns = [
+      /（([^（）\r\n]{1,220})）/g,
+      /\(([^()\r\n]{1,220})\)/g,
+      /【([^【】\r\n]{1,220})】/g,
+      /\[([^\[\]\r\n]{1,220})\]/g,
+      /\*([^*\r\n]{1,220})\*/g,
+    ];
+    const speechActionWords = new Set([
+      "笑", "微笑", "轻笑", "偷笑", "苦笑", "冷笑", "叹气", "叹了口气", "轻轻叹了口气",
+      "点头", "摇头", "耸肩", "眨眼", "眯眼", "眯起眼", "闭眼", "闭上眼", "低头", "抬头",
+      "歪头", "偏头", "偏过头", "转头", "轻哼", "哼了一声", "沉默", "脸红", "皱眉",
+      "挑眉", "扬眉", "别开脸", "移开视线", "笑死我了",
+      "笑う", "笑った", "笑み", "微笑む", "ため息", "頷く", "うなずく", "首を振る",
+      "目を閉じる", "目を細める", "顔をそらす", "黙る", "黙った",
+      "smile", "smiles", "smirk", "smirks", "sigh", "sighs", "nod", "nods",
+      "blush", "blushes", "look away", "looks away", "tilt head", "tilts head",
+    ]);
+    // regex-purpose: projection — audio-only stage directions; canonical stays intact.
+    // regex-boundary: stage candidates have at most 12 characters.
+    const speechActionVerbs = /(?:叹(?:了)?口气|笑(?:了|着|意|容|声)?|微笑|苦笑|冷笑|偷笑|点头|摇头|耸肩|眨眼|眯(?:起)?眼|闭(?:上)?眼|低头|抬头|歪(?:了)?头|偏(?:过)?头|转头|别开(?:脸|视线)|移开视线|轻哼|哼了一声|沉默|脸红|皱眉|挑眉|扬眉|笑(?:う|った)|微笑(?:む|んだ)|ため息|頷く|うなずく|首を振る|目を(?:閉じる|細める)|顔をそらす|黙(?:る|った)|smiles?|smirks?|sighs?|nods?|blush(?:es|ed)?|looks?\s+away|tilts?\s+(?:her\s+)?head)/i;
+    // regex-purpose: projection — protect technical parentheses.
+    const speechTechnicalChars = /[0-9A-Za-z=_\/.:%+\-#\\<>]/;
+    const speechBoundaries = new Set(["。", "！", "？", "!", "?", "；", ";", "：", ":", "\n"]);
+
+    function speechStageCandidateIsSafe(text, match) {
+      // regex-purpose: projection — normalize whitespace only in audio candidates.
+      const candidate = String(match[1] || "").replace(/\s+/g, "").trim();
+      if (!candidate || candidate.length > 12 || speechTechnicalChars.test(candidate)) return false;
+      if (speechActionWords.has(candidate)) return true;
+      if (!speechActionVerbs.test(candidate)) return false;
+      const before = text.slice(0, match.index).trimEnd();
+      const after = text.slice(match.index + match[0].length).trimStart();
+      return !before || speechBoundaries.has(before.at(-1)) || !after || speechBoundaries.has(after[0]);
+    }
+
+    function projectSpeechText(value) {
+      let text = String(value || "").trim();
+      if (!text) return "";
+      for (const pattern of speechStagePatterns) {
+        text = text.replace(pattern, (whole, _inner, offset, source) => (
+          speechStageCandidateIsSafe(source, {1: _inner, 0: whole, index: offset}) ? "" : whole
+        ));
+      }
+      // regex-purpose: projection — tidy audio whitespace without touching visible text.
+      return text.replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
     function chooseSpeechText(reply, spokenTextJa, speechLanguage = getSettings()?.speechLanguage) {
       const provider = String(getSettings()?.ttsProvider || "").toLowerCase();
       if (provider === "gpt-sovits") {
         if (speechLanguageProfile(speechLanguage).speechLanguage === "zh-CN") {
-          return String(reply || "").trim();
+          return projectSpeechText(String(reply || "").trim());
         }
         // Japanese mode consumes the aligned Japanese script and remains silent when alignment is missing.
-        return String(spokenTextJa || "").trim();
+        return projectSpeechText(String(spokenTextJa || "").trim());
       }
-      return reply;
+      return projectSpeechText(reply);
     }
 
     function isShyTrigger(text) {
@@ -319,6 +379,7 @@
       resolveSpeechSpeed,
       explicitlyRequestedSpeechPace,
       chooseSpeechText,
+      projectSpeechText,
       normalizeVoiceTone,
       normalizeVoiceIntensity,
       normalizeSpeechPace,

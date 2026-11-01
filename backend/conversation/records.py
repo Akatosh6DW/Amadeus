@@ -22,6 +22,7 @@ from backend.chat.reply_fields import (
     normalize_proactive_directive, normalize_relation_event,
     resolve_proactive_directive,
 )
+from backend.chat.stream_delivery import project_stream_tool_receipts
 from backend.common.text import unique_strings
 from backend.common.values import clamp_float, clamp_int, safe_nonnegative_int
 from backend.tools.todo_actions import public_todo_candidate
@@ -294,6 +295,8 @@ class TurnRecordAssembler:
             }
         if isinstance(result.get("webEvidenceStatus"), dict):
             turn["webEvidenceStatus"] = result["webEvidenceStatus"]
+        if isinstance(result.get('galleryMedia'), list):
+            turn['galleryMedia'] = result['galleryMedia'][:2]
         if isinstance(result.get("sources"), list):
             source_batch = (
                 dict(result.get("sourceBatch"))
@@ -336,6 +339,9 @@ class TurnRecordAssembler:
                     "resolvedTarget", "adapter", "error", "timestamp", "action",
                     "taskId", "taskVersionBefore", "taskVersionAfter",
                     "bookmarkId", "name", "versionBefore", "versionAfter", "requestId", "timeFacts", "timeSpec",
+                    "operation", "outcome", "deliveryState", "messageId", "draftId",
+                    "sent", "sentPartCount", "totalParts", "remainingPartCount",
+                    "targetType", "targetId", "account",
                 )
                 if result["actionReceipt"].get(key) not in (None, "")
             }
@@ -348,12 +354,28 @@ class TurnRecordAssembler:
                         "resolvedTarget", "adapter", "error", "timestamp", "action",
                         "taskId", "taskVersionBefore", "taskVersionAfter",
                         "bookmarkId", "name", "versionBefore", "versionAfter", "requestId", "timeFacts", "timeSpec",
+                        "operation", "outcome", "deliveryState", "messageId", "draftId",
+                        "sent", "sentPartCount", "totalParts", "remainingPartCount",
+                        "targetType", "targetId", "account",
                     )
                     if receipt.get(key) not in (None, "")
                 }
                 for receipt in result["actionReceipts"][:12]
                 if isinstance(receipt, Mapping)
             ]
+        # QQ's stream trailer gets a receipt projection from the mutable tool
+        # evidence, but the result handed to deferred persistence can still
+        # contain that evidence only under ``_conversationToolResults``. Keep
+        # the bounded, receipt-only projection in the durable turn so a later
+        # history request has the same facts as the live stream. This does not
+        # persist model prose or the raw tool result bodies.
+        delivery_body = dict(result)
+        tool_results = result.get("_conversationToolResults")
+        if isinstance(tool_results, list):
+            delivery_body["_toolResults"] = tool_results
+        delivery_receipts = project_stream_tool_receipts(delivery_body)
+        if delivery_receipts:
+            turn["deliveryReceipts"] = delivery_receipts
         if isinstance(result.get("todoContext"), dict):
             turn["todoContext"] = {
                 "recentTaskIds": [

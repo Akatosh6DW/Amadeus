@@ -1,16 +1,12 @@
-"""上下文、工具与任务完成 grounding 的回复修订边界。
+"""上下文、工具与任务完成 grounding 的诊断规则。
 
-校验规则只消费候选回复和已解析的上下文；模型修订通过窄端口调用，
-不执行工具、不写状态，也不反向导入 server。
+校验规则只消费候选回复和已解析的上下文；不生成固定回复、不执行工具、
+不写状态，也不反向导入 server。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-import json
 import re
-from typing import Any, Callable
-
-from agent.persona_context import PersonaContextSnapshot
+from typing import Any
 from backend.chat.parsing import parse_json_object
 from backend.context.reference import SPORT_CONTEXT_PATTERN
 
@@ -112,20 +108,6 @@ def context_grounding_violation(value: Any, resolution: dict[str, Any]) -> bool:
                         return True
     return False
 
-def context_repair_needs_web_research(
-    user_message: str,
-    resolution: dict[str, Any],
-    tool_results: list[dict[str, Any]],
-) -> bool:
-    """Do not manufacture research after a context-quality failure.
-
-    QueryLoop may repair the answer or the main model may explicitly request a
-    Web tool.  A backend regex is not allowed to turn a weak answer into a new
-    network action.
-    """
-
-    return False
-
 def task_completion_violation(value: Any, resolution: dict[str, Any]) -> bool:
     if not resolution.get("active") or resolution.get("requestedAction") != "choose_winner":
         return False
@@ -143,173 +125,3 @@ def task_completion_violation(value: Any, resolution: dict[str, Any]) -> bool:
         re.I,
     ))
     return not (mentions_entity and makes_choice) or evades
-
-@dataclass(frozen=True)
-class GroundingRepairPorts:
-    """回复修订所需的模型、上下文提示和视觉反应窄端口。"""
-
-    send_request: Callable[..., str]
-    persona_repair_prefix: Callable[..., list[dict[str, str]]]
-    contextual_reference_prompt: Callable[[dict[str, Any]], str]
-    tool_context_prompt: Callable[[list[dict[str, Any]], dict[str, Any]], str]
-    tool_grounding_instruction: Callable[[list[dict[str, Any]]], str]
-    visual_relationship_reaction_instruction: Callable[[list[dict[str, Any]], dict[str, Any]], str]
-    default_relationship_state: Callable[[], dict[str, Any]]
-    web_answer_diagnostics: Callable[[Any, list[dict[str, Any]]], list[str]]
-    utterance_stream_reply_rule: str
-
-
-class GroundingRepairService:
-    """Perform one bounded model rewrite for an already-detected contract failure."""
-
-    def __init__(self, ports: GroundingRepairPorts) -> None:
-        self.ports = ports
-
-    def repair_context_grounded_reply(
-        self,
-        settings: dict[str, Any],
-        user_message: str,
-        bad_output: str,
-        resolution: dict[str, Any],
-        tool_results: list[dict[str, Any]],
-        persona_snapshot: PersonaContextSnapshot | None = None,
-    ) -> str:
-        payload: dict[str, Any] = {
-            "model": settings["apiModel"],
-            "temperature": 0.35,
-            "max_tokens": 800,
-            "messages": [
-                *self.ports.persona_repair_prefix(persona_snapshot, legacy_system_prompt=True),
-                {"role": "system", "content": self.ports.utterance_stream_reply_rule},
-                {"role": "system", "content": self.ports.contextual_reference_prompt(resolution)},
-                *([{"role": "system", "content": self.ports.tool_context_prompt(tool_results, resolution)}] if tool_results else []),
-                *([{"role": "system", "content": self.ports.tool_grounding_instruction(tool_results)}]
-                  if self.ports.tool_grounding_instruction(tool_results) else []),
-                {"role": "system", "content": (
-                    "上一份回答没有承接最近用户原文，或错误切换到了旧话题。重新输出最终 JSON。"
-                    "下面的 resolvedContext 是后端根据最近对话解析出的本轮上下文，不要重新猜指代。"
-                    "直接回答 resolvedQuestion 并逐项满足 constraints；不要反问对象是什么，"
-                    "不要为上一份错误回答辩护。若提供了联网或工具证据，必须以证据为准。"
-                )},
-                {"role": "user", "content": json.dumps({
-                    "currentUserMessage": user_message,
-                    "failureReason": "context_or_task_contract_not_satisfied",
-                    "resolvedContext": {
-                        "kind": resolution.get("kind"),
-                        "subject": resolution.get("subject"),
-                        "requestedAction": resolution.get("requestedAction"),
-                        "resolvedQuestion": resolution.get("resolvedQuestion"),
-                        "constraints": resolution.get("constraints"),
-                        "recentUserEvidence": resolution.get("evidence"),
-                        "trustedToolEvidence": resolution.get("trustedToolEvidence"),
-                    },
-                    "invalidReply": bad_output,
-                }, ensure_ascii=False)},
-            ],
-        }
-        if settings.get("useResponseFormat"):
-            payload["response_format"] = {"type": "json_object"}
-        if "deepseek.com" in settings["apiEndpoint"]:
-            payload["thinking"] = {"type": "disabled"}
-        return self.ports.send_request(settings, payload, timeout=60)
-
-    def repair_task_completion_reply(
-        self,
-        settings: dict[str, Any],
-        user_message: str,
-        bad_output: Any,
-        resolution: dict[str, Any],
-        tool_results: list[dict[str, Any]],
-        persona_snapshot: PersonaContextSnapshot | None = None,
-    ) -> str:
-        payload: dict[str, Any] = {
-            "model": settings["apiModel"],
-            "temperature": 0.38,
-            "max_tokens": 700,
-            "messages": [
-                *self.ports.persona_repair_prefix(persona_snapshot, legacy_system_prompt=True),
-                {"role": "system", "content": self.ports.utterance_stream_reply_rule},
-                {"role": "system", "content": self.ports.contextual_reference_prompt(resolution)},
-                *([{"role": "system", "content": self.ports.tool_context_prompt(tool_results, resolution)}] if tool_results else []),
-                {"role": "system", "content": (
-                    "上一份回答没有完成用户要求的明确选择。重新输出最终 JSON。"
-                    "reply 第一句必须在候选对象中明确选一个或明确倾向一方，然后简要说明依据；"
-                    "可以声明预测有不确定性，但不得拒绝、反问、改谈实验或用角色梗代替结论。"
-                )},
-                {"role": "user", "content": json.dumps({
-                    "currentUserMessage": user_message,
-                    "task": {
-                        "subject": resolution.get("subject"),
-                        "requestedAction": resolution.get("requestedAction"),
-                        "entities": resolution.get("entities"),
-                        "constraints": resolution.get("constraints"),
-                    },
-                    "invalidReply": bad_output,
-                }, ensure_ascii=False)},
-            ],
-        }
-        if settings.get("useResponseFormat"):
-            payload["response_format"] = {"type": "json_object"}
-        if "deepseek.com" in settings["apiEndpoint"]:
-            payload["thinking"] = {"type": "disabled"}
-        return self.ports.send_request(settings, payload, timeout=60)
-
-    def repair_tool_grounded_reply(
-        self,
-        settings: dict[str, Any],
-        user_message: str,
-        bad_output: str,
-        results: list[dict[str, Any]],
-        resolution: dict[str, Any] | None = None,
-        relationship_state: dict[str, Any] | None = None,
-        persona_snapshot: PersonaContextSnapshot | None = None,
-    ) -> str:
-        resolution = resolution or {}
-        relationship_state = relationship_state or self.ports.default_relationship_state()
-        research_diagnostics = self.ports.web_answer_diagnostics(bad_output, results)
-        has_web = any(
-            item.get("ok") and item.get("name") in {"web_search", "read_web_page"}
-            for item in results
-        )
-        repair_instruction = (
-            "上一份回答没有形成合格的联网研究结论。不要原样重问，也不要丢掉上一份回答里仍然有效的推理。"
-            "结合当前问题、上一份回答和来源正文，重新输出最终 JSON：第一段直接回答用户，之后综合证据并在对应事实后标注来源。"
-            "不要汇报搜索是否成功，不要展示搜索结果清单，不要拿来源标题或摘要代替自己的分析。"
-            "如果证据只覆盖部分主张，只限定未覆盖的部分，其余问题仍要正常回答。"
-            if has_web else
-            "上一份回答违背了已经成功执行的工具结果。重新输出最终 JSON，直接自然描述观测内容；"
-            "不要解释工具调用过程，不要重复错误回答，也不要质疑工具是否存在。"
-            "若这是评价问题，必须逐项完成用户的问题，给出观点、具体证据和必要的不确定性。"
-        )
-        payload: dict[str, Any] = {
-            "model": settings["apiModel"],
-            "temperature": 0.35,
-            "max_tokens": 700,
-            "messages": [
-                *self.ports.persona_repair_prefix(persona_snapshot, legacy_system_prompt=True),
-                {"role": "system", "content": self.ports.utterance_stream_reply_rule},
-                {"role": "system", "content": self.ports.tool_context_prompt(results, resolution)},
-                {"role": "system", "content": self.ports.tool_grounding_instruction(results)},
-                *([{"role": "system", "content": self.ports.visual_relationship_reaction_instruction(results, relationship_state)}]
-                  if self.ports.visual_relationship_reaction_instruction(results, relationship_state) else []),
-                *([{"role": "system", "content": self.ports.contextual_reference_prompt(resolution)}]
-                  if self.ports.contextual_reference_prompt(resolution) else []),
-                {"role": "system", "content": repair_instruction},
-                {"role": "user", "content": json.dumps({
-                    "userMessage": user_message,
-                    "resolvedQuestion": resolution.get("resolvedQuestion"),
-                    "resolvedContext": {
-                        "subject": resolution.get("subject"),
-                        "requestedAction": resolution.get("requestedAction"),
-                        "constraints": resolution.get("constraints"),
-                    },
-                    "validationFailures": research_diagnostics,
-                    "invalidReply": bad_output,
-                }, ensure_ascii=False)},
-            ],
-        }
-        if settings.get("useResponseFormat"):
-            payload["response_format"] = {"type": "json_object"}
-        if "deepseek.com" in settings["apiEndpoint"]:
-            payload["thinking"] = {"type": "disabled"}
-        return self.ports.send_request(settings, payload, timeout=60)

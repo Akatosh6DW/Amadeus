@@ -12,20 +12,148 @@ import re
 import ssl
 import urllib.error
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from agent.upstream_response_reader import (
     UpstreamResponseBodyReadError,
     UpstreamResponseBodyTimeout,
 )
+from backend.providers.reply_protocol import is_reply_envelope, parse_json_document
 
 
 class UpstreamProtocolError(RuntimeError):
     """服务商返回 HTTP 成功，但正文没有可用的完成结果。"""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "protocol_invalid",
+        code: str = "upstream_protocol_error",
+        status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = str(category or "protocol_invalid")
+        self.code = str(code or "upstream_protocol_error")
+        self.status = int(status) if status is not None else None
+
 
 class UpstreamBackgroundDeferred(ConnectionError):
     """非必要模型请求让位给前台聊天请求。"""
+
+
+@dataclass(frozen=True)
+class ProviderResponseClassification:
+    """Stable protocol classification shared by sync, recovery and logging."""
+
+    category: str
+    status: int | None = None
+    provider_code: str = ""
+    provider_message: str = ""
+
+    @property
+    def is_error(self) -> bool:
+        # ``protocol_invalid`` is an adapter classification for an unknown
+        # body shape.  Plain providers are still allowed to return visible
+        # text, so callers must not turn that diagnostic into a transport
+        # rejection.  Only statuses and registered provider-error shapes are
+        # hard errors here.
+        return self.category.startswith("http_") or self.category in {
+            "error_object",
+            "known_error_body",
+        }
+
+    @property
+    def is_protocol_invalid(self) -> bool:
+        return self.category == "protocol_invalid"
+
+
+_KNOWN_ERROR_PREFIXES = (
+    "error:",
+    "exception:",
+    "traceback",
+    "service unavailable",
+    "rate limit",
+    "bad gateway",
+    "gateway timeout",
+    "upstream error",
+    "请求失败",
+    "服务不可用",
+    "调用失败",
+    "请求过于频繁",
+    "达到速率限制",
+)
+
+
+def _known_error_body(text: str) -> bool:
+    # regex-purpose: protocol; classify a bounded adapter error body only.
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    if not normalized or len(normalized) > 500:
+        return False
+    if any(normalized.startswith(prefix) for prefix in _KNOWN_ERROR_PREFIXES):
+        return True
+    # A plain HTTP status is not an error body by itself: technical prose such
+    # as ``HTTP 404 表示资源不存在`` is a valid answer.  Only classify 429
+    # when the remainder has a provider-rate-limit shape.
+    # regex-purpose: protocol; recognize the HTTP-429 adapter prefix only.
+    if re.match(r"^http\s*429\b", normalized):
+        return any(token in normalized for token in (
+            "rate",
+            "limit",
+            "too many",
+            "quota",
+            "throttl",
+            "限流",
+            "频繁",
+            "额度",
+        ))
+    return False
+
+
+def classify_provider_response_body(
+    value: Any,
+    *,
+    http_status: int | None = None,
+) -> ProviderResponseClassification:
+    """Classify a provider body without inspecting visible prose by keywords.
+
+    The order is deliberate: a structurally valid reply envelope wins over an
+    ``error`` metadata field or words such as ``HTTP 404`` inside its visible
+    reply.  HTTP status and provider error objects remain hard transport
+    boundaries; short, adapter-shaped error bodies cover known HTTP-200 proxy
+    failures.
+    """
+
+    status = int(http_status) if http_status is not None else None
+    if status is not None and status >= 400:
+        return ProviderResponseClassification(f"http_{status}", status=status)
+
+    parsed = value
+    if isinstance(value, str):
+        parsed = parse_json_document(value)
+    if isinstance(parsed, dict):
+        if is_reply_envelope(parsed):
+            return ProviderResponseClassification("reply", status=status)
+        if "error" in parsed:
+            code, provider_type, provider_message = _provider_error_fields(parsed)
+            return ProviderResponseClassification(
+                "error_object",
+                status=status,
+                provider_code=provider_type or code,
+                provider_message=provider_message,
+            )
+        return ProviderResponseClassification("protocol_invalid", status=status)
+    if isinstance(value, str) and _known_error_body(value):
+        return ProviderResponseClassification("known_error_body", status=status)
+    return ProviderResponseClassification("protocol_invalid", status=status)
+
+
+def upstream_http_error_category(error: urllib.error.HTTPError) -> str:
+    """Return a stable category for real HTTP failures, including 429."""
+
+    status = int(getattr(error, "code", 0) or 0)
+    return f"http_{status}" if status >= 400 else "http_error"
 
 
 def sanitize_provider_error_message(value: Any) -> str:
@@ -228,13 +356,16 @@ def upstream_connection_user_message(
 
 
 __all__ = [
+    "ProviderResponseClassification",
     "UpstreamBackgroundDeferred",
     "UpstreamProtocolError",
     "UpstreamResponseBodyReadError",
     "UpstreamResponseBodyTimeout",
+    "classify_provider_response_body",
     "sanitize_provider_error_message",
     "upstream_connection_error_category",
     "upstream_connection_user_message",
     "upstream_http_error_diagnostics",
+    "upstream_http_error_category",
     "upstream_http_error_user_message",
 ]

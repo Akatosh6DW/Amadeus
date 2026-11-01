@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from agent.cognitive_brain import normalize_brain_container
 from agent.participant_realization import realize_participant_speech
+from agent.tool_architecture import normalize_capability_query
 
 
 class ModelSemanticStreamParser:
@@ -69,6 +70,9 @@ class ModelSemanticStreamParser:
             "turnEmotion": data.get("emotion") or data.get("turnEmotion") or "neutral",
             "emotionIntensity": data.get("emotionIntensity", data.get("intensity", 0.55)),
         }
+        for key in ("speechPace", "speechSpeed"):
+            if data.get(key) is not None:
+                header[key] = data[key]
         self._header_emitted = True
         return [self._emit("turn_header", header)]
 
@@ -158,6 +162,8 @@ class ModelSemanticStreamParser:
             data.get("requiresUserResponse"), bool
         )
         payload = {
+            'imageIds': data.get('imageIds') if isinstance(data.get('imageIds'), list) else [],
+            'galleryAccount': str(data.get('galleryAccount') or ''),
             "finalEmotion": data.get("finalEmotion") or self._last_utterance.get("emotion") or "neutral",
             "finalEmotionIntensity": data.get(
                 "finalEmotionIntensity", self._last_utterance.get("emotionIntensity", 0.55)
@@ -270,6 +276,20 @@ class ModelSemanticStreamParser:
         if kind in {"tool_use", "tool_request"}:
             requests = value.get("toolRequests") or value.get("calls") or []
             requests = requests if isinstance(requests, list) else []
+            capability_query = normalize_capability_query(value.get("capabilityQuery"))
+            # A typed discovery request may be emitted beside the legacy
+            # scalar field. Keep the normalized fields in the event so the
+            # receiver can paginate or expand one action without converting a
+            # mapping to its Python repr.
+            for key, source_key in (
+                ("families", "capabilityFamilies"),
+                ("cursor", "capabilityCursor"),
+                ("limit", "capabilityLimit"),
+                ("action", "capabilityAction"),
+            ):
+                if source_key in value:
+                    capability_query[key] = value[source_key]
+            capability_query = normalize_capability_query(capability_query)
             progress = value.get("progress") if isinstance(value.get("progress"), Mapping) else {}
             if not progress and (value.get("progressZh") or value.get("progressJa")):
                 progress = {
@@ -281,7 +301,11 @@ class ModelSemanticStreamParser:
                 "reason": str(value.get("reason") or "model_discovered_missing_capability"),
                 "targetDomain": str(value.get("targetDomain") or "none"),
                 "toolAuthorization": str(value.get("toolAuthorization") or "none"),
-                "capabilityQuery": str(value.get("capabilityQuery") or ""),
+                "capabilityQuery": capability_query["query"],
+                "capabilityFamilies": list(capability_query["families"]),
+                "capabilityCursor": capability_query["cursor"],
+                "capabilityLimit": capability_query["limit"],
+                "capabilityAction": capability_query["action"],
                 "toolRequests": [dict(item) for item in requests if isinstance(item, Mapping)],
                 "confidence": value.get("confidence", 0.5),
                 "progress": dict(progress),
@@ -322,6 +346,8 @@ class ModelSemanticStreamParser:
                     "voiceStyle",
                     "voiceTone",
                     "voiceIntensity",
+                    "speechPace",
+                    "speechSpeed",
                     "blushIntensity",
                     "eyeContact",
                     "gazeX",

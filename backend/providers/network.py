@@ -180,7 +180,7 @@ def _api_transport_routes(
     build_opener: Callable[..., Any] = urllib.request.build_opener,
     proxy_handler: Callable[[Mapping[str, str]], Any] = urllib.request.ProxyHandler,
     https_handler: Callable[..., Any] = urllib.request.HTTPSHandler,
-) -> list[Route]:
+) -> list[tuple[str, Any]]:
     """构造代理优先、direct 兜底的 opener 路由，不执行任何网络请求。"""
 
     mode_reader = api_network_mode if mode_reader is None else mode_reader

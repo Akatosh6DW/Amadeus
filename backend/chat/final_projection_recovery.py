@@ -173,10 +173,13 @@ def recover_final_projection_candidate(
         )
 
     repaired = deepcopy(dict(parsed))
+    from .gallery import preserve_gallery_selection
+    preserve_gallery_selection(error.candidate, repaired)
     # 修复后的语音由 Flash 决定。这里只携带最终化器所需的本请求执行信息和账务
     # 字段；被拒绝的回复、语音文本和已接受状态绝不能从旧候选恢复。
     for key in (
         "_conversationToolResults",
+        "_fileOutputs",
         "_referenceLedger",
         "_fileOutputExpected",
         "_chatMetrics",

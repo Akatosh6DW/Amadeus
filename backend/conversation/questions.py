@@ -9,7 +9,6 @@ from typing import Any, Mapping, Protocol
 
 from agent.attachment_editing import attachment_request_stopped
 from agent.dialogue_waiting import refresh_waiting_context
-from backend.research.query import web_query_overlap_tokens
 
 
 class PendingQuestionState(Protocol):
@@ -43,6 +42,44 @@ def assistant_question_from_text(value: Any) -> str:
     return ""
 
 
+_QUOTE_PAIRS = {
+    "“": "”", "‘": "’", "「": "」", "『": "』", "【": "】",
+    "《": "》", "〈": "〉", "﹁": "﹂", "﹃": "﹄",
+}
+
+
+def _question_mark_is_quoted(text: str, position: int) -> bool:
+    """Identify a final question mark quoted by the assistant itself."""
+
+    stack: list[str] = []
+    reverse_pairs = {closing: opening for opening, closing in _QUOTE_PAIRS.items()}
+    index = 0
+    while index < position:
+        char = text[index]
+        if char in _QUOTE_PAIRS:
+            stack.append(char)
+        elif char in reverse_pairs:
+            opening = reverse_pairs[char]
+            if stack and stack[-1] == opening:
+                stack.pop()
+        elif char in {'"', "'"}:
+            if (
+                char == "'"
+                and index > 0
+                and index + 1 < len(text)
+                and text[index - 1].isalnum()
+                and text[index + 1].isalnum()
+            ):
+                index += 1
+                continue
+            if stack and stack[-1] == char:
+                stack.pop()
+            else:
+                stack.append(char)
+        index += 1
+    return bool(stack)
+
+
 def terminal_answerable_question(value: Any) -> str:
     """Return an explicit question only when it is the final spoken move.
 
@@ -59,6 +96,8 @@ def terminal_answerable_question(value: Any) -> str:
     if not question_marks:
         return ""
     final_mark = question_marks[-1]
+    if _question_mark_is_quoted(text, final_mark.start()):
+        return ""
     trailing = text[final_mark.end():]
     trailing = re.sub(r"[\s。！!…~～\"'“”‘’）)\]】》〉]+", "", trailing)
     if trailing:
@@ -77,36 +116,45 @@ def should_persist_assistant_question(
     question_text = re.sub(r"\s+", " ", str(question or "")).strip()
     if isinstance(result, Mapping) and attachment_request_stopped(result):
         return False
+    if isinstance(result, Mapping):
+        source = result.get("questionSource") or result.get("question_source")
+        if isinstance(source, Mapping):
+            role = str(
+                source.get("role")
+                or source.get("speaker")
+                or source.get("sourceRole")
+                or ""
+            ).strip().lower()
+            origin = str(
+                source.get("sourceType")
+                or source.get("origin")
+                or ""
+            ).strip().lower().replace("-", "_").replace(" ", "_")
+            if role and role not in {"assistant", "model"}:
+                return False
+            if origin in {"tool", "tool_result", "tool_evidence", "web", "ocr", "visual", "attachment"}:
+                return False
     if isinstance(result, dict) and result.get("requiresUserResponseProvided"):
         if not bool(result.get("requiresUserResponse")):
             return False
-        return bool(str(assistant_text or "").strip())
+        assistant_value = str(assistant_text or "").strip()
+        if not assistant_value:
+            return False
+        # Structured needs-input output may be declarative (for example,
+        # "请贴代码") and therefore have no question mark.  If it does have
+        # one, still reject a quoted question before taking the typed flag;
+        # this closes the old early-return bypass without adding keyword rules.
+        # regex-purpose: projection; locate punctuation for structural quote attribution.
+        question_marks = list(re.finditer(r"[?？]", assistant_value))
+        if question_marks and _question_mark_is_quoted(
+            assistant_value, question_marks[-1].start()
+        ):
+            return False
+        return True
     if not question_text:
         return False
     if not terminal_answerable_question(assistant_text):
         return False
-    user_text = re.sub(r"\s+", " ", str(user_message or "")).strip()
-    assistant_value = re.sub(r"\s+", " ", str(assistant_text or "")).strip()
-    if (
-        re.search(r"打开|访问|进入|跳转|读取|保存|创建|修改|搜索", user_text, re.I)
-        and re.search(r"(?:是吧|对吧|没错吧|对吗)[？?]?$", question_text)
-        and re.search(r"稍等|等一下|我来|帮你|给你|开始|处理|打开|执行", assistant_value, re.I)
-    ):
-        subject = re.sub(
-            r"^[…。\s“”\"']+|(?:是吧|对吧|没错吧|对吗)[？?]?$",
-            "",
-            question_text,
-            flags=re.I,
-        ).strip(" ，,。！？!?“”\"'")
-        if (
-            not subject
-            or subject.casefold() in user_text.casefold()
-            or bool(
-                web_query_overlap_tokens(subject)
-                & web_query_overlap_tokens(user_text)
-            )
-        ):
-            return False
     receipt = (
         result.get("actionReceipt")
         if isinstance(result, dict) and isinstance(result.get("actionReceipt"), dict)

@@ -14,6 +14,7 @@ import json
 from typing import Any, Mapping, Protocol, Sequence
 
 from agent.cognitive_brain import cognitive_prompt
+from agent.engineering_contracts import LOADED_KEY, select_contracts
 from agent.cognitive_context import effective_context_controls
 from agent.cognitive_runtime import compact_packet
 from agent.cognitive_state import stage_revision as stage_cognitive_revision
@@ -164,12 +165,16 @@ def cognitive_turn_prompt(
             body.get("_cognitiveOverlay") or {}
         ).get("invalidatedPendingActionIds", []):
             packet["pendingAction"]["status"] = "invalidated_by_current_task_revision"
-    prompt = (
-        cognitive_prompt(packet, analysis_only=True)
-        if analysis_only
-        else cognitive_prompt(packet)
-    )
-    prompt = prompt.replace("\n", "\n" + policy.schedule_time_prompt + "\n", 1)
+    contracts = select_contracts(body, packet)
+    if isinstance(body, dict):
+        body[LOADED_KEY] = contracts
+        from agent.engineering_contracts import compact_engineering_enabled
+        body['_engineeringPromptMode'] = 'compact' if compact_engineering_enabled() else 'legacy'
+    prompt = cognitive_prompt(packet, analysis_only=analysis_only, contract_ids=contracts)
+    from agent.engineering_contracts import tool_contract_prompt
+    prompt += tool_contract_prompt(body)
+    # The normal request already owns the schedule module. Its time anchor
+    # remains data in this packet; do not insert a second instruction manual.
     if isinstance(body, dict):
         # Todo 状态必须紧邻实际决策包，并位于旧轨迹之后。工具执行后重新读取，
         # 避免把已经完成的任务从缓存的工具前快照再次交给模型。
@@ -295,15 +300,7 @@ def messages_with_repaired_context(
                         "task": state.get("task"),
                         "references": state.get("references"),
                         "contextControls": effective_context_controls(state),
-                        "capabilityIndex": [
-                            {
-                                "id": item.tool_id,
-                                "description": item.description,
-                                "inputSchema": dict(item.input_schema),
-                                "permissionKey": item.permission_key,
-                            }
-                            for item in DEFAULT_TOOL_REGISTRY.all()
-                        ],
+                        "capabilityIndex": list(DEFAULT_TOOL_REGISTRY.capability_index()),
                         "repair": route.get("analysis"),
                         "toolExecutionPolicy": cognitive_tool_execution_policy(body),
                     },

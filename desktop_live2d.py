@@ -10,7 +10,22 @@ import threading
 import time
 from pathlib import Path
 
-import webview
+# QQ helpers must branch before webview/server import so they cannot open a
+# desktop window or bind the desktop user's conversation state.
+if __name__ == '__main__' and len(sys.argv) > 1 and sys.argv[1] == '--qq-helper':
+    from integrations.qq.entrypoint import dispatch
+    dispatch()
+    raise SystemExit(0)
+
+try:
+    import webview
+except ModuleNotFoundError as error:
+    if error.name != "webview":
+        raise
+    # Keep the bridge/runtime importable for headless checks and backend-only
+    # helpers. The actual window path below reports the missing optional UI
+    # dependency when it is selected.
+    webview = None
 
 from desktop.window import (
     native_window_handle as _native_window_handle,
@@ -122,6 +137,12 @@ def _bridge_kwargs() -> dict:
         "resolve_generated_file": lambda file_id: resolve_generated_file(file_id),
         "open_loopback_request": lambda request, timeout: open_loopback_request(request, timeout),
     }
+
+
+def _require_webview():
+    if webview is None:
+        raise RuntimeError("pywebview is required to start the desktop window")
+    return webview
 
 
 class UserLive2DApi(_BridgeUserLive2DApi):
@@ -333,7 +354,8 @@ def main() -> None:
         max(860, int(settings.get("windowHeight") or 760)) if dev_mode else int(settings.get("windowHeight") or 760),
         settings.get("layoutMode"),
     )
-    window = webview.create_window(
+    window_api = _require_webview()
+    window = window_api.create_window(
         "Amadeus System DEV" if dev_mode else "Amadeus System TEST" if test_mode else "Amadeus System",
         url=url,
         js_api=UserLive2DApi(port) if release_mode else Live2DApi(port),
@@ -368,7 +390,7 @@ def main() -> None:
     window.events.loaded += apply_initial_topmost
 
     try:
-        webview.start(debug=False, private_mode=False, storage_path=str(DATA_DIR / "webview"))
+        window_api.start(debug=False, private_mode=False, storage_path=str(DATA_DIR / "webview"))
     finally:
         lease.close()
         _ = window

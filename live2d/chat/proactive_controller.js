@@ -105,6 +105,7 @@
       if (typeof session.setWaitingForUser === "function") {
         session.setWaitingForUser(waitingForUser);
       }
+      feedback.onWaitingStateChange?.({ waitingForUser, control: { ...proactiveState.control } });
       if (persistState) persist();
       return waitingForUser;
     }
@@ -113,6 +114,7 @@
       const control = normalizeProactiveControl(value);
       proactiveState.control = control;
       if (typeof session.setProactiveControl === "function") session.setProactiveControl(control);
+      feedback.onWaitingStateChange?.({ waitingForUser, control: { ...control } });
       return control;
     }
 

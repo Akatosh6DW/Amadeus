@@ -9,6 +9,7 @@ from agent.tool_architecture import ToolRegistry
 from agent.turn_runtime import ToolResultEnvelope, utc_now_iso
 
 from .validation import AUDIT_EXECUTOR_ID, ToolExecutionPlan
+from .trust import request_fingerprint
 
 
 def execute_prepared_agent_tool(
@@ -29,6 +30,17 @@ def execute_prepared_agent_tool(
     name = str(prepared["name"])
     args = prepared["args"]
     execution_args = dict(args)
+    if name in {'qq_history', 'qq_manage', 'qq_identity', 'qq_remember_alias', 'qq_person_memory', 'qq_media', 'qq_space', 'qq_space_write'} and prepared.get('qqAccount'):
+        execution_args['_expectedAccount'] = prepared['qqAccount']
+    if name in {"qq_manage", "qq_space_write", "qq_remember_alias", "qq_person_memory"}:
+        execution_args["_requestId"] = request_id
+        # The audit reason may use the actual authorized request. It must not
+        # depend on the model repeating that request in a redundant field.
+        execution_args["_requestText"] = str(user_question or "")[:1000]
+    if name in {"web_search", "read_web_page"}:
+        execution_args["requestId"] = request_id
+        if name == "read_web_page" and not (execution_args.get("researchQuery") or execution_args.get("query")):
+            execution_args["researchQuery"] = user_question
     if name == "open_browser" and request_id:
         execution_args["_requestId"] = request_id
         execution_args["_rememberUsage"] = True
@@ -59,6 +71,8 @@ def execute_prepared_agent_tool(
             else None
         )
     except Exception as error:
+        if getattr(error, "code", "") in {"request_cancelled", "request_superseded"}:
+            raise
         result = {"name": name, "ok": False, "error": "tool_execution_exception",
                   "errorType": type(error).__name__, "message": str(error)[:500],
                   "toolCallId": tool_call_id, "attempted": True}
@@ -78,6 +92,10 @@ def execute_prepared_agent_tool(
             "toolCallId": tool_call_id,
         }
         provenance = {"executor": AUDIT_EXECUTOR_ID}
+    host_trust = prepared.get('hostTrust')
+    if isinstance(host_trust, Mapping):
+        # This field comes from the host plan, never the model args or result.
+        provenance['trust'] = {**host_trust, 'requestFingerprint': request_fingerprint(name, args)}
     result["_toolResultEnvelope"] = ToolResultEnvelope.from_legacy_result(
         result,
         turn_id=f"{request_id}:turn" if request_id else "",

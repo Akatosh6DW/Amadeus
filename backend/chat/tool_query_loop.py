@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import re
 import time
 import uuid
@@ -13,13 +14,18 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from agent.cognitive_brain import CognitiveProtocolError
 from agent.cognitive_runtime import collect_evidence
+from agent.cognitive_tools import project_tool_plan_receipts, tool_step_binding
 from agent.dialogue_architecture import (
     bind_current_visual_observation_contract,
     policy_prompt,
 )
 from agent.epistemic_architecture import knowledge_confidence_gate_decision
 from agent.research_architecture import EpistemicPlan, capability_envelope
-from agent.tool_architecture import bind_required_capabilities
+from agent.research_budget import (
+    select_tool_budget, sync_tool_usage, record_tool_attempts,
+    tool_budget_exhausted, tool_budget_prompt,
+)
+from agent.tool_architecture import bind_required_capabilities, DEFAULT_TOOL_REGISTRY
 from agent.visual_grounding import (
     has_current_visual_evidence as has_typed_visual_evidence,
     visual_evidence_prompt,
@@ -40,6 +46,371 @@ _TERMINAL_OUTCOME_STATUSES = frozenset(
     {"completed", "partial", "needs_input", "failed"}
 )
 _TERMINAL_FORMAT_REPAIR_LIMIT = 1
+_EXPLICIT_ACTION_FAILURE_STATUSES = frozenset({"failed", "rejected"})
+
+
+def _tool_result_was_attempted(item: Mapping[str, Any]) -> bool:
+    """Keep execution identity separate from admission feedback.
+
+    ``attempted=false`` is an explicit pre-execution rejection.  It may be
+    retried after the model repairs structured arguments/authorization, while
+    an adapter result without that marker remains a real or unknown attempt
+    and therefore keeps the normal idempotency barrier.
+    """
+
+    return item.get("attempted") is not False
+
+
+def _tool_request_retry_signature(item: Mapping[str, Any]) -> str:
+    """Identify an admission retry, including structured selection metadata.
+
+    The canonical tool signature intentionally describes executable arguments;
+    ``selection`` is authorization metadata and is therefore not part of the
+    executed side-effect identity.  It still matters when deciding whether a
+    rejected request made progress, so a correction from ``none`` to ``write``
+    must not be mistaken for the exact same failed request.
+    """
+
+    selection = item.get("selection")
+    selection_payload = dict(selection) if isinstance(selection, Mapping) else {}
+    return (
+        f"{tool_request_signature(dict(item))}|selection="
+        f"{json.dumps(selection_payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+    )
+
+
+def _action_receipt(item: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return the host-owned action receipt, if this result has one."""
+
+    receipt = item.get("actionReceipt")
+    return receipt if isinstance(receipt, Mapping) else None
+
+
+def _action_id(item: Mapping[str, Any]) -> str:
+    """Read a retry identity only from a structured host field."""
+
+    receipt = _action_receipt(item)
+    value = receipt.get("actionId") if receipt is not None else item.get("actionId")
+    return str(value or "").strip()
+
+
+def _explicit_action_failure(item: Mapping[str, Any]) -> bool:
+    """Identify a retryable failure without interpreting free-form error text.
+
+    An execution barrier remains in place for every attempted result.  This
+    predicate is deliberately narrower: only a host status that explicitly
+    says ``failed``/``rejected`` may create a retry candidate.  An action
+    identity is checked by the caller, so transport-unknown and bare error
+    strings cannot authorize a resend.
+    """
+
+    if not _tool_result_was_attempted(item) or item.get("ok") is True:
+        return False
+    receipt = _action_receipt(item)
+    if receipt is not None:
+        return str(receipt.get("status") or "").strip().lower() in _EXPLICIT_ACTION_FAILURE_STATUSES
+    return any(
+        str(item.get(field) or "").strip().lower() in _EXPLICIT_ACTION_FAILURE_STATUSES
+        for field in ("status", "executionStatus", "deliveryState")
+    )
+
+
+def _retry_relation_declared(item: Mapping[str, Any]) -> bool:
+    selection = item.get("selection")
+    return isinstance(selection, Mapping) and selection.get("actionRelation") == "retry"
+
+
+def _retry_target_action_id(item: Mapping[str, Any]) -> str:
+    """Get a model-declared retry target, requiring the structured relation."""
+
+    if not _retry_relation_declared(item):
+        return ""
+    selection = item.get("selection")
+    selection_target = str(selection.get("retryOfActionId") or "").strip()
+    args = item.get("args")
+    args_target = str(args.get("_retryOfActionId") or "").strip() if isinstance(args, Mapping) else ""
+    # Browser constraints copy the target into transport args.  If both
+    # representations exist, a mismatch is not a legal retry identity.
+    if selection_target and args_target and selection_target != args_target:
+        return ""
+    return selection_target or args_target
+
+
+def _plan_revision(item: Mapping[str, Any]) -> str | None:
+    """Read the current cognitive plan revision from known structured fields."""
+
+    binding = item.get("_cognitiveStepBinding")
+    if isinstance(binding, Mapping) and binding.get("planRevision") is not None:
+        value = binding.get("planRevision")
+    else:
+        value = item.get("planRevision", item.get("_cognitivePlanRevision"))
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _request_result_pair_indices(
+    requests: Sequence[Mapping[str, Any]],
+    results: Sequence[Mapping[str, Any]],
+) -> list[tuple[int, Mapping[str, Any], Mapping[str, Any]]]:
+    """Pair tool requests with their receipts without relying on list order."""
+
+    request_rows = [item for item in requests if isinstance(item, Mapping)]
+    result_rows = [item for item in results if isinstance(item, Mapping)]
+    unused = set(range(len(request_rows)))
+    by_call_id: dict[str, list[int]] = {}
+    by_signature: dict[str, list[int]] = {}
+    for index, request in enumerate(request_rows):
+        call_id = str(request.get("toolCallId") or request.get("callId") or "").strip()
+        if call_id:
+            by_call_id.setdefault(call_id, []).append(index)
+        signature = tool_request_signature(dict(request))
+        by_signature.setdefault(signature, []).append(index)
+
+    pairs: list[tuple[int, Mapping[str, Any], Mapping[str, Any]]] = []
+    for result in result_rows:
+        index: int | None = None
+        result_call_id = str(result.get("toolCallId") or result.get("callId") or "").strip()
+        if result_call_id:
+            index = next(
+                (candidate for candidate in by_call_id.get(result_call_id, ()) if candidate in unused),
+                None,
+            )
+        stored_signature = str(result.get("_cognitiveRequestSignature") or "").strip()
+        if index is None and stored_signature:
+            index = next(
+                (candidate for candidate in by_signature.get(stored_signature, ()) if candidate in unused),
+                None,
+            )
+        if index is None:
+            result_name = str(result.get("name") or "").strip()
+            candidates = [candidate for candidate in unused
+                          if str(request_rows[candidate].get("name") or "").strip() == result_name]
+            # A name alone cannot identify which of several writes was rejected.
+            # Keep ambiguous outcomes behind the execution barrier.
+            index = candidates[0] if len(candidates) == 1 else None
+        if index is None:
+            continue
+        unused.remove(index)
+        pairs.append((index, request_rows[index], result))
+    return pairs
+
+
+def _request_result_pairs(
+    requests: Sequence[Mapping[str, Any]],
+    results: Sequence[Mapping[str, Any]],
+) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    """Return matched request/receipt rows for admission diagnostics."""
+
+    return [
+        (request, result)
+        for _, request, result in _request_result_pair_indices(requests, results)
+    ]
+
+
+def _attempted_request_signatures(
+    requests: Sequence[Mapping[str, Any]],
+    results: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """Keep attempted or receipt-missing calls behind the idempotency barrier.
+
+    Only a matched receipt with the explicit boolean ``attempted=false`` proves
+    that no execution occurred.  A missing receipt is an unknown outcome and
+    must therefore remain blocked, including when only part of a batch has a
+    receipt.
+    """
+
+    request_rows = [item for item in requests if isinstance(item, Mapping)]
+    pairs = _request_result_pair_indices(request_rows, results)
+    matched_indexes = {index for index, _, _ in pairs}
+    signatures = {
+        tool_request_signature(dict(request))
+        for _, request, result in pairs
+        if _tool_result_was_attempted(result)
+        and str(request.get("name") or "").strip()
+    }
+    signatures.update(
+        tool_request_signature(dict(request))
+        for index, request in enumerate(request_rows)
+        if index not in matched_indexes
+        and str(request.get("name") or "").strip()
+    )
+    return signatures
+
+
+def _rejected_request_retry_signatures(
+    requests: Sequence[Mapping[str, Any]],
+    results: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """Track exact admission failures without treating them as execution."""
+
+    return {
+        _tool_request_retry_signature(request)
+        for request, result in _request_result_pairs(requests, results)
+        if not _tool_result_was_attempted(result)
+        and str(request.get("name") or "").strip()
+    }
+
+
+def _rejected_request_plan_revisions(
+    requests: Sequence[Mapping[str, Any]],
+    results: Sequence[Mapping[str, Any]],
+) -> dict[str, set[str]]:
+    """Remember which plan revision produced an explicit pre-execution reject."""
+
+    revisions: dict[str, set[str]] = {}
+    for request, result in _request_result_pairs(requests, results):
+        if _tool_result_was_attempted(result):
+            continue
+        revision = _plan_revision(result) or _plan_revision(request)
+        if revision is None or not str(request.get("name") or "").strip():
+            continue
+        revisions.setdefault(_tool_request_retry_signature(request), set()).add(revision)
+    return revisions
+
+
+def _retryable_failure_identities(
+    requests: Sequence[Mapping[str, Any]],
+    results: Sequence[Mapping[str, Any]],
+) -> set[tuple[str, str]]:
+    """Pair explicit failed actions with their host-issued action IDs."""
+
+    return {
+        (tool_request_signature(dict(request)), action_id)
+        for request, result in _request_result_pairs(requests, results)
+        if _explicit_action_failure(result)
+        for action_id in (_action_id(result),)
+        if action_id
+    }
+
+
+def _successful_request_signatures(
+    requests: Sequence[Mapping[str, Any]],
+    results: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """Return calls with a success receipt, which always outrank old failures."""
+
+    signatures: set[str] = set()
+    for request, result in _request_result_pairs(requests, results):
+        if not _tool_result_was_attempted(result):
+            continue
+        receipt = _action_receipt(result)
+        if result.get("ok") is True or (
+            receipt is not None
+            and str(receipt.get("status") or "").strip().lower() == "accepted"
+        ):
+            signatures.add(tool_request_signature(dict(request)))
+    return signatures
+
+
+def _request_can_retry_failed_action(
+    request: Mapping[str, Any],
+    retryable_failure_identities: set[tuple[str, str]],
+    successful_signatures: set[str] | None = None,
+) -> bool:
+    """Allow only an explicit retry linked to a known failed action."""
+
+    signature = tool_request_signature(dict(request))
+    if signature in (successful_signatures or set()):
+        return False
+    target = _retry_target_action_id(request)
+    return bool(target and (signature, target) in retryable_failure_identities)
+
+
+def _read_only_request(request: Mapping[str, Any]) -> bool:
+    definition = DEFAULT_TOOL_REGISTRY.get(str(request.get("name") or ""))
+    return bool(definition and definition.read_only)
+
+
+def _record_filtered_calls(body: dict[str, Any], proposed, retained) -> None:
+    """A filtered candidate is not a forever-pending execution step."""
+    retained_signatures = {tool_request_signature(dict(item)) for item in retained}
+    overlay = body.get("_cognitiveOverlay")
+    state = (overlay or {}).get("state") if isinstance(overlay, dict) else None
+    if not isinstance(state, dict):
+        return
+    receipts = []
+    for item in proposed:
+        signature = tool_request_signature(dict(item))
+        if signature in retained_signatures:
+            continue
+        binding = tool_step_binding(state.get("task") or {}, item)
+        if not binding:
+            continue
+        receipts.append({"name": item.get("name"), "ok": False, "attempted": False,
+            "error": "request_filtered", "reason": "该候选未进入执行，请依据现有工具结果继续处理",
+            "toolCallId": "filtered_" + uuid.uuid4().hex,
+            "_cognitiveStepBinding": binding, "_cognitiveRequestSignature": signature})
+    if receipts:
+        body["_cognitiveEvidence"] = {**(body.get("_cognitiveEvidence") or {}), **collect_evidence(receipts)}
+        overlay["state"] = project_tool_plan_receipts(state, body["_cognitiveEvidence"])
+
+
+def _eligible_followup_requests(
+    proposed: Sequence[Mapping[str, Any]],
+    executed_signatures: set[str],
+    rejected_retry_signatures: set[str],
+    *,
+    retryable_failure_identities: set[tuple[str, str]] | None = None,
+    successful_signatures: set[str] | None = None,
+    rejected_plan_revisions: Mapping[str, set[str]] | None = None,
+    current_plan_revision: Any = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Filter executed calls and no-progress repeats separately.
+
+    A repaired request may keep the same executable arguments while changing
+    structured authorization, so it is eligible when its retry signature
+    differs from the prior rejection.  An unchanged rejection is returned in
+    ``repeated_rejections`` so the caller can terminate through its existing
+    bounded duplicate path.
+    """
+
+    eligible: list[dict[str, Any]] = []
+    repeated_rejections: list[dict[str, Any]] = []
+    retryable_failure_identities = retryable_failure_identities or set()
+    successful_signatures = successful_signatures or set()
+    rejected_plan_revisions = rejected_plan_revisions or {}
+    current_revision = _plan_revision({"planRevision": current_plan_revision})
+    for item in proposed:
+        if not isinstance(item, Mapping):
+            continue
+        request = dict(item)
+        signature = tool_request_signature(request)
+        retry_is_legal = _request_can_retry_failed_action(
+            request,
+            retryable_failure_identities,
+            successful_signatures,
+        )
+        retry_declared = _retry_relation_declared(request)
+        retry_signature = _tool_request_retry_signature(request)
+        if retry_signature in rejected_retry_signatures:
+            prior_revisions = rejected_plan_revisions.get(retry_signature, set())
+            if current_revision is not None and prior_revisions and current_revision not in prior_revisions:
+                eligible.append(request)
+            else:
+                repeated_rejections.append(request)
+            continue
+        # A retry declaration without a matching failed action is not a new
+        # call.  This keeps unknown/successful/missing receipts behind the
+        # execution barrier even if the model supplied a plausible-looking ID.
+        if signature in successful_signatures:
+            continue
+        if signature in executed_signatures:
+            # Re-reading after a timeout has no duplicate side effect. Writes
+            # still require a definite failed receipt before replay.
+            if retry_is_legal or _read_only_request(request):
+                eligible.append(request)
+            continue
+        if retry_declared and not retry_is_legal:
+            # Changed arguments describe a new operation, even when the model
+            # kept retry metadata from its previous failed attempt.
+            request["selection"] = {**dict(request.get("selection") or {}), "actionRelation": "new"}
+            request["selection"].pop("retryOfActionId", None)
+            request["args"] = dict(request.get("args") or {})
+            request["args"].pop("_retryOfActionId", None)
+        eligible.append(request)
+    return eligible, repeated_rejections
 
 
 def _terminal_tool_response_issue(
@@ -379,6 +750,7 @@ class ToolLoopContext:
     pending_browser_action: Mapping[str, Any]
     relationship_state: Any
     progress_callback: Any | None = None
+    persona_snapshot: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -422,6 +794,7 @@ def finalize_preexecuted_tool_result(
     contract: Any,
     request_id: str,
     cognitive_body: dict[str, Any] | None = None,
+    source_metadata: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[str, str, int]:
     """把已执行的重复工具请求收束成一次最终回复。"""
 
@@ -490,6 +863,7 @@ def finalize_preexecuted_tool_result(
         reserved_output_tokens=max_tokens,
         request_id=request_id,
         stage="chat_preexecuted_duplicate_finalize",
+        source_metadata=source_metadata,
     )
     payload: dict[str, Any] = {
         "model": settings["apiModel"],
@@ -669,6 +1043,9 @@ def run_model_tool_loop(
 
     tool_loop_stop_reason = "no_tool_request"
     parsed = parse_json_object(content) or {}
+    select_tool_budget(body, body.get("_toolEscalation"), settings)
+    select_tool_budget(body, parsed, settings)
+    sync_tool_usage(body, pre_tool_results)
     write_server_log(
         "dialogue_protocol_output_parsed",
         requestId=request_id,
@@ -771,6 +1148,7 @@ def run_model_tool_loop(
             for item in requested_tools
             if item.get("name") not in {"web_search", "read_web_page"}
         ]
+    _record_filtered_calls(body, model_tool_requests, requested_tools)
     todo_already_executed = any(
         item.get("name") == "todo_manage" and item.get("ok")
         for item in pre_tool_results
@@ -819,6 +1197,7 @@ def run_model_tool_loop(
             reserved_output_tokens=int(obligation_payload["max_tokens"]),
             request_id=request_id,
             stage="todo_required_tool_recovery",
+            source_metadata=messages,
         )
         recovered_content = send_upstream_chat_payload(
             settings,
@@ -879,16 +1258,30 @@ def run_model_tool_loop(
         )
     # 只有完全相同调用的回执才能证明它已执行；推断结果和执行前拒绝不能占用
     # 修正后调用的身份。
+    preexecution_requests = [*inferred_requests, *requested_tools]
+    preexecution_retryable_failures = _retryable_failure_identities(
+        preexecution_requests,
+        pre_tool_results,
+    )
+    preexecution_successes = _successful_request_signatures(
+        preexecution_requests,
+        pre_tool_results,
+    )
     already_executed_signatures = {
         signature
         for item in pre_tool_results
         if isinstance(item, Mapping) and str(item.get("name") or "").strip()
         for signature in (tool_result_request_signature(item),)
-        if signature
+        if signature and not (_read_only_request(item) and item.get("ok") is False)
     }
     duplicate_preexecuted_requests = [
         item for item in requested_tools
         if tool_request_signature(item) in already_executed_signatures
+        and not _request_can_retry_failed_action(
+            item,
+            preexecution_retryable_failures,
+            preexecution_successes,
+        )
     ]
     preexecuted_attachment_requests = [
         item for item in requested_tools
@@ -918,6 +1311,11 @@ def run_model_tool_loop(
             item
             for item in requested_tools
             if tool_request_signature(item) not in already_executed_signatures
+            or _request_can_retry_failed_action(
+                item,
+                preexecution_retryable_failures,
+                preexecution_successes,
+            )
         ]
     requested_tools, rejected_requested_sensors = constrain_attachment_sensor_requests(
         requested_tools,
@@ -943,10 +1341,6 @@ def run_model_tool_loop(
         if continuation is not None
         else max(existing_tool_rounds, preexecution_tool_rounds)
     )
-    if requested_tools and prior_tool_rounds >= 3:
-        raise CognitiveProtocolError(
-            "final_projection_continuation_tool_round_budget_exhausted"
-        )
     executed_tool_results = list(pre_tool_results)
     second_llm_ms = 0
 
@@ -992,6 +1386,9 @@ def run_model_tool_loop(
                     "证据足够就直接回答；证据不足时仍须输出 kind='turn'，并在 outcome.status 使用 partial 或 failed，"
                     "自然说明具体不确定处或当前缺口。"
                     "不要编造工具结果，也不要复述调度过程。"
+                    "工具调用计划不等于执行证据。没有实际工具结果时，只能说明尚未执行或未获得状态；"
+                    "不得声称查询失败、网关异常或回执为空。permission_denied 表示本地权限未开启，"
+                    "不是外部连接失败；按真实错误和已执行结果说明下一步。"
                 )},
                 {"role": "system", "content": core_dialogue_turn_contract_prompt(
                     utterance_interpretation,
@@ -1010,6 +1407,7 @@ def run_model_tool_loop(
             reserved_output_tokens=int(terminal_payload["max_tokens"]),
             request_id=request_id,
             stage=f"chat_tool_finalize_{reason}",
+            source_metadata=messages,
         )
         terminal_started = time.perf_counter()
         body["_cognitiveEvidence"] = {**(body.get("_cognitiveEvidence") or {}), **collect_evidence(executed_tool_results)}
@@ -1072,6 +1470,7 @@ def run_model_tool_loop(
                     reserved_output_tokens=int(terminal_payload["max_tokens"]),
                     request_id=request_id,
                     stage=f"chat_tool_finalize_repair_{reason}",
+                    source_metadata=messages,
                 )
         finally:
             body.pop("_cognitiveToolLoopTerminal", None)
@@ -1111,7 +1510,15 @@ def run_model_tool_loop(
             contract=turn_contract,
             request_id=request_id,
             cognitive_body=body,
+            source_metadata=messages,
         )
+    initial_budget_reason = tool_budget_exhausted(body, requested_tools) if requested_tools else ""
+    if initial_budget_reason:
+        content, terminal_ms = request_terminal_tool_synthesis(content, reason=initial_budget_reason)
+        second_llm_ms += terminal_ms
+        answer_finish_reason = services.model.finish_reason()
+        tool_loop_stop_reason = initial_budget_reason
+        requested_tools = []
     if requested_tools:
         requested_web_capability = any(
             item.get("name") in {"web_search", "read_web_page"}
@@ -1211,6 +1618,7 @@ def run_model_tool_loop(
                     "memoryUpdates": [],
                 },
                 settings=settings,
+                persona_snapshot=context.persona_snapshot,
             )
             progress_event = {
                 "utteranceId": f"tool-progress-{uuid.uuid4().hex[:10]}",
@@ -1260,6 +1668,7 @@ def run_model_tool_loop(
                 cognitive_state=cognitive_execution_state(body),
                 schedule_decision=body.get("_scheduleDecision"),
                 time_context=turn_time_context(body, settings),
+                evidence_context=body,
             )
             if requested_has_visual_tool else execute_agent_tools(
                 requested_non_web_tools,
@@ -1270,6 +1679,7 @@ def run_model_tool_loop(
                 cognitive_state=cognitive_execution_state(body),
                 schedule_decision=body.get("_scheduleDecision"),
                 time_context=turn_time_context(body, settings),
+                evidence_context=body,
             )
         )
         tool_results = effective_tool_results(tool_results)
@@ -1286,6 +1696,7 @@ def run_model_tool_loop(
                 cognitive_state=cognitive_execution_state(body),
                 schedule_decision=body.get("_scheduleDecision"),
                 time_context=turn_time_context(body, settings),
+                evidence_context=body,
             ))
         requested_web_queries = [
             item for item in requested_web_tools if item.get("name") == "web_search"
@@ -1298,6 +1709,7 @@ def run_model_tool_loop(
                 request_id=request_id, cognitive_state=cognitive_execution_state(body),
                 schedule_decision=body.get("_scheduleDecision"),
                 time_context=turn_time_context(body, settings),
+                evidence_context=body,
             ))
         elif requested_web_queries:
             model_research_plan = normalize_web_research_plan(
@@ -1416,12 +1828,14 @@ def run_model_tool_loop(
                     cognitive_state=cognitive_execution_state(body),
                     schedule_decision=body.get("_scheduleDecision"),
                     time_context=turn_time_context(body, settings),
+                evidence_context=body,
                 ))
                 requested_tools.extend(evidence_schedule_requests)
         executed_tool_results = effective_tool_results([
             *executed_tool_results,
             *tool_results,
         ])
+        record_tool_attempts(body, tool_results)
         if has_typed_visual_evidence(tool_results):
             turn_contract = bind_current_visual_observation_contract(
                 turn_contract,
@@ -1460,11 +1874,12 @@ def run_model_tool_loop(
                 )}] if visual_evidence_prompt(tool_results, user_question=semantic_task_request) else []),
                 *([{"role": "system", "content": tool_grounding_instruction(tool_results)}] if tool_grounding_instruction(tool_results) else []),
                 *([{"role": "system", "content": visual_relationship_reaction_instruction(tool_results, relationship_state)}]
-                  if visual_relationship_reaction_instruction(tool_results, relationship_state)
+                  if not (body.get('_turnPersonaContext') or {}).get('independentPersona')
+                  and visual_relationship_reaction_instruction(tool_results, relationship_state)
                   and not has_typed_visual_evidence(tool_results) else []),
                 {"role": "system", "content": (
                     "[工具返回后的认知续写] 依据已返回的执行状态与正文更新当前判断。"
-                    "足以回答时输出 kind='turn'、cognitive、outcome 和 speechUnits，active 任务还须声明 outcome.taskStatus。"
+                    "足以回答时输出 kind='turn'、cognitive、outcome 和 speechUnits，outcome.taskStatus 可省略；实际工具回执记录任务进度。"
                     "仍需不同证据时可 kind='tool_use'，但不要重发已经成功的动作。"
                     "执行失败按真实回执报告原因，不能把所有失败解释为权限不足。"
                     if cognitive_turn_state(body) else
@@ -1473,6 +1888,9 @@ def run_model_tool_loop(
                     "不要重复输出 reply/spokenTextJa 或运行状态。"
                     "若仍缺少一项确实必要的不同工具证据，可以输出 kind='tool_use' 和 calls，"
                     "但不得重复完全相同的工具与参数，也不得无依据地改写参数碰运气。"
+                    "如果回执明确 attempted=false 且指出缺少参数，可依据原请求补齐参数后调用同一工具完成任务；"
+                    "这不需要再次询问已经明确的授权。不要只说稍后补发或重试却结束本轮。"
+                    "发送结果未知、正在发送或已经成功时不得重发。"
                     "工具失败或权限不足时要如实说明；只有完成当前操作确实依赖用户处理权限时，"
                     "才提出一个必要动作。联网取证失败不应变成长篇流程说明、让用户自行搜索或询问是否继续。"
                 )},
@@ -1484,6 +1902,8 @@ def run_model_tool_loop(
                 )},
             ],
         }
+        if body.get("_researchBudget") or body.get("_toolBudget"):
+            final_payload["messages"].append({"role": "system", "content": tool_budget_prompt(body)})
         if settings.get("useResponseFormat"):
             final_payload["response_format"] = {"type": "json_object"}
         if "deepseek.com" in settings["apiEndpoint"]:
@@ -1494,6 +1914,7 @@ def run_model_tool_loop(
             reserved_output_tokens=int(final_payload["max_tokens"]),
             request_id=request_id,
             stage="chat_tool_followup",
+            source_metadata=messages,
         )
         update_chat_request_progress(request_id, "model-synthesizing", "工具结果已返回，正在综合证据形成回答")
         second_started = time.perf_counter()
@@ -1505,28 +1926,42 @@ def run_model_tool_loop(
         answer_finish_reason = services.model.finish_reason()
         second_llm_ms = round((time.perf_counter() - second_started) * 1000)
         executed_request_signatures = {
-            tool_request_signature(item)
-            for item in [*inferred_requests, *requested_tools]
-            if isinstance(item, Mapping) and str(item.get("name") or "")
-        }
-        executed_request_signatures.update(
             signature
-            for item in pre_tool_results
-            if isinstance(item, Mapping) and str(item.get("name") or "")
+            for item in executed_tool_results
+            if isinstance(item, Mapping)
             for signature in (tool_result_request_signature(item),)
             if signature
+        }
+        executed_request_signatures.update(
+            _attempted_request_signatures(
+                [*inferred_requests, *requested_tools],
+                [*pre_tool_results, *tool_results],
+            )
+        )
+        retryable_failure_identities = _retryable_failure_identities(
+            [*inferred_requests, *requested_tools],
+            [*pre_tool_results, *tool_results],
+        )
+        successful_request_signatures = _successful_request_signatures(
+            [*inferred_requests, *requested_tools],
+            [*pre_tool_results, *tool_results],
+        )
+        rejected_request_retry_signatures = _rejected_request_retry_signatures(
+            [*inferred_requests, *requested_tools],
+            [*pre_tool_results, *tool_results],
+        )
+        rejected_request_plan_revisions = _rejected_request_plan_revisions(
+            [*inferred_requests, *requested_tools],
+            [*pre_tool_results, *tool_results],
         )
         tool_rounds = prior_tool_rounds + 1
-        maximum_tool_rounds = 3 if cognitive_turn_state(body) else max(1, min(3, int(capability.max_tool_rounds or 1)))
-        if cognitive_turn_state(body) and executed_tool_results and all(
-            item.get("name") in {"web_search", "read_web_page"} for item in executed_tool_results
-        ):
-            maximum_tool_rounds = 4  # Search/read, with room for one alternative search/read.
         body["_cognitiveToolRoundsUsed"] = tool_rounds
 
         tool_loop_stop_reason = "model_returned_final"
         while True:
             followup_parsed = parse_json_object(content) or {}
+            select_tool_budget(body, followup_parsed, settings)
+            sync_tool_usage(body, executed_tool_results)
             proposed_followup_requests = constrain_model_tool_requests(
                 normalize_tool_requests(followup_parsed),
                 user_message,
@@ -1562,6 +1997,7 @@ def run_model_tool_loop(
                     source="query_loop_followup",
                     reason="current_attachment_is_authoritative_target",
                 )
+            _record_filtered_calls(body, normalize_tool_requests(followup_parsed), proposed_followup_requests)
             if not proposed_followup_requests:
                 if cognitive_turn_state(body) and str(followup_parsed.get("kind") or "") == "tool_use":
                     content, terminal_ms = request_terminal_tool_synthesis(content, reason="requested_tools_rejected")
@@ -1570,11 +2006,21 @@ def run_model_tool_loop(
                 else:
                     tool_loop_stop_reason = "model_returned_final"
                 break
-            followup_requests = [
-                item
-                for item in proposed_followup_requests
-                if tool_request_signature(item) not in executed_request_signatures
-            ]
+            current_execution_state = cognitive_execution_state(body)
+            current_plan_revision = (
+                (current_execution_state.get("task") or {}).get("planRevision")
+                if isinstance(current_execution_state, Mapping)
+                else None
+            )
+            followup_requests, _repeated_rejected_requests = _eligible_followup_requests(
+                proposed_followup_requests,
+                executed_request_signatures,
+                rejected_request_retry_signatures,
+                retryable_failure_identities=retryable_failure_identities,
+                successful_signatures=successful_request_signatures,
+                rejected_plan_revisions=rejected_request_plan_revisions,
+                current_plan_revision=current_plan_revision,
+            )
             if not followup_requests:
                 content, terminal_ms = request_terminal_tool_synthesis(
                     content,
@@ -1584,14 +2030,15 @@ def run_model_tool_loop(
                 answer_finish_reason = services.model.finish_reason()
                 tool_loop_stop_reason = "duplicate_tool_request"
                 break
-            if tool_rounds >= maximum_tool_rounds:
+            resource_reason = tool_budget_exhausted(body, followup_requests)
+            if resource_reason:
                 content, terminal_ms = request_terminal_tool_synthesis(
                     content,
-                    reason="tool_round_budget_exhausted",
+                    reason=resource_reason,
                 )
                 second_llm_ms += terminal_ms
                 answer_finish_reason = services.model.finish_reason()
-                tool_loop_stop_reason = "tool_round_budget_exhausted"
+                tool_loop_stop_reason = resource_reason
                 break
             tool_rounds += 1
             write_server_log(
@@ -1617,6 +2064,7 @@ def run_model_tool_loop(
                 cognitive_state=cognitive_execution_state(body),
                 schedule_decision=body.get("_scheduleDecision"),
                 time_context=turn_time_context(body, settings),
+                evidence_context=body,
             )
             if not followup_results:
                 content, terminal_ms = request_terminal_tool_synthesis(
@@ -1631,6 +2079,7 @@ def run_model_tool_loop(
                 *executed_tool_results,
                 *followup_results,
             ])
+            record_tool_attempts(body, followup_results)
             if has_typed_visual_evidence(followup_results):
                 turn_contract = bind_current_visual_observation_contract(
                     turn_contract,
@@ -1648,11 +2097,30 @@ def run_model_tool_loop(
                     )
                     body["_preparedActionTurn"] = prepared_action_turn
             executed_request_signatures.update(
-                tool_request_signature(item)
-                for item in followup_requests
-                if isinstance(item, dict) and str(item.get("name") or "")
+                signature
+                for item in followup_results
+                if isinstance(item, Mapping)
+                for signature in (tool_result_request_signature(item),)
+                if signature
             )
-            is_last_round = tool_rounds >= maximum_tool_rounds
+            executed_request_signatures.update(
+                _attempted_request_signatures(followup_requests, followup_results)
+            )
+            retryable_failure_identities.update(
+                _retryable_failure_identities(followup_requests, followup_results)
+            )
+            successful_request_signatures.update(
+                _successful_request_signatures(followup_requests, followup_results)
+            )
+            rejected_request_retry_signatures.update(
+                _rejected_request_retry_signatures(followup_requests, followup_results)
+            )
+            for signature, revisions in _rejected_request_plan_revisions(
+                followup_requests,
+                followup_results,
+            ).items():
+                rejected_request_plan_revisions.setdefault(signature, set()).update(revisions)
+            is_last_round = bool(tool_budget_exhausted(body))
             loop_payload: dict[str, Any] = {
                 "model": settings["apiModel"],
                 "temperature": 0.55,
@@ -1683,14 +2151,14 @@ def run_model_tool_loop(
                         else []
                     ),
                     {"role": "system", "content": (
-                        "把所有已返回工具证据按 semantic-v3 综合成 kind='turn'；不要重复输出"
-                        " reply/spokenTextJa 或复述工具调度过程。"
+                        "根据用户目标检查所有已返回证据，决定继续取证或按 semantic-v3 输出最终 kind='turn'。"
+                        "不要复述工具调度过程。"
                         + (
-                            "本轮已到工具循环上限，不得再输出 tool_use；"
-                            "如果证据仍不足，要自然说明不确定处或需要用户澄清。"
+                            "本轮已到资源上限，不得再输出 tool_use；"
+                            "目标未完成时 outcome.status=partial，保留未完成任务，说明已知结论与待核实事项，不要声称已完成研究。"
                             if is_last_round else
-                            "只有发现一个尚未执行、且完成任务不可缺少的不同工具时，"
-                            "才可再输出一次 kind='tool_use' 和 calls。"
+                            "还有影响答案的证据缺口时，输出 kind='tool_use' 和 calls。"
+                            "同一工具可继续读取不同来源、章节或页面范围；不要重复没有新增信息的调用。"
                         )
                     )},
                     {"role": "system", "content": core_dialogue_turn_contract_prompt(
@@ -1700,6 +2168,8 @@ def run_model_tool_loop(
                     )},
                 ],
             }
+            if body.get("_researchBudget") or body.get("_toolBudget"):
+                loop_payload["messages"].append({"role": "system", "content": tool_budget_prompt(body)})
             if settings.get("useResponseFormat"):
                 loop_payload["response_format"] = {"type": "json_object"}
             if "deepseek.com" in settings["apiEndpoint"]:
@@ -1710,6 +2180,7 @@ def run_model_tool_loop(
                 reserved_output_tokens=int(loop_payload["max_tokens"]),
                 request_id=request_id,
                 stage=f"chat_tool_round_{tool_rounds}",
+                source_metadata=messages,
             )
             loop_started = time.perf_counter()
             body["_cognitiveEvidence"] = {**(body.get("_cognitiveEvidence") or {}), **collect_evidence(executed_tool_results)}
@@ -1733,6 +2204,8 @@ def run_model_tool_loop(
             "tool_query_loop_stopped",
             requestId=request_id,
             toolRounds=tool_rounds,
+            researchBudget={k: v for k, v in (body.get("_researchBudget") or {}).items() if k != "startedAt"},
+            toolBudget={k: v for k, v in (body.get("_toolBudget") or {}).items() if k != "startedAt"},
             stopReason=(
                 tool_loop_stop_reason
             ),

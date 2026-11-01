@@ -7,9 +7,11 @@
 """
 from __future__ import annotations
 
+from backend.context.prompt_assembly import system_message
+from agent.engineering_contracts import schedule_prompt
+
 from copy import deepcopy
 from dataclasses import dataclass, replace
-import json
 import re
 import time
 import uuid
@@ -34,17 +36,22 @@ from agent.fingerprints import runtime_fingerprint
 from agent.multimodal_chat import native_visual_chat_enabled
 from agent.persona_context import PersonaContextSnapshot
 from agent.research_architecture import EpistemicPlan, capability_envelope, create_epistemic_plan
+from agent.research_budget import select_tool_budget, sync_tool_usage, record_tool_attempts, tool_budget_exhausted
 from agent.schedule_architecture import SCHEDULE_INTENT_PROMPT
 from agent.tool_architecture import (
     DEFAULT_TOOL_REGISTRY,
     PerceptionNeed,
     bind_required_capabilities,
     merge_searched_tool_candidates,
+    discover_capabilities,
+    normalize_capability_query,
 )
 from agent.turn_context import pin_reply_context
 from agent.visual_grounding import has_current_visual_evidence as has_typed_visual_evidence, visual_evidence_prompt
 from backend.chat import tool_query_loop as chat_tool_query_loop
 from backend.chat.completion import reply_integrity_issues
+from backend.chat.delivery import require_delivery
+from backend.chat.preparation_cache import StreamPreparation, resolve_turn_references
 from backend.chat.parsing import extract_complete_json_string_field, looks_like_incomplete_structured_reply, parse_json_object
 from backend.common.text import unique_strings
 from backend.common.values import clamp_float, safe_nonnegative_int as _safe_nonnegative_int
@@ -52,6 +59,7 @@ from backend.context.reference import _reference_evidence, contextual_reference_
 from backend.research.citations import readable_public_source_uids
 from backend.research.query import web_search_freshness, web_search_query_from_message
 from backend.tools.outcomes import effective_tool_results
+from backend.tasks.execution_context import scheduled_tool_ids
 
 
 class RuntimeOperations(Protocol):
@@ -189,8 +197,6 @@ class ResearchOperations(Protocol):
     def freeze_source_batch(self, *args: Any, **kwargs: Any) -> Any: ...
     def persist_source_batch(self, *args: Any, **kwargs: Any) -> Any: ...
     def web_answer_diagnostics(self, *args: Any, **kwargs: Any) -> Any: ...
-    def context_repair_needs_web_research(self, *args: Any, **kwargs: Any) -> Any: ...
-    def sanitize_secondary_only_precision(self, *args: Any, **kwargs: Any) -> Any: ...
     def select_best_research_candidate(self, *args: Any, **kwargs: Any) -> Any: ...
     def synthesize_evidence_limited_reply(self, *args: Any, **kwargs: Any) -> Any: ...
     def evidence_synthesis_appends_prior_answer(self, *args: Any, **kwargs: Any) -> Any: ...
@@ -200,24 +206,18 @@ class ModelOperations(Protocol):
     def send_conversation_brain_payload(self, *args: Any, **kwargs: Any) -> Any: ...
     def normalize_model_reply(self, *args: Any, **kwargs: Any) -> Any: ...
     def model_reply_text(self, *args: Any, **kwargs: Any) -> Any: ...
-    def repair_tool_grounded_reply(self, *args: Any, **kwargs: Any) -> Any: ...
-    def repair_context_grounded_reply(self, *args: Any, **kwargs: Any) -> Any: ...
     def repair_incomplete_model_reply(self, *args: Any, **kwargs: Any) -> Any: ...
-    def repair_task_completion_reply(self, *args: Any, **kwargs: Any) -> Any: ...
     def repair_dialogue_style_reply(self, *args: Any, **kwargs: Any) -> Any: ...
     def repair_dialogue_fields_once(self, *args: Any, **kwargs: Any) -> Any: ...
     def repair_empty_reply(self, *args: Any, **kwargs: Any) -> Any: ...
     def repair_frozen_reply_emotion_once(self, *args: Any, **kwargs: Any) -> Any: ...
     def select_best_model_candidate(self, *args: Any, **kwargs: Any) -> Any: ...
-    def terminal_grounding_boundary_reply(self, *args: Any, **kwargs: Any) -> Any: ...
 
 class ValidationOperations(Protocol):
-    def tool_grounding_violation(self, *args: Any, **kwargs: Any) -> Any: ...
     def context_grounding_violation(self, *args: Any, **kwargs: Any) -> Any: ...
     def task_completion_violation(self, *args: Any, **kwargs: Any) -> Any: ...
     def dialogue_validation_for_result(self, *args: Any, **kwargs: Any) -> Any: ...
     def dialogue_output_validation(self, *args: Any, **kwargs: Any) -> Any: ...
-    def enforce_visual_semantic_grounding(self, *args: Any, **kwargs: Any) -> Any: ...
 
 @dataclass(frozen=True)
 class PipelinePolicy:
@@ -303,7 +303,6 @@ class UpstreamRunState:
     evidence_limited_synthesis_ms: Any = None
     executed_tool_results: Any = None
     existing_tool_rounds: Any = None
-    explicitly_requested_sensors: Any = None
     file_output_expected: Any = None
     first_llm_ms: Any = None
     grounding_repair_ms: Any = None
@@ -421,21 +420,12 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
                 "final_projection_continuation_missing_candidate"
             )
         continuation_preview = parse_json_object(state.continuation_content) or {}
-        continuation_requests = (
-            continuation_preview.get("calls")
-            or continuation_preview.get("toolRequests")
-            or []
-        ) if isinstance(continuation_preview, Mapping) else []
-        if (
-            state.continuation_tool_rounds >= 3
-            and str(continuation_preview.get("kind") or "").lower() == "tool_use"
-            and isinstance(continuation_requests, list)
-            and continuation_requests
-        ):
-            raise CognitiveProtocolError(
-                "final_projection_continuation_tool_round_budget_exhausted"
-            )
-    services.runtime.update_progress(state.request_id, "context", "正在整理当前对话、记忆与人格上下文")
+        select_tool_budget(state.body, continuation_preview, state.settings)
+    continuing_model = bool(state.continuation or state.body.get("_toolEscalation") or state.body.get("_researchEscalation"))
+    services.runtime.update_progress(
+        state.request_id, "tool-escalation" if continuing_model else "context",
+        "正在接续模型选择的工具与上下文" if continuing_model else "正在整理当前对话、记忆与人格上下文",
+    )
     state.messages = state.body.get("messages") if isinstance(state.body.get("messages"), list) else []
     state.supplied_memories = state.body.get("memories") if isinstance(state.body.get("memories"), list) else []
     state.successive_inputs = [
@@ -460,6 +450,7 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
             incoming_tool_escalation,
             request_id=state.request_id,
             user_message=state.user_message,
+            source_messages=state.messages,
         )
     state.prepared_action_turn = services.turn_planning.body_prepared_action_turn(
         state.body,
@@ -517,7 +508,8 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
     # 会绕过分层检索，并使同一服务因打开它的界面不同而产生不同行为。
     state.prompt = services.model.read_system_prompt()
     state.attribution_evidence = services.context_prompts.speaker_attribution_evidence_prompt(state.messages, state.user_message)
-    state.context_resolution = services.context.contextual_reference_resolution(
+    state.context_resolution = resolve_turn_references(
+        state.body, services.context.contextual_reference_resolution,
         state.user_message,
         state.messages,
         request_id=state.request_id,
@@ -561,28 +553,27 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
     state.current_attachments = state.body.get("_processedAttachments") if isinstance(state.body.get("_processedAttachments"), list) else []
     attachment_followup = services.tool_planning.is_attachment_followup_query(state.user_message)
     state.has_bound_attachment = bool(state.current_attachments or attachment_followup)
-    state.explicitly_requested_sensors = services.tool_planning.explicitly_requested_sensor_tools(state.user_message)
     state.todo_reconciliation = services.task_planning.body_todo_reconciliation(
         state.body,
         state.user_message,
         state.messages,
     )
-    state.inferred_requests = services.tool_planning.infer_agent_tool_requests(
-        state.user_message,
-        state.messages,
-        state.context_resolution,
-        state.prepared_action_turn,
-        state.todo_reconciliation,
-    )
-    state.inferred_requests = services.tool_planning.task_bound_tool_requests(state.body, state.inferred_requests)
-    if services.task_planning.cognitive_turn_state(state.body):
-        # 主模型看到用户反馈并修订待办任务前，不执行旧版词法候选。
-        # 通过校验的模型升级请求会在下方合并，并继续经过常规工具守卫。
+    if (
+        services.task_planning.cognitive_turn_state(state.body)
+        or state.continuation is not None
+        or (
+            state.body.get("_toolEscalation")
+            and isinstance(state.body.get("_streamPreparation"), StreamPreparation)
+        )
+    ):
+        # 模型拥有工具选择时，直接接续其调用，不先生成随后丢弃的词法候选。
         state.inferred_requests = []
-    if state.continuation is not None:
-        # 最终审计恢复发生在原轮次预执行之后。修复后的候选是新请求的唯一来源；
-        # 此处不得再从原始用户文本推断或重放动作。
-        state.inferred_requests = []
+    else:
+        state.inferred_requests = services.tool_planning.infer_agent_tool_requests(
+            state.user_message, state.messages, state.context_resolution,
+            state.prepared_action_turn, state.todo_reconciliation,
+        )
+        state.inferred_requests = services.tool_planning.task_bound_tool_requests(state.body, state.inferred_requests)
     state.inferred_requests, rejected_attachment_sensor_requests = (
         services.tool_planning.constrain_attachment_sensor_requests(
             state.inferred_requests,
@@ -627,13 +618,7 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
     )
     if tool_escalation:
         escalation_target = str(tool_escalation.get("targetDomain") or "").strip()
-        if (
-            escalation_target == "screen"
-            and (
-                not state.has_bound_attachment
-                or "capture_screen" in state.explicitly_requested_sensors
-            )
-        ):
+        if escalation_target == "screen":
             screen_need = PerceptionNeed(
                 required=True,
                 target_domain="screen",
@@ -664,19 +649,28 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
             "targetDomain": escalation_target,
             "toolAuthorization": tool_escalation.get("toolAuthorization"),
         })
-        capability_query = str(tool_escalation.get("capabilityQuery") or "").strip()
-        if capability_query and not escalation_requests:
-            searched = DEFAULT_TOOL_REGISTRY.search(capability_query, limit=4)
+        capability_query = normalize_capability_query(tool_escalation) if (
+            tool_escalation.get("capabilityQuery") or tool_escalation.get("capabilityFamilies")
+            or tool_escalation.get("capabilityCursor") or tool_escalation.get("capabilityAction")
+        ) else None
+        if capability_query:
+            from agent.engineering_contracts import load_tool_contracts
+            page = discover_capabilities(capability_query)
+            searched = page.items
+            query_text = normalize_capability_query(capability_query)["query"]
+            load_tool_contracts(state.body, query=capability_query, calls=escalation_requests)
             services.runtime.write_log(
                 "tool_search_completed",
                 requestId=state.request_id,
-                query=capability_query[:300],
+                query=query_text[:300],
                 resultToolIds=[item.tool_id for item in searched],
+                nextCursor=page.next_cursor,
+                fallbackUsed=page.fallback_used,
             )
             state.tool_preflight = merge_searched_tool_candidates(
                 state.tool_preflight,
                 searched,
-                query=capability_query,
+                query=query_text,
             )
             state.body["_toolPreflight"] = state.tool_preflight
             if escalation_target == "screen" and any(
@@ -831,11 +825,9 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
         state.capability,
         state.tool_preflight,
         state.settings,
-        extra_tool_ids=[
-            str(item.get("name") or "")
-            for item in state.inferred_requests
-            if isinstance(item, dict)
-        ],
+        extra_tool_ids=[*scheduled_tool_ids(state.body), *[
+            str(item.get("name") or "") for item in state.inferred_requests if isinstance(item, dict)
+        ]],
     )
     state.prepared_action_turn = replace(
         state.prepared_action_turn,
@@ -860,11 +852,9 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
             state.capability,
             state.tool_preflight,
             state.settings,
-            extra_tool_ids=[
-                str(item.get("name") or "")
-                for item in state.inferred_requests
-                if isinstance(item, dict)
-            ],
+            extra_tool_ids=[*scheduled_tool_ids(state.body), *[
+                str(item.get("name") or "") for item in state.inferred_requests if isinstance(item, dict)
+            ]],
         )
         state.prepared_action_turn = replace(
             state.prepared_action_turn,
@@ -913,11 +903,9 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
         state.capability,
         state.tool_preflight,
         state.settings,
-        extra_tool_ids=[
-            str(item.get("name") or "")
-            for item in state.inferred_requests
-            if isinstance(item, dict)
-        ],
+        extra_tool_ids=[*scheduled_tool_ids(state.body), *[
+            str(item.get("name") or "") for item in state.inferred_requests if isinstance(item, dict)
+        ]],
     )
     state.capability = replace(
         state.capability,
@@ -1094,10 +1082,6 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
             args["actionId"] = str(state.pending_browser_action.get("actionId") or "")
             args["_actionGroupId"] = str(state.pending_browser_action.get("actionGroupId") or state.pending_browser_action.get("actionId") or "")
             browser_request["args"] = args
-    inferred_has_visual_tool = any(
-        item.get("name") in {"capture_screen", "capture_camera"}
-        for item in inferred_direct_requests
-    )
     state.research_plan: dict[str, Any] | None = None
     state.research_planning_ms = 0
     state.research_review_ms = 0
@@ -1113,21 +1097,34 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
         del active_plan
         return
 
+    preexecution_observations = list(state.attachment_tool_results)
+    select_tool_budget(state.body, state.body.get("_toolEscalation"), state.settings)
+    select_tool_budget(state.body, {"calls": [*inferred_web_searches, *inferred_direct_requests]}, state.settings)
+    sync_tool_usage(state.body, preexecution_observations)
+
+    def execute_preexecution_tools(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        reason = tool_budget_exhausted(state.body, requests)
+        if reason:
+            return [{"name": item.get("name"), "ok": False, "attempted": False,
+                     "error": reason, "message": "研究资源已不足以执行本批请求；请缩小批次、升级研究深度或说明未完成项。"}
+                    for item in requests]
+        observations = services.tool_execution.execute_agent_tools(
+            requests, state.settings, state.user_message,
+            preflight=state.tool_preflight, request_id=state.request_id,
+            cognitive_state=services.task_planning.cognitive_execution_state(state.body),
+            schedule_decision=state.body.get("_scheduleDecision"),
+            time_context=services.task_planning.turn_time_context(state.body, state.settings),
+            evidence_context=state.body,
+        )
+        record_tool_attempts(state.body, observations)
+        return observations
+
     if inferred_web_searches and services.task_planning.cognitive_turn_state(state.body):
         # The conversation model owns search/read/answer, just like other tools.
         # Return observations to its existing tool loop without a second planner
         # or reviewer deciding whether it may continue.
         services.runtime.update_progress(state.request_id, "tool-executing", "正在搜索相关网页")
-        planned_web_results = services.tool_execution.execute_agent_tools(
-            inferred_web_searches,
-            state.settings,
-            state.user_message,
-            preflight=state.tool_preflight,
-            request_id=state.request_id,
-            cognitive_state=services.task_planning.cognitive_execution_state(state.body),
-            schedule_decision=state.body.get("_scheduleDecision"),
-            time_context=services.task_planning.turn_time_context(state.body, state.settings),
-        )
+        planned_web_results = execute_preexecution_tools(inferred_web_searches)
     elif inferred_web_searches and state.settings.get("permissionWebSearch"):
         services.runtime.update_progress(
             state.request_id,
@@ -1230,7 +1227,9 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
         # 确定性策略决定是否必须取得公开证据。规划器可以细化路径，但不得静默
         # 取消明确、当前或高风险的研究请求。
         if not state.research_plan.get("queries"):
-            state.research_plan = services.research.fallback_web_research_plan(state.user_message, state.context_resolution, state.messages)
+            selected = {k: state.research_plan[k] for k in ('researchDepth', 'researchDepthReason', 'researchTopic')
+                        if state.research_plan.get(k)}
+            state.research_plan = {**services.research.fallback_web_research_plan(state.user_message, state.context_resolution, state.messages), **selected}
         if state.research_decision.source_policy_id:
             state.research_plan["sourcePolicyId"] = state.research_decision.source_policy_id
         state.research_plan["researchPolicy"] = state.research_decision.policy
@@ -1299,28 +1298,7 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
             "tool-executing",
             "正在执行回答所需的本地工具或指定网页读取",
         )
-    inferred_direct_results = [] if state.continuation is not None else (
-        services.tool_execution.execute_agent_tools(
-            inferred_direct_requests,
-            state.settings,
-            state.user_message,
-            preflight=state.tool_preflight,
-            request_id=state.request_id,
-            cognitive_state=services.task_planning.cognitive_execution_state(state.body),
-            schedule_decision=state.body.get("_scheduleDecision"),
-            time_context=services.task_planning.turn_time_context(state.body, state.settings),
-        )
-        if inferred_has_visual_tool else services.tool_execution.execute_agent_tools(
-            inferred_direct_requests,
-            state.settings,
-            state.user_message,
-            preflight=state.tool_preflight,
-            request_id=state.request_id,
-            cognitive_state=services.task_planning.cognitive_execution_state(state.body),
-            schedule_decision=state.body.get("_scheduleDecision"),
-            time_context=services.task_planning.turn_time_context(state.body, state.settings),
-        )
-    )
+    inferred_direct_results = [] if state.continuation is not None else execute_preexecution_tools(inferred_direct_requests)
     deferred_browser_results: list[dict[str, Any]] = []
     if state.deferred_browser_requests and planned_web_results:
         browser_candidates = services.research.public_web_sources(planned_web_results)
@@ -1457,6 +1435,12 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
         if state.continuation is not None
         else [*state.attachment_tool_results, *inferred_tool_results]
     )
+    select_tool_budget(state.body, state.body.get("_toolEscalation"), state.settings)
+    if not state.body.get("_researchBudget"):
+        select_tool_budget(state.body, {"calls": [
+            {"name": item.get("name"), "args": {}} for item in raw_pre_tool_results
+        ]}, state.settings)
+    sync_tool_usage(state.body, raw_pre_tool_results)
     state.preexecution_tool_rounds = 1 if any(tool_result_was_attempted(item) for item in raw_pre_tool_results) else 0
     # 保存有界且仅属于本请求的恢复快照。它不会持久化为记忆，也不会写入人设提示；
     # 后续架构阶段失败时，恢复控制器仍可检查真实工具结果。
@@ -1475,6 +1459,11 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
         )
     expected_perception_target = state.tool_preflight.perception.target_domain
     grounded_pre_tool_results: list[dict[str, Any]] = []
+    planned_sensor_tools = {
+        str(request.get("name") or "")
+        for request in state.inferred_requests
+        if isinstance(request, Mapping)
+    }
     for item in state.pre_tool_results:
         tool_name = str(item.get("name") or "")
         mismatched_visual = (
@@ -1484,7 +1473,7 @@ def collect_upstream_evidence(services: UpstreamPipelineServices, state: Upstrea
                 item,
                 expected_perception_target,
             )
-            and tool_name not in state.explicitly_requested_sensors
+            and tool_name not in planned_sensor_tools
         )
         if mismatched_visual:
             services.runtime.write_log(
@@ -1667,12 +1656,14 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
     generic_grounding_instruction = services.delivery_prompts.tool_grounding_instruction(
         generic_prompt_tool_results
     )
+    from backend.context.reply_layers import reply_layer_messages, independent_persona
+    independent = independent_persona(state.active_persona_snapshot)
     visual_style_context = (
-        "[当前视觉任务] 你是 Amadeus。先准确完成用户针对当前画面的具体问题；"
+        "[当前视觉任务] 沿用本轮选定的人格，先准确完成用户针对当前画面的具体问题；"
         "人格只影响简短自然的措辞、情绪与动作，不能提供任何画面事实。"
         "与本轮直接承接的近期对话只可帮助理解用户所指和可见文字；"
         "无关旧对话、长期记忆、日程、关系经历和常识猜测都不是当前画面证据。"
-        f"关系阶段={str(state.relationship_state.get('stage') or 'close_companion')[:40]}。"
+        + ('' if independent else f"关系阶段={str(state.relationship_state.get('stage') or 'close_companion')[:40]}。")
         if state.visual_focus_mode else ""
     )
     visual_recent_context = (
@@ -1695,79 +1686,75 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
         and not generic_prompt_tool_results
         and not state.file_output_expected
     )
+    from agent.engineering_contracts import PRELOADED_TOOL_KEY
+    state.body[PRELOADED_TOOL_KEY] = list(state.capability.initially_loaded_tool_ids)
     state.base_messages = [
-        *([{"role": "system", "content": state.prompt}]
+        *reply_layer_messages(state.active_persona_snapshot, services.policy.natural_dialogue_style,
+                              services.policy.emotion_selection_rule, visual=state.visual_focus_mode),
+        system_message('backend/chat/upstream_pipeline.py:1688', services.policy.cognitive_dialogue_reply_rule if services.task_planning.cognitive_turn_state(state.body) else services.policy.utterance_stream_reply_rule, source='backend/chat/upstream_pipeline.py', category='unclassified'),
+        *([system_message('backend/chat/upstream_pipeline.py:1693', state.turn_persona_context["factsPrompt"], source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode else []),
-        {"role": "system", "content": services.policy.natural_dialogue_style},
-        {"role": "system", "content": (
-            services.policy.cognitive_dialogue_reply_rule if services.task_planning.cognitive_turn_state(state.body) else services.policy.utterance_stream_reply_rule
-        )},
-        *([{"role": "system", "content": state.deep_persona_prompt}]
-          if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": state.turn_persona_context["factsPrompt"]}]
-          if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": visual_style_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1695', visual_style_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if visual_style_context else []),
-        *([{"role": "system", "content": visual_recent_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1697', visual_recent_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if visual_recent_context else []),
         *(services.task_planning.task_local_dialogue_messages(state.body) if state.visual_focus_mode else []),
-        {"role": "system", "content": policy_prompt(state.turn_policy)},
-        {"role": "system", "content": services.policy.speaker_attribution_rule},
-        {"role": "system", "content": services.policy.technical_accuracy_rule},
-        {"role": "system", "content": services.policy.emotion_selection_rule},
-        *([{"role": "system", "content": services.policy.amadeus_tool_rule}]
+        system_message('backend/chat/upstream_pipeline.py:1700', policy_prompt(state.turn_policy), source='backend/chat/upstream_pipeline.py', category='unclassified'),
+        system_message('dialogue.speaker', services.policy.speaker_attribution_rule, source='backend/chat/upstream_pipeline.py', category='engineering'),
+        system_message('engineering.accuracy', services.policy.technical_accuracy_rule, source='backend/chat/upstream_pipeline.py', category='engineering'),
+        *([system_message('tools.legacy', services.policy.amadeus_tool_rule, source='backend/chat/upstream_pipeline.py', category='engineering')]
           if not state.visual_focus_mode and not services.task_planning.cognitive_turn_state(state.body) else []),
-        *([{"role": "system", "content": SCHEDULE_INTENT_PROMPT}]
+        *([system_message('schedule.intent', schedule_prompt(state.body, cognitive=bool(services.task_planning.cognitive_turn_state(state.body))), source='backend/chat/upstream_pipeline.py', category='engineering')]
           if not state.visual_focus_mode else []),
-        {"role": "system", "content": services.delivery_prompts.tool_preflight_prompt(state.tool_preflight, state.capability)},
-        *([{"role": "system", "content": services.delivery_prompts.todo_reconciliation_prompt(state.todo_reconciliation)}]
+        system_message('capability.current', services.delivery_prompts.tool_preflight_prompt(state.tool_preflight, state.capability), source='backend/chat/upstream_pipeline.py', category='mixed'),
+        *([system_message('backend/chat/upstream_pipeline.py:1709', services.delivery_prompts.todo_reconciliation_prompt(state.todo_reconciliation), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if services.delivery_prompts.todo_reconciliation_prompt(state.todo_reconciliation) and not state.visual_focus_mode and not services.task_planning.cognitive_turn_state(state.body) else []),
-        *([{"role": "system", "content": services.context_prompts.relationship_context_prompt(state.relationship_state)}]
-          if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.context_prompts.dignity_boundary_context_prompt(
+        *([system_message('backend/chat/upstream_pipeline.py:1711', services.context_prompts.relationship_context_prompt(state.relationship_state), source='backend/chat/upstream_pipeline.py', category='unclassified')]
+          if not state.visual_focus_mode and not independent else []),
+        *([system_message('backend/chat/upstream_pipeline.py:1713', services.context_prompts.dignity_boundary_context_prompt(
             state.relationship_state,
             state.body.get("_dignityAssessment") if isinstance(state.body.get("_dignityAssessment"), dict) else None,
             require_output_field=False,
-        )}] if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.context_prompts.transition_style_prompt(state.messages)}]
+        ), source='backend/chat/upstream_pipeline.py', category='unclassified')] if not state.visual_focus_mode and not independent else []),
+        *([system_message('backend/chat/upstream_pipeline.py:1718', services.context_prompts.transition_style_prompt(state.messages), source='backend/chat/upstream_pipeline.py', category='unclassified')]
+          if not state.visual_focus_mode and not independent else []),
+        *([system_message('backend/chat/upstream_pipeline.py:1720', services.context_prompts.permission_context_prompt(state.settings, body=state.body), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.context_prompts.permission_context_prompt(state.settings, body=state.body)}]
-          if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": state.attachment_prompt_for_model}]
+        *([system_message('backend/chat/upstream_pipeline.py:1722', state.attachment_prompt_for_model, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.attachment_prompt_for_model else []),
-        *([{"role": "system", "content": generic_tool_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1724', generic_tool_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if generic_tool_context else []),
-        *([{"role": "system", "content": generic_grounding_instruction}]
+        *([system_message('backend/chat/upstream_pipeline.py:1726', generic_grounding_instruction, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if generic_grounding_instruction else []),
-        *([{"role": "system", "content": services.delivery_prompts.visual_relationship_reaction_instruction(state.prompt_tool_results, state.relationship_state)}]
+        *([system_message('backend/chat/upstream_pipeline.py:1728', services.delivery_prompts.visual_relationship_reaction_instruction(state.prompt_tool_results, state.relationship_state), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if services.delivery_prompts.visual_relationship_reaction_instruction(state.prompt_tool_results, state.relationship_state)
-          and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": interruption_context}] if interruption_context else []),
-        *([{"role": "system", "content": explicit_context_control}]
+          and not state.visual_focus_mode and not independent else []),
+        *([system_message('backend/chat/upstream_pipeline.py:1731', interruption_context, source='backend/chat/upstream_pipeline.py', category='unclassified')] if interruption_context else []),
+        *([system_message('backend/chat/upstream_pipeline.py:1732', explicit_context_control, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if explicit_context_control else []),
-        *([{"role": "system", "content": explicit_reply_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1734', explicit_reply_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if explicit_reply_context else []),
-        *([{"role": "system", "content": services.context_prompts.explicit_user_position_prompt(state.user_message)}]
+        *([system_message('backend/chat/upstream_pipeline.py:1736', services.context_prompts.explicit_user_position_prompt(state.user_message), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if services.context_prompts.explicit_user_position_prompt(state.user_message) and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": "主动互动连续性：" + state.proactive_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1738', "主动互动连续性：" + state.proactive_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.proactive_context and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.context_prompts.retrieved_memory_prompt(
+        *([system_message('memory.retrieved', services.context_prompts.retrieved_memory_prompt(
             state.memories,
             state.memory_records,
             state.memory_need,
             cognitive_state=services.task_planning.cognitive_turn_state(state.body),
-        )}] if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.context_prompts.conversation_context_prompt(
+        ), source='backend/chat/upstream_pipeline.py', category='mixed')] if not state.visual_focus_mode else []),
+        *([system_message('conversation.context', services.context_prompts.conversation_context_prompt(
             state.user_message, state.turn_policy, state.memory_need, state.context_resolution,
             context_state=services.context.frozen_turn_context_state(state.body),
             cognitive_state=services.task_planning.cognitive_turn_state(state.body),
-        )}]
+        ), source='backend/chat/upstream_pipeline.py', category='mixed')]
           if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.delivery_prompts.proactive_control_prompt(services.context.frozen_turn_context_state(state.body))}]
+        *([system_message('backend/chat/upstream_pipeline.py:1752', services.delivery_prompts.proactive_control_prompt(services.context.frozen_turn_context_state(state.body)), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.context_prompts.session_temporal_context_prompt(state.user_message, settings=state.settings)}]
+        *([system_message('backend/chat/upstream_pipeline.py:1754', services.context_prompts.session_temporal_context_prompt(state.user_message, settings=state.settings), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": state.attribution_evidence}]
+        *([system_message('backend/chat/upstream_pipeline.py:1756', state.attribution_evidence, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.attribution_evidence and not state.visual_focus_mode else []),
         *services.context.conversation_history_messages(state.body, [
             item for item in (
@@ -1777,46 +1764,47 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
             )
             if isinstance(item, dict) and not state.visual_focus_mode
         ]),
-        *([{"role": "system", "content": state.identity_context}]
-          if state.identity_context and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": legacy_nickname_prompt}]
-          if legacy_nickname_prompt and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": legacy_motif_prompt}]
+        *([system_message('backend/chat/upstream_pipeline.py:1766', state.identity_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+          if state.identity_context and not state.visual_focus_mode and not independent else []),
+        *([system_message('backend/chat/upstream_pipeline.py:1768', legacy_nickname_prompt, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+          if legacy_nickname_prompt and not state.visual_focus_mode and not independent else []),
+        *([system_message('backend/chat/upstream_pipeline.py:1770', legacy_motif_prompt, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if legacy_motif_prompt and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": services.context_prompts.immediate_context_prompt(
+        *([system_message('conversation.immediate', services.context_prompts.immediate_context_prompt(
             state.messages,
             state.user_message,
             state.turn_policy,
             context_state=services.context.frozen_turn_context_state(state.body),
             cognitive_state=services.task_planning.cognitive_turn_state(state.body),
-        )}]
+        ), source='backend/chat/upstream_pipeline.py', category='mixed')]
           if not state.visual_focus_mode else []),
-        *([{"role": "system", "content": state.pending_question_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1780', state.pending_question_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.pending_question_context and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": state.todo_pending_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1782', state.todo_pending_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.todo_pending_context and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": state.schedule_state_context}]
+        *([system_message('backend/chat/upstream_pipeline.py:1784', state.schedule_state_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.schedule_state_context and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": contextual_reference_prompt(state.context_resolution)}]
+        *([system_message('backend/chat/upstream_pipeline.py:1786', contextual_reference_prompt(state.context_resolution), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if contextual_reference_prompt(state.context_resolution) and not state.visual_focus_mode else []),
-        *([{"role": "system", "content": current_visual_contract}]
+        *([system_message('backend/chat/upstream_pipeline.py:1788', current_visual_contract, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if current_visual_contract else []),
-        *([{"role": "system", "content": services.delivery_prompts.claim_level_fact_policy_prompt(
+        *([system_message('backend/chat/upstream_pipeline.py:1790', services.delivery_prompts.claim_level_fact_policy_prompt(
             state.prepared_action_turn
-        )}] if services.delivery_prompts.claim_level_fact_policy_prompt(state.prepared_action_turn) and not state.visual_focus_mode else []),
-        {"role": "system", "content": services.delivery_prompts.core_dialogue_turn_contract_prompt(
+        ), source='backend/chat/upstream_pipeline.py', category='unclassified')] if services.delivery_prompts.claim_level_fact_policy_prompt(state.prepared_action_turn) and not state.visual_focus_mode else []),
+        system_message('dialogue.contract', services.delivery_prompts.core_dialogue_turn_contract_prompt(
             state.utterance_interpretation,
             state.turn_contract,
             model_owned=bool(services.task_planning.cognitive_turn_state(state.body)),
-        )},
+        ), source='backend/chat/upstream_pipeline.py', category='mixed'),
         {"role": "user", "content": state.user_message},
     ]
     if visual_only_focus_mode:
         state.base_messages = [
-            {"role": "system", "content": visual_style_context},
-            {"role": "system", "content": services.delivery_prompts.proactive_control_prompt(services.context.frozen_turn_context_state(state.body))},
-            {"role": "system", "content": (
-                "[视觉专用 semantic-v3 协议] 只输出一个 JSON 对象，不要 Markdown 或额外说明。"
+            *reply_layer_messages(state.active_persona_snapshot, services.policy.natural_dialogue_style,
+                                  services.policy.emotion_selection_rule, visual=True),
+            system_message('backend/chat/upstream_pipeline.py:1802', visual_style_context, source='backend/chat/upstream_pipeline.py', category='unclassified'),
+            system_message('backend/chat/upstream_pipeline.py:1803', services.delivery_prompts.proactive_control_prompt(services.context.frozen_turn_context_state(state.body)), source='backend/chat/upstream_pipeline.py', category='unclassified'),
+            system_message('backend/chat/upstream_pipeline.py:1804', "[视觉专用 semantic-v3 协议] 只输出一个 JSON 对象，不要 Markdown 或额外说明。"
                 "输出 kind='turn' 和一到三项 speechUnits；每项 zh 用中文直接回答当前视觉问题，"
                 "ja 用自然日语表达完全相同的事实；不要重复输出 reply 或 spokenTextJa。"
                 "emotion 从 focused/curious/surprised/amused/embarrassed 中选最合适的一项，"
@@ -1825,19 +1813,18 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
                 "以及 scheduleIntent={kind:'none',relation:'unrelated',authorization:'none',commands:[],"
                 "missingFields:[],sourceSpans:[],summary:'',confidence:0.0}。"
                 "不要输出 completedActs、standalone 或 turnComplete；它们由后端依据视觉证据审计结果确认。"
-                "不得增加其他事实字段，也不得用人格反应替代视觉答案。"
-            )},
-            *([{"role": "system", "content": visual_recent_context}]
+                "不得增加其他事实字段，也不得用人格反应替代视觉答案。", source='backend/chat/upstream_pipeline.py', category='unclassified'),
+            *([system_message('backend/chat/upstream_pipeline.py:1816', visual_recent_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
               if visual_recent_context else []),
             *services.task_planning.task_local_dialogue_messages(state.body),
-            *([{"role": "system", "content": explicit_reply_context}]
+            *([system_message('backend/chat/upstream_pipeline.py:1819', explicit_reply_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
               if explicit_reply_context else []),
-            {"role": "system", "content": current_visual_contract},
-            {"role": "system", "content": services.delivery_prompts.core_dialogue_turn_contract_prompt(
+            system_message('backend/chat/upstream_pipeline.py:1821', current_visual_contract, source='backend/chat/upstream_pipeline.py', category='unclassified'),
+            system_message('dialogue.contract', services.delivery_prompts.core_dialogue_turn_contract_prompt(
                 state.utterance_interpretation,
                 state.turn_contract,
                 model_owned=bool(services.task_planning.cognitive_turn_state(state.body)),
-            )},
+            ), source='backend/chat/upstream_pipeline.py', category='mixed'),
             {"role": "user", "content": state.user_message},
         ]
 
@@ -1851,6 +1838,7 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
         reserved_output_tokens=primary_max_tokens,
         request_id=state.request_id,
         stage="chat_primary",
+        source_metadata=state.messages,
     )
     payload: dict[str, Any] = {
         "model": state.settings["apiModel"],
@@ -1915,6 +1903,7 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
             pending_browser_action=state.pending_browser_action,
             relationship_state=state.relationship_state,
             progress_callback=state.progress_callback,
+            persona_snapshot=state.active_persona_snapshot,
         ),
         services.tool_execution.tool_loop_services,
     )
@@ -1938,7 +1927,7 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
 
 
 def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: UpstreamRunState) -> None:
-    """核验工具、研究、上下文与视觉证据边界。"""
+    """记录 grounding 诊断，不让旧语义门禁改写可交付正文。"""
 
     state.grounding_tool_results = [
         *state.executed_tool_results,
@@ -1947,8 +1936,6 @@ def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: Up
             for item in state.executed_tool_results
         ) else state.recalled_visual_results),
     ]
-    # 当前视觉事实由下方类型化语义门控负责。旧正则校验器只保留给非视觉工具和低成本
-    # 诊断，不能判断视觉句子是否属实。
     state.non_visual_grounding_tool_results = [
         item for item in state.grounding_tool_results
         if str(item.get("name") or "") not in {"capture_screen", "capture_camera", "read_image"}
@@ -1961,18 +1948,21 @@ def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: Up
         ),
         None,
     )
-    if state.web_evidence_status:
+    if state.web_evidence_status and isinstance(state.context_resolution, dict):
         state.context_resolution["webEvidenceStatus"] = state.web_evidence_status
     state.grounding_repair_ms = 0
+    state.context_grounding_repair_ms = 0
     state.context_recovery_web_ms = 0
     state.context_recovery_triggered_web = False
+    state.semantic_research_audit_failed = False
     state.non_json_reply_recovered = bool(
         isinstance(state.content, str)
         and state.content.strip()
         and parse_json_object(state.content) is None
     )
     state.structured_transport_invalid = bool(
-        state.non_json_reply_recovered and looks_like_incomplete_structured_reply(state.content)
+        state.non_json_reply_recovered
+        and looks_like_incomplete_structured_reply(state.content)
     )
     if state.non_json_reply_recovered:
         services.runtime.write_log(
@@ -1990,38 +1980,56 @@ def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: Up
             replyFieldRecovered=bool(extract_complete_json_string_field(state.content, "reply")),
             characters=len(state.content),
         )
-    state.cognitive_accepted = (state.body.get("_cognitiveOutcomeVerification") or {}).get("valid") is True
+    state.cognitive_accepted = (
+        (state.body.get("_cognitiveOutcomeVerification") or {}).get("valid") is True
+    )
     if services.task_planning.cognitive_turn_state(state.body) and not state.cognitive_accepted:
         raise CognitiveProtocolError("tool loop did not produce a validated final outcome")
-    services.runtime.update_progress(state.request_id, "validating", "正在检查回答完整性、上下文与工具证据")
-    state.content = services.research.ensure_verified_web_citation(state.content, state.executed_tool_results)
-    state.tool_grounding_candidates: list[dict[str, Any]] = [
-        services.model.normalize_model_reply(state.content, settings=state.settings)
-    ]
-    state.research_candidates: list[dict[str, Any]] = []
+    services.runtime.update_progress(
+        state.request_id,
+        "validating",
+        "正在记录回答完整性、上下文与工具证据",
+    )
+    state.content = services.research.ensure_verified_web_citation(
+        state.content,
+        state.executed_tool_results,
+    )
+    candidate = services.model.normalize_model_reply(
+        state.content,
+        settings=state.settings,
+        persona_snapshot=state.active_persona_snapshot,
+    )
+    state.tool_grounding_candidates = [candidate]
+    state.pre_context_result = deepcopy(candidate)
+    state.research_candidates = []
     state.has_web_grounding = any(
         item.get("ok") and item.get("name") in {"web_search", "read_web_page"}
         for item in state.grounding_tool_results
     )
     if state.has_web_grounding:
-        state.research_candidates.append(services.model.normalize_model_reply(state.content, settings=state.settings))
-    if not state.cognitive_accepted and (state.non_visual_grounding_tool_results and services.validation.tool_grounding_violation(
-        state.content, state.non_visual_grounding_tool_results, state.user_message, state.relationship_state
-    )):
-        services.runtime.update_progress(state.request_id, "repairing", "回答未充分使用工具证据，正在定向修正")
-        grounding_started = time.perf_counter()
-        try:
-            state.content = services.model.repair_tool_grounded_reply(
-                state.settings, state.user_message, state.content, state.grounding_tool_results, state.context_resolution,
-                state.relationship_state, state.active_persona_snapshot
-            )
-            state.content = services.research.ensure_verified_web_citation(state.content, state.executed_tool_results)
-            state.tool_grounding_candidates.append(services.model.normalize_model_reply(state.content, settings=state.settings))
-            if state.has_web_grounding:
-                state.research_candidates.append(services.model.normalize_model_reply(state.content, settings=state.settings))
-        except Exception:
-            pass
-        state.grounding_repair_ms = round((time.perf_counter() - grounding_started) * 1000)
+        state.research_candidates.append(deepcopy(candidate))
+
+    # These checks remain useful for telemetry and targeted diagnostics.  Their
+    # boolean result no longer authorizes a semantic rewrite or a second
+    # research loop after the candidate has been generated.
+    soft_findings: list[dict[str, Any]] = []
+    # regex-consumer: legacy.context_grounding (diagnostic-only; never a delivery veto)
+    try:
+        # regex-consumer: legacy.context_grounding
+        if services.validation.context_grounding_violation(
+            state.content,
+            state.context_resolution,
+        ):
+            soft_findings.append({"check": "legacy.context_grounding", "status": "diagnostic"})
+    except Exception as error:
+        soft_findings.append({
+            "check": "legacy.context_grounding",
+            "status": "unavailable",
+            "errorType": type(error).__name__,
+        })
+    if soft_findings:
+        candidate["softCheckFindings"] = soft_findings
+
     active_epistemic_plan = EpistemicPlan.from_dict(
         state.prepared_action_turn.epistemic_plan
     ) or create_epistemic_plan(
@@ -2033,13 +2041,8 @@ def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: Up
         state.request_id,
         state.executed_tool_results,
     )
-    web_research_attempted = any(
-        item.get("name") in {"web_search", "read_web_page"}
-        for item in state.executed_tool_results
-        if isinstance(item, Mapping)
-    )
     pre_gate_decision = grounded_claim_gate_decision(
-        str(state.tool_grounding_candidates[0].get("reply") or ""),
+        str(candidate.get("reply") or ""),
         active_epistemic_plan.epistemic_state(),
         pre_gate_receipt,
         research_policy=(
@@ -2047,354 +2050,114 @@ def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: Up
             if state.settings.get("permissionWebSearch")
             else "forbidden"
         ),
-        # 在此早期阶段，本地捕获成功只授权进行视觉合成；下方独立的逐主张审计再决定
-        # 实际文案能否交付。
-        visual_evidence_verified=has_typed_visual_evidence(state.grounding_tool_results),
-        citation_source_uids=readable_public_source_uids(
-            state.executed_tool_results
-        ),
+        visual_evidence_verified=state.visual_grounding_active,
+        citation_source_uids=readable_public_source_uids(state.executed_tool_results),
     )
-    evidence_gate_triggered = bool(
-        pre_gate_decision.status == "RESEARCH_ESCALATION"
-    )
-    semantic_research_audit: dict[str, Any] = {}
-    state.semantic_research_audit_failed = False
-    if (
-        not state.cognitive_accepted and (not web_research_attempted
-        and state.settings.get("permissionWebSearch")
-        and state.research_decision.policy != "forbidden"
-        and services.research.needs_post_answer_research_audit(
-            active_epistemic_plan,
-            pre_gate_decision,
-            pre_gate_receipt,
-        ))
-    ):
-        try:
-            semantic_research_audit = services.research.audit_model_research_need(
-                state.settings,
-                state.user_message,
-                str(state.tool_grounding_candidates[0].get("reply") or ""),
-                active_epistemic_plan,
-                request_id=state.request_id,
-            )
-            evidence_gate_triggered = bool(
-                evidence_gate_triggered
-                or semantic_research_audit.get("researchNeeded")
-            )
-            services.runtime.write_log(
-                "post_answer_research_need_audit",
-                requestId=state.request_id,
-                **semantic_research_audit,
-            )
-        except Exception as audit_error:
-            state.semantic_research_audit_failed = True
-            services.runtime.write_log(
-                "post_answer_research_need_audit_failed",
-                requestId=state.request_id,
-                errorType=type(audit_error).__name__,
-                error=str(audit_error)[:500],
-            )
+    candidate["groundingGateDiagnostic"] = pre_gate_decision.to_dict()
     services.runtime.write_log(
         "query_loop_grounding_gate_decision",
         requestId=state.request_id,
         planId=active_epistemic_plan.plan_id,
         planRevision=active_epistemic_plan.revision,
         decision=pre_gate_decision.to_dict(),
+        deliveryOnly=True,
     )
-    if (
-        not state.cognitive_accepted and ((
-            evidence_gate_triggered
-            or (
-                services.validation.context_grounding_violation(state.content, state.context_resolution)
-                and services.research.context_repair_needs_web_research(
-                    state.user_message,
-                    state.context_resolution,
-                    state.executed_tool_results,
-                )
-            )
-        )
-        and not web_research_attempted
-        and state.research_decision.policy != "forbidden"
-        and state.settings.get("permissionWebSearch"))
-    ):
-        services.runtime.update_progress(state.request_id, "researching", "现有证据不足，正在补充外部事实")
-        recovery_web_started = time.perf_counter()
-        recovery_plan = services.research.fallback_web_research_plan(
-            state.user_message,
-            state.context_resolution,
-            state.messages,
-        )
-        semantic_query = str(semantic_research_audit.get("query") or "").strip()
-        if semantic_query:
-            recovery_plan["queries"] = [{
-                "query": semantic_query,
-                "purpose": "model semantic evidence audit",
-            }]
-        recovery_execution_plan = services.turn_planning.finalize_turn_execution_plan(
-            state.body,
-            user_message=state.user_message,
-            decision=state.research_decision,
-            preflight=state.tool_preflight,
-            tool_requests=[{
-                "name": "web_search",
-                "args": {
-                    "query": semantic_query or services.research.fallback_web_research_query(
-                        state.user_message,
-                        state.context_resolution,
-                        state.messages,
-                    ),
-                },
-                "reason": "grounded claim gate identified an evidence gap",
-            }],
-            settings=state.settings,
-            evidence_recovery_escalation=True,
-        )
-        state.research_decision = replace(
-            state.research_decision,
-            policy=recovery_execution_plan.research_policy,
-            reasons=tuple(dict.fromkeys((
-                *state.research_decision.reasons,
-                "grounded_claim_gate_evidence_gap",
-            ))),
-            verification_targets=(
-                state.research_decision.verification_targets
-                or ("claims rejected by context evidence gate",)
-            ),
-            plan_revision=max(
-                state.research_decision.plan_revision + 1,
-                recovery_execution_plan.revision,
-            ),
-        )
-        state.prepared_action_turn, state.research_decision = services.turn_planning.synchronize_prepared_epistemic_plan(
-            state.prepared_action_turn,
-            state.research_decision,
-        )
-        state.capability = capability_envelope(
-            state.turn_policy,
-            state.research_decision,
-            web_permission=True,
-        )
-        state.capability = replace(
-            state.capability,
-            research_policy=recovery_execution_plan.research_policy,
-            required_tools=recovery_execution_plan.required_capabilities,
-            max_tool_rounds=recovery_execution_plan.max_tool_rounds,
-            tool_policy="required",
-        )
-        state.prepared_action_turn = replace(
-            state.prepared_action_turn,
-            research_decision=state.research_decision.to_dict(),
-            capability_envelope=state.capability.to_dict(),
-        )
-        state.body["_preparedActionTurn"] = state.prepared_action_turn
-        services.turn_planning.persist_prepared_turn(state.prepared_action_turn)
-        state.emit_research_bridge_once(recovery_plan)
-        recovered_result, recovery_plan, _, recovery_review_ms = (
-            services.research.run_research_query_loop(
-                state.settings,
-                state.user_message,
-                state.messages,
-                recovery_plan,
-                state.context_resolution,
-                state.research_decision,
-                state.capability,
-                request_id=state.request_id,
-                cognitive_body=state.body,
-            )
-        )
-        recovery_results = [recovered_result]
-        state.research_review_ms += recovery_review_ms
-        state.executed_tool_results.extend(recovery_results)
-        state.grounding_tool_results.extend(recovery_results)
-        state.context_recovery_triggered_web = True
-        state.context_recovery_web_ms = round((time.perf_counter() - recovery_web_started) * 1000)
-        recovered_web_evidence_status = next(
-            (
-                item.get("evidenceStatus") for item in recovery_results
-                if item.get("ok") and isinstance(item.get("evidenceStatus"), dict)
-            ),
-            None,
-        )
-        if recovered_web_evidence_status:
-            state.web_evidence_status = recovered_web_evidence_status
-            state.context_resolution["webEvidenceStatus"] = recovered_web_evidence_status
-        state.has_web_grounding = any(
-            item.get("ok") and item.get("name") in {"web_search", "read_web_page"}
-            for item in state.grounding_tool_results
-        )
-        services.runtime.write_log(
-            "context_repair_web_research",
-            requestId=state.request_id,
-            evidenceGateTriggered=evidence_gate_triggered,
-            ok=any(item.get("ok") for item in recovery_results),
-            queries=[
-                str(item.get("query") or "")[:240]
-                for item in recovery_plan.get("queries", [])
-                if isinstance(item, dict)
-            ],
-        )
-    state.pre_context_result = services.model.normalize_model_reply(state.content, settings=state.settings)
-    state.context_grounding_repair_ms = 0
-    if not state.cognitive_accepted and (state.context_recovery_triggered_web):
-        context_started = time.perf_counter()
-        try:
-            state.content = services.model.repair_tool_grounded_reply(
-                state.settings, state.user_message, state.content, state.grounding_tool_results, state.context_resolution,
-                state.relationship_state, state.active_persona_snapshot
-            )
-            state.content = services.research.ensure_verified_web_citation(state.content, state.executed_tool_results)
-            state.research_candidates.append(services.model.normalize_model_reply(state.content, settings=state.settings))
-        except Exception:
-            pass
-        state.context_grounding_repair_ms = round((time.perf_counter() - context_started) * 1000)
-    elif (
-        not state.cognitive_accepted and (not state.visual_grounding_active
-        and not state.has_web_grounding
-        and services.validation.context_grounding_violation(state.content, state.context_resolution))
-    ):
-        services.runtime.update_progress(state.request_id, "repairing", "正在按完整上下文修正回答")
-        context_started = time.perf_counter()
-        try:
-            state.content = services.model.repair_context_grounded_reply(
-                state.settings, state.user_message, state.content, state.context_resolution, state.grounding_tool_results,
-                state.active_persona_snapshot
-            )
-        except Exception:
-            pass
-        state.context_grounding_repair_ms = round((time.perf_counter() - context_started) * 1000)
 
 
 def repair_upstream_candidate(services: UpstreamPipelineServices, state: UpstreamRunState) -> None:
-    """按原额度修复结构、任务、证据和对话候选。"""
+    """Keep the first usable answer and annotate soft checks without rewriting it."""
 
-    services.runtime.update_progress(state.request_id, "finalizing", "正在选择完整回答并整理情绪与语音参数")
-    state.result = services.model.normalize_model_reply(state.content, settings=state.settings)
-    state.result = services.research.ensure_verified_web_citation(state.result, state.executed_tool_results)
+    services.runtime.update_progress(
+        state.request_id,
+        "finalizing",
+        "正在保留可交付正文并整理可选呈现字段",
+    )
+    state.result = services.model.normalize_model_reply(
+        state.content,
+        settings=state.settings,
+        persona_snapshot=state.active_persona_snapshot,
+    )
+    state.result = services.research.ensure_verified_web_citation(
+        state.result,
+        state.executed_tool_results,
+    )
+    state.result = dict(state.result)
+    protocol_invalid = bool(state.result.get("structuredOutputInvalid"))
+    integrity_issues = reply_integrity_issues(state.result)
+    protocol_issues = [
+        issue for issue in integrity_issues
+        if issue in {"structured_transport_invalid", "structured_transport_leak"}
+    ]
+    if protocol_invalid:
+        state.result["structuredOutputInvalidFromModel"] = True
+
+    # The protocol path has one bounded format repair.  No context, tool, task,
+    # style or visual finding is allowed to spend this budget or replace text.
+    state.reply_integrity_repair_ms = 0
+    if protocol_invalid or protocol_issues:
+        repair_started = time.perf_counter()
+        state.result["protocolFormatRepairAttempted"] = True
+        try:
+            repaired_content = services.model.repair_incomplete_model_reply(
+                state.settings,
+                state.user_message,
+                state.result,
+                state.context_resolution,
+                state.grounding_tool_results,
+                state.active_persona_snapshot,
+            )
+            repaired_content = services.research.ensure_verified_web_citation(
+                repaired_content,
+                state.executed_tool_results,
+            )
+            repaired_result = services.model.normalize_model_reply(
+                repaired_content,
+                settings=state.settings,
+                persona_snapshot=state.active_persona_snapshot,
+            )
+            if repaired_result.get("structuredOutputInvalid"):
+                repaired_result["structuredOutputInvalidFromModel"] = True
+            repaired_issues = reply_integrity_issues(repaired_result)
+            if not repaired_result.get("structuredOutputInvalid") and not any(
+                issue in {"structured_transport_invalid", "structured_transport_leak"}
+                for issue in repaired_issues
+            ):
+                state.result = repaired_result
+                state.content = repaired_content
+                state.result["protocolFormatRepairResolved"] = True
+            else:
+                state.result["protocolFormatRepairFailed"] = True
+                state.result["replyIntegrityIssues"] = repaired_issues
+        except Exception as error:
+            state.result["protocolFormatRepairFailed"] = True
+            state.result["replyIntegrityIssues"] = protocol_issues or [
+                "structured_transport_invalid"
+            ]
+            services.runtime.write_log(
+                "protocol_format_repair_failed",
+                requestId=state.request_id,
+                errorType=type(error).__name__,
+                error=str(error)[:500],
+            )
+        state.reply_integrity_repair_ms = round(
+            (time.perf_counter() - repair_started) * 1000
+        )
+
+    # Delivery is the only decisive boundary for this stage.  It rejects an
+    # incomplete envelope/private span but keeps normal technical prose and
+    # optional presentation fields degradable.
+    state.result = require_delivery(
+        state.result,
+        settings=state.settings,
+        logger=services.runtime.write_log,
+        request_id=state.request_id,
+    )
     if state.semantic_research_audit_failed:
         state.result["webEvidenceLimited"] = True
         state.result["semanticResearchAuditFailed"] = True
     if state.has_web_grounding:
         state.research_candidates.append(dict(state.result))
-    if (
-        not state.cognitive_accepted and (not state.visual_grounding_active
-        and not state.has_web_grounding
-        and services.validation.context_grounding_violation(state.result, state.context_resolution))
-    ):
-        state.result, context_contract_satisfied = services.model.select_best_model_candidate(
-            [state.pre_context_result, state.result],
-            lambda candidate: services.validation.context_grounding_violation(candidate, state.context_resolution),
-        )
-        if not context_contract_satisfied:
-            state.result["contextGroundingUnverified"] = True
-    tool_grounding_rejected = bool(
-        state.non_visual_grounding_tool_results
-        and services.validation.tool_grounding_violation(
-            state.result,
-            state.non_visual_grounding_tool_results,
-            state.user_message,
-            state.relationship_state,
-        )
-    )
-    if not state.cognitive_accepted and tool_grounding_rejected:
-        if state.has_web_grounding:
-            state.result, research_contract_satisfied = services.research.select_best_research_candidate(
-                [*state.research_candidates, state.result], state.grounding_tool_results
-            )
-            if not research_contract_satisfied:
-                state.result["webSynthesisUnverified"] = True
-                state.result["webSynthesisDiagnostics"] = services.research.web_answer_diagnostics(state.result, state.grounding_tool_results)
-            if services.validation.tool_grounding_violation(state.result, state.non_visual_grounding_tool_results, state.user_message, state.relationship_state):
-                state.result["toolGroundingUnverified"] = True
-        else:
-            state.result, tool_contract_satisfied = services.model.select_best_model_candidate(
-                [*state.tool_grounding_candidates, state.result],
-                lambda candidate: services.validation.tool_grounding_violation(
-                    candidate, state.non_visual_grounding_tool_results, state.user_message, state.relationship_state
-                ),
-            )
-            if not tool_contract_satisfied:
-                diagnostics = ["no_model_candidate_satisfied_tool_contract"]
-                state.result["toolGroundingUnverified"] = True
-                state.result["toolGroundingDiagnostics"] = diagnostics
-    state.reply_integrity_repair_ms = 0
-    if not state.cognitive_accepted and (reply_integrity_issues(state.result)):
-        services.runtime.write_log(
-            "reply_integrity_violation",
-            requestId=state.request_id,
-            issues=reply_integrity_issues(state.result),
-            characters=len(str(state.result.get("reply") or "")),
-        )
-        integrity_candidates = [state.pre_context_result, *state.research_candidates, state.result]
-        if state.has_web_grounding:
-            selected_integrity_candidate, _ = services.research.select_best_research_candidate(
-                integrity_candidates, state.grounding_tool_results
-            )
-        else:
-            selected_integrity_candidate, _ = services.model.select_best_model_candidate(
-                integrity_candidates,
-                lambda candidate: bool(reply_integrity_issues(candidate)),
-            )
-        state.result = selected_integrity_candidate
-        if reply_integrity_issues(state.result):
-            integrity_started = time.perf_counter()
-            try:
-                repaired_content = services.model.repair_incomplete_model_reply(
-                    state.settings, state.user_message, state.result, state.context_resolution, state.grounding_tool_results,
-                    state.active_persona_snapshot
-                )
-                repaired_content = services.research.ensure_verified_web_citation(repaired_content, state.executed_tool_results)
-                repaired_result = services.model.normalize_model_reply(repaired_content, settings=state.settings)
-                if not reply_integrity_issues(repaired_result):
-                    state.result = repaired_result
-                    state.content = repaired_content
-                    state.result["replyIntegrityRepaired"] = True
-                else:
-                    state.result["replyIntegrityUnverified"] = True
-                    state.result["replyIntegrityIssues"] = reply_integrity_issues(repaired_result)
-            except Exception:
-                state.result["replyIntegrityUnverified"] = True
-                state.result["replyIntegrityIssues"] = reply_integrity_issues(state.result)
-            state.reply_integrity_repair_ms = round((time.perf_counter() - integrity_started) * 1000)
-    state.repair_started = time.perf_counter()
-    if state.result.get("emptyReply"):
-        state.result = services.model.repair_empty_reply(
-            state.settings,
-            state.memories,
-            state.user_message,
-            state.content,
-            request_id=state.request_id,
-            persona_snapshot=state.active_persona_snapshot,
-        )
-    if (
-        not state.visual_grounding_active
-        and not state.has_web_grounding
-        and services.validation.context_grounding_violation(state.result, state.context_resolution)
-    ):
-        # 校验器可以请求一次模型修复，但不能自行撰写答案；各领域都保留最佳可见模型候选。
-        state.result["contextGroundingUnverified"] = True
-    state.task_completion_repair_ms = 0
-    if not state.cognitive_accepted and (services.validation.task_completion_violation(state.result, state.context_resolution)):
-        original_task_candidate = dict(state.result)
-        task_repair_started = time.perf_counter()
-        try:
-            repaired_content = services.model.repair_task_completion_reply(
-                state.settings, state.user_message, state.result, state.context_resolution, state.grounding_tool_results,
-                state.active_persona_snapshot
-            )
-            repaired_result = services.model.normalize_model_reply(repaired_content, settings=state.settings)
-            repaired_satisfies_contract = not services.validation.task_completion_violation(repaired_result, state.context_resolution)
-            state.result, task_contract_satisfied = services.model.select_best_model_candidate(
-                [original_task_candidate, repaired_result],
-                lambda candidate: services.validation.task_completion_violation(candidate, state.context_resolution),
-            )
-            if task_contract_satisfied and repaired_satisfies_contract and state.result.get("reply") == repaired_result.get("reply"):
-                state.result["taskCompletionRepaired"] = True
-            elif not task_contract_satisfied:
-                state.result["taskCompletionUnverified"] = True
-        except Exception:
-            state.result = original_task_candidate
-            state.result["taskCompletionUnverified"] = True
-        state.task_completion_repair_ms = round((time.perf_counter() - task_repair_started) * 1000)
+
     failed_web_results = [
         item for item in state.executed_tool_results
         if item.get("name") in {"web_search", "read_web_page"} and not item.get("ok")
@@ -2416,11 +2179,13 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
             and len(insufficient_web_results) == len(successful_web_results)
         )
     )
+    state.grounding_repair_ms = 0
+    state.context_grounding_repair_ms = 0
+    state.task_completion_repair_ms = 0
+    state.dialogue_style_repair_ms = 0
     state.evidence_limited_synthesis_ms = 0
     state.evidence_limited_precision_audit_ms = 0
     if web_evidence_limited:
-        # Retrieval coverage is context for the model, not a veto over its answer.
-        # Keep the original speech and record the retrieval outcome for diagnosis.
         state.result["webEvidenceLimited"] = True
         state.result["webSearchFailed"] = web_retrieval_failed
         services.runtime.write_log(
@@ -2429,8 +2194,42 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
             retrievalFailed=web_retrieval_failed,
             answerPreserved=True,
         )
+
+    soft_findings = list(state.result.get("softCheckFindings") or [])
+    # regex-consumer: legacy.context_grounding (diagnostic-only; never a delivery veto)
+    try:
+        # regex-consumer: legacy.context_grounding
+        context_violation = services.validation.context_grounding_violation(
+            state.result,
+            state.context_resolution,
+        )
+    except Exception:
+        context_violation = False
+    if context_violation:
+        state.result["contextGroundingUnverified"] = True
+        soft_findings.append({"check": "legacy.context_grounding", "status": "diagnostic"})
+    # regex-consumer: legacy.task_completion (diagnostic-only; never a delivery veto)
+    try:
+        # regex-consumer: legacy.task_completion
+        task_violation = services.validation.task_completion_violation(
+            state.result,
+            state.context_resolution,
+        )
+    except Exception:
+        task_violation = False
+    if task_violation:
+        state.result["taskCompletionUnverified"] = True
+        soft_findings.append({"check": "legacy.task_completion", "status": "diagnostic"})
+    if soft_findings:
+        state.result["softCheckFindings"] = list({
+            (item.get("check"), item.get("status"), item.get("errorType")): item
+            for item in soft_findings
+            if isinstance(item, Mapping)
+        }.values())
+
     if state.cognitive_accepted:
-        # 主模型已经报告核验后的结果；保留回执元数据，不用旧版重试问题替换其答案。
+        # Cognitive outcome verification and real executor receipts remain the
+        # authority for side effects; prose cannot manufacture success.
         receipts = action_receipts_from_results(state.executed_tool_results)
         if receipts:
             state.result["actionReceipts"] = receipts
@@ -2438,121 +2237,85 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
                 state.result["actionReceipt"] = receipts[0]
     else:
         state.result = services.tool_execution.enforce_external_action_receipt(
-            state.result, state.executed_tool_results, schedule_decision=state.body.get("_scheduleDecision"),
+            state.result,
+            state.executed_tool_results,
+            schedule_decision=state.body.get("_scheduleDecision"),
         )
-    state.dialogue_style_repair_ms = 0
+        state.result = require_delivery(
+            state.result,
+            settings=state.settings,
+            logger=services.runtime.write_log,
+            request_id=state.request_id,
+        )
+
     state.dialogue_validation = services.validation.dialogue_validation_for_result(
         state.result,
         state.turn_policy,
         state.messages,
     )
-    if not state.cognitive_accepted and (state.dialogue_validation.needs_rewrite):
-        services.runtime.update_progress(
-            state.request_id,
-            "repairing",
-            "回答超出本轮篇幅或动作预算，正在保留事实并压缩表达",
-        )
-        style_started = time.perf_counter()
-        original_style_candidate = dict(state.result)
-        try:
-            repaired_style_candidate = services.model.repair_dialogue_style_reply(
-                state.settings,
-                state.user_message,
-                state.result,
-                state.turn_policy,
-                state.grounding_tool_results,
-                state.context_resolution,
-                state.relationship_state,
-                state.deep_persona_prompt,
-                state.active_persona_snapshot,
-            )
-            repaired_style_candidate = services.research.ensure_verified_web_citation(
-                repaired_style_candidate,
-                state.executed_tool_results,
-            )
-            repaired_validation = services.validation.dialogue_validation_for_result(
-                repaired_style_candidate,
-                state.turn_policy,
-                state.messages,
-            )
-            violates_required_contract = bool(
-                repaired_validation.needs_rewrite
-                or reply_integrity_issues(repaired_style_candidate)
-                or services.validation.task_completion_violation(repaired_style_candidate, state.context_resolution)
-                or (
-                    state.non_visual_grounding_tool_results
-                    and services.validation.tool_grounding_violation(
-                        repaired_style_candidate,
-                        state.non_visual_grounding_tool_results,
-                        state.user_message,
-                        state.relationship_state,
-                    )
-                )
-                or (
-                    not state.visual_grounding_active
-                    and not state.has_web_grounding
-                    and services.validation.context_grounding_violation(
-                        repaired_style_candidate,
-                        state.context_resolution,
-                    )
-                )
-            )
-            if violates_required_contract:
-                state.result = original_style_candidate
-                state.result["dialogueStyleUnverified"] = True
-            else:
-                state.result = repaired_style_candidate
-                state.result["dialogueStyleRepaired"] = True
-                state.dialogue_validation = repaired_validation
-                state.content = json.dumps(state.result, ensure_ascii=False)
-        except Exception as error:
-            state.result = original_style_candidate
-            state.result["dialogueStyleUnverified"] = True
-            services.runtime.write_log(
-                "dialogue_style_repair_failed",
-                requestId=state.request_id,
-                errorType=type(error).__name__,
-                error=str(error)[:500],
-            )
-        state.dialogue_style_repair_ms = round((time.perf_counter() - style_started) * 1000)
+    if getattr(state.dialogue_validation, "needs_rewrite", False):
+        state.result["dialogueStyleUnverified"] = True
+        soft_findings.append({"check": "legacy.dialogue_style", "status": "diagnostic"})
+        state.result["softCheckFindings"] = list({
+            (item.get("check"), item.get("status"), item.get("errorType")): item
+            for item in soft_findings
+            if isinstance(item, Mapping)
+        }.values())
     state.visual_grounding_audit_ms = 0
     state.visual_grounding_rewrite_ms = 0
-    state.result["_nativeVisualInputIds"] = list(state.body.get("_nativeVisualInputIds") or [])
-    if not state.cognitive_accepted and (has_typed_visual_evidence(state.grounding_tool_results)):
-        state.result, state.visual_grounding_audit_ms, state.visual_grounding_rewrite_ms = (
-            services.validation.enforce_visual_semantic_grounding(
-                state.settings,
-                state.semantic_task_request,
-                state.result,
-                state.grounding_tool_results,
-                state.relationship_state,
-                request_id=state.request_id,
-                task_dialogue=services.task_planning.task_review_dialogue_messages(state.body, state.messages),
-            )
-        )
-        # 聚焦视觉重写可能替换文案，因此重新计算风格诊断；最终视觉审计后不再进行
-        # 另一轮文案创作。
-        state.dialogue_validation = services.validation.dialogue_validation_for_result(
-            state.result,
-            state.turn_policy,
-            state.messages,
-        )
+    if state.visual_grounding_active:
+        state.result["visualGroundingDiagnosticOnly"] = True
+    state.result["_nativeVisualInputIds"] = list(
+        state.body.get("_nativeVisualInputIds") or []
+    )
     state.result["dialoguePolicy"] = state.turn_policy.to_dict()
     state.result["dialogueValidation"] = state.dialogue_validation.to_dict()
     state.result["_utteranceInterpretation"] = state.utterance_interpretation
     state.result["_turnContract"] = state.turn_contract
-    state.result["_semanticTaskRequest"] = services.turn_planning.current_task_semantic_request(state.body, state.user_message)
-    state.result["_taskDialogue"] = services.task_planning.task_review_dialogue_messages(state.body, state.messages)
+    state.result["_semanticTaskRequest"] = services.turn_planning.current_task_semantic_request(
+        state.body,
+        state.user_message,
+    )
+    state.result["_taskDialogue"] = services.task_planning.task_review_dialogue_messages(
+        state.body,
+        state.messages,
+    )
     state.result["coreDialogueProtocol"] = state.compact_core_protocol
     state.result["semanticDialogueProtocol"] = "semantic-v3-unified"
-    state.result = services.research.attach_verified_web_sources(state.result, state.executed_tool_results)
+    state.result = services.research.attach_verified_web_sources(
+        state.result,
+        state.executed_tool_results,
+    )
 
 
 def project_upstream_result(services: UpstreamPipelineServices, state: UpstreamRunState) -> None:
     """补齐交付字段并投影工具、日程和性能状态。"""
 
-    field_validation = services.validation.dialogue_output_validation(state.settings, state.result)
-    primary_emotion_missing = "emotion" in field_validation["missingFields"]
+    raw_field_validation = services.validation.dialogue_output_validation(
+        state.settings,
+        state.result,
+        persona_snapshot=state.active_persona_snapshot,
+    )
+    field_validation = (
+        dict(raw_field_validation)
+        if isinstance(raw_field_validation, Mapping)
+        else {}
+    )
+    missing_fields = [
+        str(item)
+        for item in field_validation.get("missingFields", [])
+        if str(item).strip()
+    ]
+    invalid_fields = [
+        str(item)
+        for item in field_validation.get("invalidFields", [])
+        if str(item).strip()
+    ]
+    requires_field_repair = bool(
+        field_validation.get("requiresFieldRepair")
+        and (set(missing_fields) | set(invalid_fields)) & {"spokenTextJa"}
+    )
+    primary_emotion_missing = "emotion" in missing_fields
     field_repair_ms = 0
     field_repair_source = "not_needed"
     emotion_label_ms = 0
@@ -2562,99 +2325,36 @@ def project_upstream_result(services: UpstreamPipelineServices, state: UpstreamR
         # 缺失模型契约时仍视为一个原子交付单元，绝不根据标点或回复长度推断可见边界。
         state.result["speechSegmentCount"] = 1
         state.result["speechSegmentCountSource"] = "atomic_no_model_boundary"
-    if field_validation["requiresFieldRepair"]:
-        field_started = time.perf_counter()
-        state.result["dialogueFieldRepairAttempted"] = True
-        services.runtime.update_progress(
-            state.request_id,
-            "repairing-fields",
-            "正文已保留，正在补齐缺失的语音字段",
+    if requires_field_repair:
+        # Missing speech is a presentation limitation.  Freeze the canonical
+        # reply and degrade audio locally; a field-only model call is not a
+        # reason to replace or delay useful text.
+        field_repair_source = "local_degraded_delivery"
+        state.result["dialogueFieldRepairSkipped"] = True
+        state.result["dialogueFieldRepairFields"] = list(
+            dict.fromkeys((*missing_fields, *invalid_fields))
         )
+        state.result["dialogueFieldRepairAttempted"] = False
+        state.result["spokenTextJa"] = ""
+        state.result["speechText"] = str(state.result.get("reply") or "")
+        state.result["speechUnavailableReason"] = "optional_speech_field_missing"
+        state.result["ttsUnavailableReason"] = "optional_speech_field_missing"
+        state.result["textOnlyDelivery"] = True
+        state.result["deliveryFallbackReason"] = "optional_speech_field_missing"
         services.runtime.write_log(
-            "dialogue_field_repair_started",
+            "dialogue_field_repair_skipped",
             requestId=state.request_id,
-            missingFields=field_validation["missingFields"],
-            invalidFields=field_validation["invalidFields"],
+            missingFields=missing_fields,
+            invalidFields=invalid_fields,
             frozenReplyFingerprint=runtime_fingerprint(
                 state.result.get("reply"), length=32
             ),
+            reason="delivery_boundary_preserves_text_without_extra_model_call",
         )
-        try:
-            state.result = services.model.repair_dialogue_fields_once(
-                state.settings,
-                state.result,
-                field_validation,
-                user_message=state.user_message,
-                recent_messages=state.messages,
-                relationship_state=state.relationship_state,
-                request_id=state.request_id,
-                persona_snapshot=state.active_persona_snapshot,
-            )
-            state.result["structuredOutputResolved"] = True
-            field_repair_source = "minimal_speech_model"
-            services.runtime.write_log(
-                "dialogue_field_repair_completed",
-                requestId=state.request_id,
-                repairedFields=state.result.get("dialogueFieldRepairFields", []),
-                maxTokens=state.result.get("dialogueFieldRepairMaxTokens"),
-                finishReason=state.result.get("dialogueFieldRepairFinishReason"),
-                jsonComplete=bool(state.result.get("dialogueFieldRepairJsonComplete")),
-                frozenReplyPreserved=True,
-            )
-        except Exception as error:
-            field_repair_source = "failed"
-            state.result["dialogueFieldRepairFailed"] = True
-            state.result["ttsUnavailableReason"] = "dialogue_field_repair_failed"
-            # 可选日语呈现轨道无法修复时，已验收且有依据的中文答案仍是完整交付物。
-            # 明确标记纯文本终止路径，避免浏览器静默丢弃整份结果。
-            state.result["textOnlyDelivery"] = True
-            state.result["deliveryFallbackReason"] = "dialogue_field_repair_failed"
-            services.runtime.write_log(
-                "dialogue_field_repair_failed",
-                requestId=state.request_id,
-                errorType=type(error).__name__,
-                error=str(error)[:500],
-            )
-        field_repair_ms = round((time.perf_counter() - field_started) * 1000)
-    if primary_emotion_missing and not state.result.get("dialogueFieldRepairFailed"):
-        emotion_started = time.perf_counter()
-        if services.runtime.configured(state.settings):
-            emotion_recovery_calls = 1
-            services.runtime.update_progress(
-                state.request_id,
-                "repairing-emotion",
-                "正文已冻结，正在补齐表情与语音情绪",
-            )
-            try:
-                state.result = services.model.repair_frozen_reply_emotion_once(
-                    state.settings,
-                    state.result,
-                    user_message=state.user_message,
-                    recent_messages=state.messages,
-                    relationship_state=state.relationship_state,
-                    request_id=state.request_id,
-                )
-                emotion_label_source = "frozen_reply_semantic_classifier"
-            except Exception as error:
-                state.result["emotionResolvedLocally"] = True
-                state.result["emotionLabelRecoveryFailed"] = True
-                state.result["emotionUnavailableReason"] = "emotion_label_recovery_failed"
-                emotion_label_source = "local_default_after_classifier_failure"
-                services.runtime.write_log(
-                    "emotion_label_recovery_failed",
-                    requestId=state.request_id,
-                    errorType=type(error).__name__,
-                    error=str(error)[:500],
-                )
-        else:
-            state.result["emotionResolvedLocally"] = True
-            state.result["emotionUnavailableReason"] = "model_not_configured"
-            emotion_label_source = "local_default_model_unavailable"
-        emotion_label_ms = round((time.perf_counter() - emotion_started) * 1000)
-    elif primary_emotion_missing:
+    if primary_emotion_missing:
         state.result["emotionResolvedLocally"] = True
-        state.result["emotionUnavailableReason"] = "speech_field_repair_failed"
-        emotion_label_source = "local_default_after_speech_repair_failure"
+        state.result["emotionUnavailableReason"] = "model_emotion_missing"
+        emotion_label_source = "local_default_without_model_call"
     if state.web_evidence_status:
         state.result["webEvidenceStatus"] = state.web_evidence_status
     if state.executed_tool_results:
@@ -2695,6 +2395,11 @@ def project_upstream_result(services: UpstreamPipelineServices, state: UpstreamR
         attachment_action.get("kind") in {"edit", "create"} and attachment_action.get("status") == "completed"
         if attachment_action else state.file_output_expected
     )
+    empty_reply_repair_ms = (
+        round((time.perf_counter() - state.repair_started) * 1000)
+        if state.repair_started is not None
+        else 0
+    )
     state.result["_chatMetrics"] = {
         "requestId": state.request_id,
         "preToolMs": state.pre_tool_ms,
@@ -2723,7 +2428,7 @@ def project_upstream_result(services: UpstreamPipelineServices, state: UpstreamR
         "visualGroundingRewriteMs": state.visual_grounding_rewrite_ms,
         "evidenceLimitedSynthesisMs": state.evidence_limited_synthesis_ms,
         "evidenceLimitedPrecisionAuditMs": state.evidence_limited_precision_audit_ms,
-        "emptyReplyRepairMs": round((time.perf_counter() - state.repair_started) * 1000),
+        "emptyReplyRepairMs": empty_reply_repair_ms,
         "promptChars": sum(len(str(item.get("content") or "")) for item in state.base_messages),
         "personaCoreChars": len(state.prompt),
         "deepPersonaChars": len(state.deep_persona_prompt),
@@ -2805,6 +2510,22 @@ def project_upstream_result(services: UpstreamPipelineServices, state: UpstreamR
             **dict(state.body["_scheduleDecision"]),
             "workflow": finalized_schedule,
         }
+    if state.pending_todo_before and not state.todo_continuation_transition:
+        # The schedule and legacy pending-Todo projections describe the same
+        # conversation proposal. Apply an explicit model decision to both;
+        # do not demand a second model call just to repeat that decision.
+        # Concrete commands take precedence over optional intent metadata.
+        decision = state.body.get("_scheduleDecision")
+        intent = decision.get("intent") if isinstance(decision, Mapping) else None
+        relation = str(intent.get("relation") or "") if isinstance(intent, Mapping) else ""
+        has_todo_call = any(
+            isinstance(item, Mapping) and item.get("name") == "todo_manage"
+            for item in state.executed_tool_results
+        )
+        if (isinstance(decision, Mapping) and decision.get("valid")
+                and not decision.get("omitted") and not has_todo_call
+                and relation in {"unrelated", "cancel"}):
+            state.todo_continuation_transition = {"decision": relation}
     if state.todo_continuation_transition and not state.body.get("_scheduledTaskExecution"):
         pending_after = services.task_planning.apply_todo_continuation_transition(
             state.todo_continuation_transition,

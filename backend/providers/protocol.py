@@ -6,9 +6,12 @@ import json
 import re
 from urllib.parse import urlsplit
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Sequence
 
-from backend.providers.errors import UpstreamProtocolError
+from backend.providers.errors import (
+    UpstreamProtocolError,
+    classify_provider_response_body,
+)
 
 
 def prepare_provider_payload(settings: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -24,7 +27,32 @@ def prepare_provider_payload(settings: Mapping[str, Any], payload: Mapping[str, 
     This projection is never persisted as a user utterance.
     """
     active = dict(payload)
-    if urlsplit(str(settings.get("apiEndpoint") or "")).hostname != "generativelanguage.googleapis.com":
+    # Module provenance is host metadata, never a provider message field.
+    if isinstance(active.get("messages"), list):
+        from backend.context.prompt_assembly import wire_messages
+        active["messages"] = wire_messages(active["messages"])
+    json_tools_available = active.pop('_amadeusJsonToolFallback', False) is True
+    host = urlsplit(str(settings.get("apiEndpoint") or "")).hostname
+    if host == 'api.deepseek.com' and json_tools_available and active.get('tools'):
+        thinking = active.get('thinking')
+        thinking_enabled = not isinstance(thinking, Mapping) or thinking.get('type') != 'disabled'
+        messages = list(active.get('messages') or [])
+        missing_reasoning = any(isinstance(item, Mapping) and item.get('role') == 'assistant'
+                                and not isinstance(item.get('reasoning_content'), str) for item in messages)
+        native_history = any(isinstance(item, Mapping) and (item.get('role') == 'tool' or item.get('tool_calls'))
+                             for item in messages)
+        if thinking_enabled and missing_reasoning and not native_history:
+            # Synthetic cognitive candidates and compacted history do not have
+            # original provider reasoning. Never invent it or discard thinking.
+            # Amadeus already executes these same tools via its JSON protocol.
+            active.pop('tools', None)
+            active.pop('tool_choice', None)
+            active.pop('parallel_tool_calls', None)
+            active['messages'] = [*messages, {'role': 'system', 'content':
+                '[工具传输兼容] 本次续写使用既有 JSON 工具协议，替代前文的原生函数传输说明。'
+                'web_search/read_web_page 以及其他已授权工具仍可用：需要调用时返回原协议 kind=tool_use 和 calls，'
+                '保留 cognitive 等必填字段。已有工具证据继续有效，资料不足就继续查询，最终回答仍使用原有对话 JSON 容器。'}]
+    if host != "generativelanguage.googleapis.com":
         return active
     # DeepSeek's top-level thinking field is rejected by Google's compatibility
     # endpoint. Translate the fast-response intent only where Gemini supports
@@ -110,16 +138,50 @@ def upstream_finish_reason(data: Any) -> str:
     return ""
 
 
-_NATIVE_WEB_TOOL_NAMES = {"web_search", "read_web_page"}
+_NATIVE_WEB_TOOL_NAMES = frozenset({"web_search", "read_web_page"})
+_NATIVE_SELECTION_FIELDS = ("toolAuthorization", "targetDomain")
 
 
-def _native_web_tool_container(message: Mapping[str, Any]) -> str:
-    """Convert one native Chat Completions tool message to our call envelope.
+def _registered_native_tool_names(
+    allowed_tool_names: Sequence[str] | None = None,
+) -> frozenset[str]:
+    """Return registered names accepted by the provider-native adapter.
+
+    The provider response is only a transport representation.  The registry
+    remains the trust boundary here; the normal tool planner still performs
+    permission, argument, task and receipt validation after this conversion.
+    An optional per-turn allowlist can narrow the registry without making the
+    protocol layer maintain a second list of product tools.
+    """
+
+    # Import lazily so the low-level provider parser remains usable by tests
+    # and provider error handling even while the application registry loads.
+    from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
+
+    registered = frozenset(item.tool_id for item in DEFAULT_TOOL_REGISTRY.all())
+    if allowed_tool_names is None:
+        return registered
+    if isinstance(allowed_tool_names, str):
+        allowed_tool_names = (allowed_tool_names,)
+    return frozenset(
+        str(name).strip()
+        for name in allowed_tool_names
+        if str(name).strip() in registered
+    )
+
+
+def _native_web_tool_container(
+    message: Mapping[str, Any],
+    *,
+    allowed_tool_names: Sequence[str] | None = None,
+) -> str:
+    """Convert native Chat Completions function calls to our call envelope.
 
     The transport layer intentionally keeps returning text.  A native tool
     response therefore becomes one complete semantic JSON value and continues
-    through the existing cognitive/tool validation path.  Only the two public
-    web tools are accepted here; arbitrary provider functions must not become
+    through the existing cognitive/tool validation path.  Only names present
+    in the application registry (and, when supplied, the current-turn
+    allowlist) are accepted; arbitrary provider functions must not become
     executable application calls by accident.
     """
 
@@ -127,6 +189,22 @@ def _native_web_tool_container(message: Mapping[str, Any]) -> str:
     if not isinstance(raw_calls, list) or not raw_calls:
         raise UpstreamProtocolError("upstream tool_calls must be a non-empty list")
 
+    accepted_names = _registered_native_tool_names(allowed_tool_names)
+    content_value: Mapping[str, Any] | None = None
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        try:
+            parsed_content = json.loads(content)
+        except json.JSONDecodeError:
+            parsed_content = None
+        if isinstance(parsed_content, Mapping):
+            content_value = parsed_content
+    root_selection = {
+        field: source[field]
+        for source in (message, content_value or {})
+        for field in _NATIVE_SELECTION_FIELDS
+        if field in source
+    }
     calls: list[dict[str, Any]] = []
     for index, raw_call in enumerate(raw_calls):
         if not isinstance(raw_call, Mapping):
@@ -142,7 +220,7 @@ def _native_web_tool_container(message: Mapping[str, Any]) -> str:
                 f"upstream tool_calls[{index}].function must be an object"
             )
         name = str(function.get("name") or "").strip()
-        if name not in _NATIVE_WEB_TOOL_NAMES:
+        if name not in accepted_names:
             raise UpstreamProtocolError(f"unsupported upstream tool function: {name[:80]}")
 
         raw_arguments = function.get("arguments")
@@ -164,37 +242,55 @@ def _native_web_tool_container(message: Mapping[str, Any]) -> str:
                 f"arguments for upstream tool {name} must be a JSON object"
             )
 
-        required_argument = "query" if name == "web_search" else "url"
-        required_value = arguments.get(required_argument)
-        if not isinstance(required_value, str) or not required_value.strip():
-            raise UpstreamProtocolError(
-                f"upstream tool {name} requires a non-empty {required_argument}"
-            )
+        selection = dict(root_selection)
+        for field in _NATIVE_SELECTION_FIELDS:
+            if field in arguments:
+                selection[field] = arguments.pop(field)
+        if name == "web_search":
+            required_argument = "query"
+            required_value = arguments.get(required_argument)
+            if not isinstance(required_value, str) or not required_value.strip():
+                raise UpstreamProtocolError(
+                    f"upstream tool {name} requires a non-empty {required_argument}"
+                )
+        elif name == "read_web_page":
+            required_argument = "url"
+            required_value = arguments.get(required_argument)
+            if not isinstance(required_value, str) or not required_value.strip():
+                raise UpstreamProtocolError(
+                    f"upstream tool {name} requires a non-empty {required_argument}"
+                )
 
         call: dict[str, Any] = {"name": name, "args": arguments}
         native_id = raw_call.get("id")
         if native_id is not None and str(native_id).strip():
             call["toolCallId"] = str(native_id)
+        if selection:
+            call["selection"] = selection
         calls.append(call)
 
+    all_web_calls = all(call["name"] in _NATIVE_WEB_TOOL_NAMES for call in calls)
     result: dict[str, Any] = {
         "kind": "tool_use",
-        "_nativeWebToolCalls": True,
+        ("_nativeWebToolCalls" if all_web_calls else "_nativeToolCalls"): True,
     }
-    content = message.get("content")
-    if isinstance(content, str) and content.strip():
-        try:
-            content_value = json.loads(content)
-        except json.JSONDecodeError:
-            content_value = None
-        if isinstance(content_value, Mapping) and isinstance(content_value.get("cognitive"), Mapping):
-            result["cognitive"] = dict(content_value["cognitive"])
+    if isinstance(content_value, Mapping) and isinstance(content_value.get("cognitive"), Mapping):
+        result["cognitive"] = dict(content_value["cognitive"])
     result["calls"] = calls
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
-def extract_upstream_chat_text(data: Any) -> str:
-    """接受兼容的文本结构，并拒绝没有可用消息的 HTTP 200 响应。"""
+def extract_upstream_chat_text(
+    data: Any,
+    *,
+    allowed_tool_names: Sequence[str] | None = None,
+) -> str:
+    """接受兼容的文本结构，并拒绝没有可用消息的 HTTP 200 响应。
+
+    ``allowed_tool_names`` is an optional narrow per-turn boundary.  Callers
+    that do not have one still get the single registry boundary rather than a
+    provider-specific hard-coded allowlist.
+    """
 
     if not isinstance(data, dict):
         raise UpstreamProtocolError(f"upstream response is {type(data).__name__}, expected object")
@@ -206,9 +302,20 @@ def extract_upstream_chat_text(data: Any) -> str:
             message = choice.get("message")
             if isinstance(message, dict):
                 if message.get("tool_calls"):
-                    return _native_web_tool_container(message)
+                    return _native_web_tool_container(
+                        message,
+                        allowed_tool_names=allowed_tool_names,
+                    )
                 content = message.get("content")
                 if isinstance(content, str) and content.strip():
+                    classification = classify_provider_response_body(content, http_status=200)
+                    if classification.is_error:
+                        raise UpstreamProtocolError(
+                            "provider returned an HTTP-200 error body",
+                            category=classification.category,
+                            code=classification.category,
+                            status=200,
+                        )
                     return content
                 if isinstance(content, list):
                     text_parts = [
@@ -218,19 +325,53 @@ def extract_upstream_chat_text(data: Any) -> str:
                     ]
                     combined = "".join(text_parts).strip()
                     if combined:
+                        classification = classify_provider_response_body(combined, http_status=200)
+                        if classification.is_error:
+                            raise UpstreamProtocolError(
+                                "provider returned an HTTP-200 error body",
+                                category=classification.category,
+                                code=classification.category,
+                                status=200,
+                            )
                         return combined
             text = choice.get("text")
             if isinstance(text, str) and text.strip():
+                classification = classify_provider_response_body(text, http_status=200)
+                if classification.is_error:
+                    raise UpstreamProtocolError(
+                        "provider returned an HTTP-200 error body",
+                        category=classification.category,
+                        code=classification.category,
+                        status=200,
+                    )
                 return text
     output_text = data.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
+        classification = classify_provider_response_body(output_text, http_status=200)
+        if classification.is_error:
+            raise UpstreamProtocolError(
+                "provider returned an HTTP-200 error body",
+                category=classification.category,
+                code=classification.category,
+                status=200,
+            )
         return output_text
     error = data.get("error")
     if isinstance(error, dict):
         code = str(error.get("code") or error.get("type") or "provider_error")[:80]
         message = str(error.get("message") or "upstream returned an error object")[:300]
-        raise UpstreamProtocolError(f"{code}: {message}")
-    raise UpstreamProtocolError("upstream returned no usable assistant message")
+        raise UpstreamProtocolError(
+            f"{code}: {message}",
+            category="error_object",
+            code=code,
+            status=200,
+        )
+    raise UpstreamProtocolError(
+        "upstream returned no usable assistant message",
+        category="protocol_invalid",
+        code="no_usable_assistant_message",
+        status=200,
+    )
 
 
 def json_mode_fallback_payload(payload: Mapping[str, Any]) -> dict[str, Any]:

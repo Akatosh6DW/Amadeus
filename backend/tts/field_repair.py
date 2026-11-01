@@ -4,6 +4,7 @@
 复用现有 finish-reason ContextVar，不能另建共享状态或增加恢复预算。
 """
 from __future__ import annotations
+from backend.tts.japanese_alignment import japanese_persona_style
 from dataclasses import dataclass
 import json
 import math
@@ -14,7 +15,7 @@ from backend.chat.parsing import parse_json_object
 from backend.providers.errors import UpstreamProtocolError
 
 from agent.fingerprints import runtime_fingerprint
-from backend.chat.presentation import sanitize_roleplay_text
+from backend.chat.presentation import speech_projection_text
 from backend.chat.reply_fields import SPOKEN_JA_NO_EMOJI_RULE
 from backend.tts.japanese_rules import dialogue_field_repair_token_budget, soften_spoken_japanese_style
 
@@ -74,9 +75,9 @@ class SpeechFieldRepair:
                 {"role": "system", "content": (
                     "你是 Amadeus 的字段修复器，不重新回答用户，也不改写中文台词。"
                     "只输出一个 JSON 对象，只填写 requestedFields 指定的字段；即使你认为中文可以改进也不得输出 reply。"
-                    "spokenTextJa 必须完整对应 frozenReply 的全部语义和情绪，使用自然年轻女性日语口语及官方专名读法。"
+                    "spokenTextJa 必须完整对应 frozenReply 的全部语义和情绪，使用自然日语口语及官方专名读法。"
                     "不要输出 emotion、speechUnits、gesture 或其他未请求字段。"
-                    + "\n" + SPOKEN_JA_NO_EMOJI_RULE
+                    + "\n" + SPOKEN_JA_NO_EMOJI_RULE + '\n' + japanese_persona_style(persona_snapshot)
                 )},
                 {"role": "user", "content": json.dumps({
                     "currentUserMessage": str(user_message or ""),
@@ -128,10 +129,9 @@ class SpeechFieldRepair:
             raise UpstreamProtocolError("dialogue field repair returned no JSON object")
         repaired = dict(result)
         if "spokenTextJa" in requested:
-            spoken, _ = sanitize_roleplay_text(
-                self.operations.normalize_spoken_japanese_terms(parsed.get("spokenTextJa"))
-            )
+            spoken = self.operations.normalize_spoken_japanese_terms(parsed.get("spokenTextJa"))
             spoken = soften_spoken_japanese_style(spoken)
+            projected_spoken, _ = speech_projection_text(spoken)
             spoken_probe = {
                 **repaired,
                 "spokenTextJa": spoken,
@@ -141,6 +141,7 @@ class SpeechFieldRepair:
             if not spoken or self.operations.should_align_spoken_text_ja(settings, spoken_probe):
                 raise UpstreamProtocolError("dialogue field repair returned unusable spokenTextJa")
             repaired["spokenTextJa"] = spoken
+            repaired["speechText"] = projected_spoken
             repaired["spokenTextJaMissingFromModel"] = False
             repaired["spokenTextJaRepaired"] = True
             repaired["spokenTextJaRepairMode"] = "unified_field_repair"

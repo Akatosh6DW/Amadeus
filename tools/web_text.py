@@ -10,18 +10,49 @@ metadata.
 from __future__ import annotations
 
 from bisect import bisect_right
+from copy import deepcopy
 from hashlib import sha256
 import math
 import re
 from typing import Any, Mapping
 
 
-_INJECTION_PATTERN = re.compile(
-    r"ignore (?:all |previous )?instructions|"
-    r"忽略(?:以上|之前|此前)(?:指令|要求)|"
-    r"输出(?:密钥|密码)",
-    re.IGNORECASE,
+_RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "instruction_override",
+        # regex-purpose: projection; regex-boundary: known override phrases only.
+        re.compile(
+            r"ignore (?:all |previous )?instructions|"
+            r"忽略(?:以上|之前|此前)(?:指令|要求)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "secret_exfiltration",
+        # regex-purpose: projection; regex-boundary: explicit secret-output phrases only.
+        re.compile(
+            r"输出(?:密钥|密码)|(?:reveal|output) (?:the )?(?:secret|password|token)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "system_prompt_reference",
+        # regex-purpose: projection; regex-boundary: prompt-reference phrases only.
+        re.compile(r"system prompt|developer message|系统提示词|开发者消息", re.IGNORECASE),
+    ),
+    (
+        "tool_execution_request",
+        # regex-purpose: projection; regex-boundary: explicit tool-request phrases only.
+        re.compile(r"(?:call|invoke|use).{0,20}(?:tool|browser)|调用.{0,12}(?:工具|浏览器)", re.IGNORECASE),
+    ),
 )
+
+_PROMPT_MARKER_NAMES = {
+    "instruction_override": "override_instructions",
+    "secret_exfiltration": "secret_request",
+    "system_prompt_reference": "system_prompt_request",
+    "tool_execution_request": "tool_execution_request",
+}
 
 _SECTION_HEADING_PATTERN = re.compile(
     r"^(?:§\s*)?(?:(?:\d+(?:\.\d+)+\.?)|(?:\d+\.))\s*(?:\S.*)?$|"
@@ -35,7 +66,12 @@ def _clean_body(value: Any) -> str:
 
 
 def _body_segments(body: str) -> list[str]:
-    """Split prose without requiring whitespace after CJK punctuation."""
+    """Split prose without deleting any source text.
+
+    Risky passages remain ordinary source segments.  Callers receive risk
+    labels through :func:`web_text_risks`; no segment is removed based on its
+    wording.
+    """
 
     normalized = re.sub(r"\r\n?", "\n", str(body or "")).strip()
     if not normalized:
@@ -44,12 +80,27 @@ def _body_segments(body: str) -> list[str]:
         r"\n{2,}|(?<=[。！？])\s*|(?<=[.!?])\s+",
         normalized,
     )
-    return [
-        cleaned
-        for raw in raw_segments
-        if (cleaned := _clean_body(raw))
-        and not _INJECTION_PATTERN.search(cleaned)
-    ]
+    return [cleaned for raw in raw_segments if (cleaned := _clean_body(raw))]
+
+
+def web_text_risks(body: str) -> list[dict[str, Any]]:
+    """Return side-channel risk labels while preserving the complete body.
+
+    Labels contain only pattern kinds and segment indexes.  They deliberately
+    do not replace, redact, or repeat the source passage.
+    """
+
+    segments = _body_segments(body)
+    markers: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        signals = [kind for kind, pattern in _RISK_PATTERNS if pattern.search(segment)]
+        if signals:
+            markers.append({"segmentIndex": index, "signals": signals})
+    return markers
+
+
+# Descriptive alias for callers that prefer a verb-first name.
+detect_web_text_risks = web_text_risks
 
 
 def _query_terms(query: str) -> list[str]:
@@ -69,6 +120,149 @@ def _query_terms(query: str) -> list[str]:
 
 def _signature(value: str) -> str:
     return sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+READING_QUOTE_MIN_CHARS = 20
+READING_QUOTE_MAX_CHARS = 600
+READING_PROJECTION_MAX_CHARS = 2_800
+
+
+def source_body_hash(source: Mapping[str, Any]) -> str:
+    """Hash the unprojected body so persisted excerpts cannot go stale."""
+
+    body = str(source.get("body") or "")
+    return sha256(body.encode("utf-8", errors="replace")).hexdigest()
+
+
+def verify_source_excerpt(
+    source: Mapping[str, Any],
+    excerpt: Mapping[str, Any] | str,
+) -> dict[str, Any] | None:
+    """Validate an excerpt against the current page body and provenance."""
+
+    body = str(source.get("body") or "")
+    if not body or source.get("ok") is False:
+        return None
+    if isinstance(excerpt, str):
+        text = excerpt
+        declared_hash = ""
+        declared_start: int | None = None
+        declared_end: int | None = None
+        excerpt_uid = ""
+        excerpt_url = ""
+    elif isinstance(excerpt, Mapping):
+        text = str(
+            excerpt.get("text")
+            or excerpt.get("quote")
+            or excerpt.get("excerpt")
+            or excerpt.get("sourceExcerpt")
+            or ""
+        )
+        declared_hash = str(
+            excerpt.get("sourceHash")
+            or excerpt.get("bodyHash")
+            or excerpt.get("hash")
+            or ""
+        ).strip()
+        excerpt_uid = str(excerpt.get("sourceUid") or "").strip()
+        excerpt_url = str(excerpt.get("url") or "").strip()
+        raw_start = excerpt.get("startChar")
+        raw_end = excerpt.get("endChar")
+        try:
+            declared_start = int(raw_start) if raw_start is not None else None
+            declared_end = int(raw_end) if raw_end is not None else None
+        except (TypeError, ValueError):
+            return None
+    else:
+        declared_end = None
+        return None
+    if not text or len(text) < READING_QUOTE_MIN_CHARS or len(text) > READING_QUOTE_MAX_CHARS:
+        return None
+    body_hash = source_body_hash(source)
+    if declared_hash and declared_hash != body_hash:
+        return None
+    source_uid = str(source.get("sourceUid") or source.get("canonicalUrl") or source.get("url") or "")
+    source_url = str(source.get("url") or source.get("canonicalUrl") or "")
+    if excerpt_uid and source_uid and excerpt_uid != source_uid:
+        return None
+    if excerpt_url and source_url and excerpt_url != source_url:
+        return None
+    if declared_start is None:
+        start = body.find(text)
+    else:
+        start = declared_start
+        if start < 0 or body[start:start + len(text)] != text:
+            return None
+    if start < 0:
+        return None
+    end = start + len(text)
+    if declared_end is not None and declared_end != end:
+        return None
+    return {
+        "text": body[start:end],
+        "startChar": start,
+        "endChar": end,
+        "sourceHash": body_hash,
+        "sourceUid": source_uid,
+        "url": source_url,
+        "verified": True,
+        "verification": "exact_source_match",
+    }
+
+
+def verified_source_excerpts(source: Mapping[str, Any], *, limit: int = 4) -> list[dict[str, Any]]:
+    """Validate and deduplicate reading excerpts persisted with one source."""
+
+    summary = source.get("readingSummary")
+    if not isinstance(summary, Mapping):
+        return []
+    raw = summary.get("verifiedExcerpts") or summary.get("excerpts") or []
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, str]] = set()
+    for item in raw:
+        verified = verify_source_excerpt(source, item)
+        if verified is None:
+            continue
+        key = (verified["startChar"], verified["endChar"], verified["text"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(verified)
+        if len(result) >= max(1, int(limit)):
+            break
+    return result
+
+
+def rebind_reading_summary(source: Mapping[str, Any], *, source_uid: str, url: str) -> dict[str, Any] | None:
+    """Rebind a derived summary only after validating against the old source.
+
+    Fetch merging and observation windows can assign a new internal identity
+    to the same body. Return a detached view; never modify the raw receipt.
+    """
+    reading = source.get("readingSummary")
+    if not isinstance(reading, Mapping):
+        return None
+    result = deepcopy(dict(reading))
+    result.update(sourceUid=source_uid, url=url)
+    result["verifiedExcerpts"] = [
+        {**item, "sourceUid": source_uid, "url": url}
+        for item in verified_source_excerpts(source)
+    ]
+    return result
+
+
+def _reading_summary_matches_query(summary: Mapping[str, Any], query: str) -> bool:
+    """Avoid promoting a prior-turn excerpt for an unrelated current query."""
+
+    recorded = str(summary.get("query") or "").strip()
+    current = str(query or "").strip()
+    if not recorded or not current:
+        return False
+    recorded_terms = set(_query_terms(recorded))
+    current_terms = set(_query_terms(current))
+    return bool(recorded_terms and current_terms and recorded_terms.intersection(current_terms))
 
 
 def _rank_query_segments(
@@ -300,6 +494,9 @@ def extract_query_evidence_chunks(
     body = str(source.get("body") or "").strip()
     if not body:
         return []
+    # Evidence chunks retain source text too.  Risk labels are carried beside
+    # the projection so downstream policy can gate side effects without
+    # deleting or rewriting the quoted passage.
     segments, ranked = _rank_query_segments(body, query)
     if not ranked:
         return []
@@ -452,14 +649,60 @@ def project_web_text(
     """
 
     raw_body = str(source.get("body") or "")
+    risk_markers = web_text_risks(raw_body)
+    prompt_markers = [
+        _PROMPT_MARKER_NAMES[signal]
+        for marker in risk_markers
+        for signal in marker.get("signals", [])
+        if signal in _PROMPT_MARKER_NAMES
+    ]
+    source_prompt_markers = source.get("promptInjectionMarkers")
+    if isinstance(source_prompt_markers, (list, tuple)):
+        prompt_markers.extend(str(item) for item in source_prompt_markers if str(item).strip())
+    risk_fields = {
+        "riskMarkers": risk_markers,
+        "promptInjectionMarkers": list(dict.fromkeys(prompt_markers)),
+        "riskLevel": "high" if risk_markers or prompt_markers else "none",
+    }
+    reading = source.get("readingSummary")
+    reading_mapping = reading if isinstance(reading, Mapping) else {}
+    reading_status = str(reading_mapping.get("status") or "")
+    reading_matches = (
+        reading_mapping.get("sourceHash") == source_body_hash(source)
+        and _reading_summary_matches_query(reading_mapping, query)
+    )
+    verified = verified_source_excerpts(source)
+    if verified and not _reading_summary_matches_query(reading_mapping, query):
+        # A source can be reused by a later turn. Keep the raw body available,
+        # but do not let a summary quote from the previous question become the
+        # first context window for this one.
+        verified = []
+    reading_fields = {
+        "verifiedExcerpts": verified,
+        # A derived summary is deliberately kept separate from body evidence.
+        # Callers may display it with an explicit derived-summary label, but it
+        # must never replace or upgrade ``bodyExcerpt``'s source provenance.
+        "derivedSummary": str(reading_mapping.get("summary") or "")[:900] if reading_matches else "",
+        "derivedSummaryKind": str(reading_mapping.get("kind") or "derived_summary"),
+        "derivedSummaryStatus": str(reading_mapping.get("status") or "none"),
+        "readingCoverage": dict(reading_mapping.get("coverage") or {}) if reading_matches else {},
+        "sourceBodyHash": source_body_hash(source) if raw_body else "",
+    }
     if not raw_body.strip() or source.get("ok") is False:
         return {
             "bodyExcerpt": "",
             "evidenceChunks": [],
             "bodyTruncated": False,
             "projectionMode": "empty",
+            **risk_fields,
+            **reading_fields,
         }
     budget = max(120, int(max_chars))
+    if reading_status in {"complete", "fallback"}:
+        # The isolated summary is a compact reading aid. Do not append it to
+        # an otherwise full 8k source projection and thereby recreate the
+        # context pressure this service is meant to reduce.
+        budget = min(budget, READING_PROJECTION_MAX_CHARS)
     _projection_segments, projection_ranked = _rank_query_segments(
         raw_body,
         query,
@@ -482,7 +725,7 @@ def project_web_text(
             context, _ = _lead_tail_projection(raw_body, remaining, anchor_indices=projection_anchors) if remaining >= 120 else ("", True)
             body_excerpt = (selected_text + ("\n\n" + context if context else ""))[:budget]
             clipped = True
-        return {
+        projection = {
             "bodyExcerpt": body_excerpt,
             "evidenceChunks": chunks,
             "bodyTruncated": bool(
@@ -490,17 +733,52 @@ def project_web_text(
             ),
             "projectionMode": "query_chunks_with_context" if body_excerpt else "empty",
         }
-    body_excerpt, truncated = _lead_tail_projection(
-        raw_body,
-        budget,
-        anchor_indices=projection_anchors,
-    )
-    return {
-        "bodyExcerpt": body_excerpt,
-        "evidenceChunks": [],
-        "bodyTruncated": truncated,
-        "projectionMode": "lead_tail" if body_excerpt else "empty",
-    }
+    else:
+        body_excerpt, truncated = _lead_tail_projection(
+            raw_body,
+            budget,
+            anchor_indices=projection_anchors,
+        )
+        projection = {
+            "bodyExcerpt": body_excerpt,
+            "evidenceChunks": [],
+            "bodyTruncated": truncated,
+            "projectionMode": "lead_tail" if body_excerpt else "empty",
+        }
+    if verified:
+        original_excerpt = str(projection.get("bodyExcerpt") or "")
+        # Verified source quotes receive the first allocation in the projection
+        # budget. They are safe to surface as excerpts because each one was
+        # hash- and exact-match checked against this page body above.
+        ordered_parts = [item["text"] for item in verified]
+        if original_excerpt:
+            ordered_parts.append(original_excerpt)
+        body_excerpt, clipped = _join_bounded(ordered_parts, budget)
+        projection["bodyExcerpt"] = body_excerpt
+        projection["bodyTruncated"] = bool(
+            projection.get("bodyTruncated") or clipped or len(body_excerpt) < len(raw_body)
+        )
+        projection["projectionMode"] = "verified_reading_excerpts"
+        verified_texts = {item["text"] for item in verified}
+        projection["evidenceChunks"] = [
+            chunk for chunk in projection.get("evidenceChunks", [])
+            if not any(
+                text == str(chunk.get("text") or "")
+                or text in str(chunk.get("text") or "")
+                for text in verified_texts
+            )
+        ][:4]
+    projection.update(reading_fields)
+    projection.update(risk_fields)
+    return projection
 
 
-__all__ = ["extract_query_evidence_chunks", "project_web_text"]
+__all__ = [
+    "extract_query_evidence_chunks",
+    "project_web_text",
+    "source_body_hash",
+    "verify_source_excerpt",
+    "verified_source_excerpts",
+    "web_text_risks",
+    "detect_web_text_risks",
+]

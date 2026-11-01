@@ -51,8 +51,6 @@ class RoutePlanningOperations(Protocol):
 class RouteToolOperations(Protocol):
     def infer_agent_tool_requests(self, *args: Any, **kwargs: Any) -> Any: ...
     def task_bound_tool_requests(self, *args: Any, **kwargs: Any) -> Any: ...
-    def is_agent_file_action_query(self, *args: Any, **kwargs: Any) -> Any: ...
-    def is_time_query(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 class RouteRuntimeOperations(Protocol):
@@ -257,7 +255,10 @@ def classify_streaming_chat_route(
     prepared_action_turn = services.planning.body_prepared_action_turn(
         body, user_message, request_id=str(body.get("requestId") or "")
     )
-    context_resolution = services.context.contextual_reference_resolution(
+    from backend.chat.preparation_cache import resolve_turn_references
+
+    context_resolution = resolve_turn_references(
+        body, services.context.contextual_reference_resolution,
         user_message,
         messages,
         request_id=str(body.get("requestId") or ""),
@@ -359,13 +360,6 @@ def classify_streaming_chat_route(
             "toolRequests": [],
             **shared_route_context,
         }
-    if services.tools.is_time_query(user_message):
-        return {
-            "route": "fallback_legacy",
-            "reason": "local_time_response",
-            "toolRequests": [],
-            **shared_route_context,
-        }
     attachments = services.context.current_turn_context_artifacts(body)
     tool_requests = services.tools.infer_agent_tool_requests(
         user_message,
@@ -462,13 +456,6 @@ def classify_streaming_chat_route(
                 "reason": "unified research policy requires public evidence",
             }
         )
-    if services.tools.is_agent_file_action_query(user_message):
-        return {
-            "route": "tool_gated",
-            "reason": "explicit_agent_file_action",
-            "toolRequests": tool_requests or [{"name": "file_operation", "args": {}}],
-            **shared_route_context,
-        }
     if attachments:
         return {
             "route": "tool_gated",

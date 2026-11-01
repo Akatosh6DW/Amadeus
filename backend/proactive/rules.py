@@ -82,24 +82,6 @@ def proactive_reply_similarity(left: str, right: str) -> float:
     )
 
 
-def proactive_reply_duplicate(
-    reply: str,
-    recent_texts: list[str],
-    previous_prompt: str = "",
-) -> tuple[bool, str]:
-    for candidate in recent_texts:
-        threshold = 0.68 if previous_prompt and candidate == previous_prompt else 0.64
-        for reply_unit in reply_dedupe_units(reply):
-            for candidate_unit in reply_dedupe_units(candidate):
-                if min(
-                    len(re.sub(r"[\W_]+", "", reply_unit)),
-                    len(re.sub(r"[\W_]+", "", candidate_unit)),
-                ) < 8:
-                    continue
-                score = proactive_reply_similarity(reply_unit, candidate_unit)
-                if score >= threshold:
-                    return True, candidate
-    return False, ""
 
 
 def proactive_semantic_private_match(
@@ -163,16 +145,39 @@ def proactive_private_topic_ids(
 def redact_private_proactive_context(
     text: str,
     policy: dict[str, Any],
+    *,
+    source_role: str = "",
 ) -> str:
-    """Hide private-persona topic details from the proactive generator only."""
+    """Redact explicitly assistant-owned persona context, if requested.
 
-    matched = proactive_private_topic_ids(
-        text,
-        policy,
-        "contextPatterns",
-        "directReplyPatterns",
-    )
-    if not matched:
+    The normal proactive context projection contains mixed recent turns and is
+    deliberately passed here without a source label.  In that case the user's
+    original wording must remain verbatim; ``contextPatterns`` and
+    ``directReplyPatterns`` cannot infer who authored a string.  Callers that
+    have an explicit assistant/persona source may opt into the legacy compact
+    marker with ``source_role``.
+    """
+
+    normalized_role = str(source_role or "").strip().lower().replace("-", "_")
+    if normalized_role not in {
+        "assistant", "assistant_context", "persona", "persona_config",
+    }:
+        return str(text or "")
+
+    rule_ids = {
+        str(rule.get("id") or "").strip()
+        for rule in policy.get("privateSelfTopics", [])
+        if isinstance(rule, dict) and str(rule.get("id") or "").strip()
+    }
+    direct_matches = [
+        item for item in proactive_private_topic_ids(
+            text,
+            policy,
+            "directReplyPatterns",
+        )
+        if item in rule_ids
+    ]
+    if not direct_matches:
         return str(text or "")
     return (
         "[上一轮包含用户主动提起的私密人格话题；正常对话已经可以按人格回应，"
@@ -180,32 +185,6 @@ def redact_private_proactive_context(
     )
 
 
-def proactive_private_topic_violation(
-    reply: str,
-    recent_user_texts: list[str],
-    policy: dict[str, Any],
-) -> tuple[bool, str]:
-    """Independently reject proactive self-disclosure and private-topic carryover."""
-
-    for rule in policy.get("privateSelfTopics", []):
-        if not isinstance(rule, dict):
-            continue
-        rule_id = str(rule.get("id") or "").strip()
-        if proactive_pattern_matches(reply, rule.get("directReplyPatterns")):
-            return True, rule_id
-        user_opened_private_topic = any(
-            proactive_pattern_matches(text, rule.get("contextPatterns"))
-            for text in recent_user_texts
-        )
-        if user_opened_private_topic and proactive_pattern_matches(
-            reply,
-            rule.get("continuationReplyPatterns"),
-        ):
-            return True, rule_id
-    semantic_match = proactive_semantic_private_match(reply, policy)
-    if semantic_match:
-        return True, semantic_match
-    return False, ""
 
 
 def proactive_topic_seeds(
@@ -225,13 +204,6 @@ def proactive_topic_seeds(
         if not content:
             continue
         user_index += 1
-        if proactive_private_topic_ids(
-            content,
-            policy,
-            "contextPatterns",
-            "directReplyPatterns",
-        ):
-            continue
         seeds.append({
             "id": f"user:{user_index}",
             "kind": "recent_user_topic",
@@ -265,13 +237,6 @@ def proactive_topic_seeds(
         if not value:
             continue
         memory_index += 1
-        if proactive_private_topic_ids(
-            value,
-            policy,
-            "contextPatterns",
-            "directReplyPatterns",
-        ):
-            continue
         seeds.append({
             "id": f"memory:{memory_index}",
             "kind": "reliable_user_memory",

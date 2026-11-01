@@ -25,6 +25,7 @@ class AssetOperations:
     resolve_generated_file: Callable[[str], tuple[Path, dict[str, Any]] | None]
     configured_background_image: Callable[[], Path | None]
     content_type_for: Callable[[Path], str]
+    resolve_gallery_image: Callable[[str, str], tuple[bytes, str] | None] = lambda _account, _id: None
 
 
 class AssetRoutes:
@@ -34,6 +35,15 @@ class AssetRoutes:
         self.operations = operations
 
     def get_file(self, response: AssetResponse, path: str) -> bool:
+        # regex-purpose: resource
+        gallery = re.fullmatch(r'/api/gallery/([0-9]{5,20})/([a-f0-9]{64})', path)
+        if gallery:
+            resolved = self.operations.resolve_gallery_image(*gallery.groups())
+            if resolved:
+                response.send_binary(*resolved)
+            else:
+                response.send_error(404)
+            return True
         match = self._FILE_ROUTE.fullmatch(path)
         if not match:
             return False

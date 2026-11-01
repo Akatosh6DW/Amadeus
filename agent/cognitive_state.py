@@ -12,7 +12,20 @@ import copy
 from agent.cognitive_answer_scope import apply_answer_scope
 from agent.cognitive_context import MAX_RECALL_QUERY_LENGTH, normalize_recall_scope
 from agent.fingerprints import runtime_fingerprint
-from agent.cognitive_tools import normalized_tool_plan, selected_tool_step, tool_plan_identity, project_durable_tool_progress
+from agent.memory_purpose import (
+    ENGINEERING_PREFERENCE_PURPOSE,
+    EXPLICIT_USER_AUTHORIZATION,
+    is_engineering_preference,
+    is_personal_memory,
+    is_user_scoped,
+)
+from agent.cognitive_tools import (
+    normalized_tool_plan,
+    selected_tool_step,
+    tool_plan_identity,
+    reconcile_tool_plan,
+    project_durable_tool_progress,
+)
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -302,10 +315,7 @@ def _scan_forbidden(value: Any, operation: str | None = None) -> None:
                         field=str(key),
                     )
                 continue
-            if normalized in _FORBIDDEN_FIELD_PARTS or any(
-                part in normalized
-                for part in ("receipt", "permission", "personakernel", "sourcecode", "filesystem", "sandbox", "audit")
-            ):
+            if normalized in _FORBIDDEN_FIELD_PARTS:
                 raise _error(
                     "forbidden_write",
                     operation,
@@ -790,12 +800,95 @@ def _register_user_adaptation(preferences: dict[str, Any], *, adaptation_id: str
     return True
 
 
+def _engineering_preference_from_belief(
+    patch: Mapping[str, Any], belief: Mapping[str, Any]
+) -> tuple[dict[str, Any], bool] | None:
+    """Normalize a typed engineering belief into the adaptation owner.
+
+    Some model responses use the fact operation for a user-scoped engineering
+    preference.  The declared purpose and scope are already structured
+    storage instructions, so preserve the response as an adaptation instead
+    of projecting it into personal memory or silently leaving it session-only.
+    Activation still requires the existing structured authorization token;
+    without it the adaptation remains a candidate.
+    """
+
+    declared = copy.deepcopy(dict(belief))
+    for key in ("memoryPurpose", "scope"):
+        if key not in declared and patch.get(key) is not None:
+            declared[key] = copy.deepcopy(patch[key])
+    if not is_engineering_preference(declared) or not is_user_scoped(declared):
+        return None
+
+    authorization = patch.get("authorization", declared.get("authorization"))
+    explicitly_authorized = authorization == EXPLICIT_USER_AUTHORIZATION
+    # The promotion contract has one canonical value. Boolean aliases are
+    # deliberately not treated as activation here, so a malformed or inferred
+    # model field cannot silently raise a candidate to active.
+
+    adaptation_value = copy.deepcopy(declared)
+    for key in (
+        "beliefId", "domain", "scope", "authority", "status", "memoryId",
+        "sourceSpan", "authorization", "explicitlyAuthorized", "userAuthorized",
+    ):
+        adaptation_value.pop(key, None)
+    adaptation_value["memoryPurpose"] = ENGINEERING_PREFERENCE_PURPOSE
+    return adaptation_value, explicitly_authorized
+
+
+def _register_engineering_preference(
+    preferences: dict[str, Any], *, adaptation_id: str, value: Mapping[str, Any],
+    source: str, turn_id: str, explicitly_authorized: bool,
+) -> None:
+    """Store a misrouted engineering belief as a candidate or active rule."""
+
+    created = _register_user_adaptation(
+        preferences,
+        adaptation_id=adaptation_id,
+        kind="preference",
+        value=value,
+        source=source,
+        turn_id=turn_id,
+    )
+    records = preferences.setdefault("userAdaptations", [])
+    record = next(item for item in records if item.get("adaptationId") == adaptation_id)
+    if created:
+        proposal = copy.deepcopy(dict(value))
+        proposal.update({
+            "proposalId": adaptation_id,
+            "sourceSpan": source,
+            "status": "proposed",
+        })
+        preferences.setdefault("userProposals", []).append(proposal)
+    if not explicitly_authorized:
+        return
+    if record.get("status") in {"revoked", "superseded"}:
+        raise _error(
+            "adaptation_inactive",
+            "ADD_USER_BELIEF",
+            "propose a new version instead of reviving a revoked adaptation",
+        )
+    record.update({
+        "status": "active",
+        "authorizedByTurnId": turn_id,
+        "authorizationSpan": source,
+    })
+    for item in preferences.get("userProposals", []):
+        if item.get("proposalId") == adaptation_id:
+            item["status"] = "active"
+
+
 def _bind_user_belief_scope(belief: dict[str, Any], state: Mapping[str, Any], operation: str, *, prior: Mapping[str, Any] | None = None) -> None:
     scope = belief.get("scope", "user" if prior and prior.get("memoryId") else "session")
     if scope not in {"session", "user"}:
         raise _error("belief_scope_invalid", operation, "user belief scope must be session or user")
     if prior and prior.get("memoryId"):
         scope = "user"
+    # Typed storage ownership, not a wording check or a rejected turn. The
+    # model may retain configuration context here; its durable owner is not
+    # the personal-memory file.
+    if not is_personal_memory(belief):
+        scope = "session"
     belief["scope"] = scope
     belief.pop("memoryId", None)
     if scope == "user":
@@ -959,7 +1052,8 @@ def task_start_is_additive(task: Mapping[str, Any], patch: Mapping[str, Any], tu
     """Recognize a same-turn declaration that cannot replace existing work.
 
     A tool-only first response can register the goal before the model names
-    its target. Completing that declaration is not another task. This uses
+    its target, intent or acceptance criteria. Completing that declaration is
+    not another task. This uses
     exact structured equality; it never decides that paraphrases are alike.
     """
     value = patch.get("value")
@@ -967,9 +1061,14 @@ def task_start_is_additive(task: Mapping[str, Any], patch: Mapping[str, Any], tu
         task.get("taskId") and task.get("startedByTurnId") == turn_id
         and patch.get("operation") == "START_TASK" and not patch.get("replaceCurrentTaskId")
         and patch.get("targetId") in {None, task.get("taskId")}
-        and isinstance(value, Mapping) and set(value) <= {"goal", "target"}
+        and isinstance(value, Mapping) and set(value) <= {"goal", "target", "userIntent", "successCriteria"}
         and value.get("goal") == task.get("goal")
-        and (value.get("target") is None or task.get("target") is None or value["target"] == task.get("target"))
+        and all(
+            value.get(field) in (None, "", {}, [])
+            or task.get(field) in (None, "", {}, [])
+            or value[field] == task[field]
+            for field in ("target", "userIntent", "successCriteria")
+        )
     )
 
 
@@ -1263,6 +1362,21 @@ def _apply_patch(
                     id=bid,
                 )
             source = _source_span(patch, user_message, operation, required=True)
+            engineering = _engineering_preference_from_belief(patch, belief)
+            if engineering is not None:
+                adaptation_value, explicitly_authorized = engineering
+                _register_engineering_preference(
+                    state["preferences"],
+                    adaptation_id=bid,
+                    value=adaptation_value,
+                    source=source,
+                    turn_id=turn_id,
+                    explicitly_authorized=explicitly_authorized,
+                )
+                # Engineering preferences are owned by the independent
+                # adaptation ledger.  Do not also create a cognitive belief
+                # that the memory projector must later discard.
+                return
             belief["domain"] = domain or "user_fact"
             belief["authority"] = "user"
             belief["status"] = "active"
@@ -1283,21 +1397,34 @@ def _apply_patch(
             _record_source(belief, supplied_source)
             if context_ids and "contextIds" not in belief:
                 belief["contextIds"] = list(context_ids)
+            if isinstance(belief.get("contextIds"), list):
+                belief["contextIds"] = list(dict.fromkeys(
+                    _identifier(item, "contextId") for item in belief["contextIds"]
+                ))
         for existing in state["beliefs"]:
             if _record_id(existing, "beliefId", "id") == bid:
                 if all(existing.get(key) == value for key, value in belief.items()):
                     return
                 raise _error("belief_id_exists", operation, "use a versioned correction to replace an existing belief")
+        if operation == "ADD_INFERENCE":
+            belief.setdefault("sourceTurnId", turn_id)
+            belief.pop('taskId', None)
+            if task.get('taskId') and task.get('status') not in {'idle', 'completed', 'failed', 'cancelled', 'superseded'}:
+                belief['taskId'] = task['taskId']
         _upsert_record(state["beliefs"], belief, bid, operation, "belief")
         return
 
     if operation == "START_TASK":
         source = _task_source(patch, user_message, operation)
         if task_start_is_additive(task, patch, turn_id):
-            target = patch["value"].get("target")
-            if target is not None and task.get("target") is None:
-                task["target"] = copy.deepcopy(target)
-                task["targetSourceSpan"] = source
+            for field in ("target", "userIntent", "successCriteria"):
+                value = patch["value"].get(field)
+                if field == "successCriteria" and field in patch["value"]:
+                    value = _start_task_list(value, field, operation)
+                if value in (None, "", {}, []) or task.get(field) not in (None, "", {}, []):
+                    continue
+                task[field] = copy.deepcopy(value)
+                task[field + "SourceSpan"] = source
             return
         payload = _start_task_payload(patch, operation)
         goal = _first(payload, "goal", "taskGoal", default=None)
@@ -1592,7 +1719,16 @@ def _apply_patch(
                     and not any(step.get("status") in {"invalidated", "cancelled"}
                                 for step in task.get("plan", []))):
                 return
-            task["plan"] = proposed
+            # A same-turn replacement can restate the same executable
+            # operation with a fresh model stepId or in a different order.
+            # Preserve the host step identity and backend receipts by
+            # canonical operation; a changed argument remains a new pending
+            # step.  A later user turn is a new execution attempt, even when
+            # it repeats the same operation.
+            task["plan"] = (
+                reconcile_tool_plan(task.get("plan", []), proposed)
+                if task.get("planDeclaredByTurnId") == turn_id else proposed
+            )
             task["planRevision"] = int(task.get("planRevision", 0)) + 1
             task["planDeclaredByTurnId"] = turn_id
         except ValueError as error:
@@ -1609,6 +1745,21 @@ def _apply_patch(
             step = selected_tool_step(task["plan"], selector)
         except ValueError as error:
             raise _error("tool_step_missing", operation, str(error)) from error
+        task_target = task.get("target")
+        intent = task.get("userIntent")
+        named_qq_target = (
+            isinstance(intent, Mapping) and intent.get("service") == "qq"
+            and isinstance(task_target, (Mapping, list))
+        )
+        if named_qq_target and field in {"targetId", "targetType"}:
+            targets = task_target if isinstance(task_target, list) else [task_target]
+            expected = [item.get("id" if field == "targetId" else "type") for item in targets if isinstance(item, Mapping)]
+            if not any(value is not None and str(target) == str(value) for value in expected):
+                raise _error(
+                    "qq_task_target_change_required", operation,
+                    "QQ recipient changes require CHANGE_TASK_TARGET with the named target; "
+                    "tool arguments cannot replace the task recipient",
+                )
         arguments = {**step["args"], field: copy.deepcopy(target)}
         if _same_turn_tool_step_restatement(task, step, arguments, turn_id):
             return
@@ -1619,7 +1770,8 @@ def _apply_patch(
         step.pop("invalidatedByTurnId", None)
         task["planRevision"] = int(task.get("planRevision", 0)) + 1
         task["planDeclaredByTurnId"] = turn_id
-        task["target"] = copy.deepcopy(target)
+        if not named_qq_target:
+            task["target"] = copy.deepcopy(target)
         return
 
     if operation == "REPLACE_TOOL_ARGUMENTS":
@@ -1892,7 +2044,9 @@ def stage_revision(
         pending_ids.append(_identifier(item, "pendingActionId"))
     ctx_ids: list[str] = []
     for item in context_ids:
-        ctx_ids.append(_identifier(item, "contextId"))
+        ident = _identifier(item, "contextId")
+        if ident not in ctx_ids:
+            ctx_ids.append(ident)
 
     # Expiry is evaluated on each turn boundary.  It does not decrement a rule
     # automatically; callers may stage a replacement rule with a new TTL.
@@ -1942,7 +2096,7 @@ def stage_revision(
     combined_directive: dict[str, Any] = {}
     if isinstance(prior_directive, Mapping):
         combined_directive.update(copy.deepcopy(dict(prior_directive)))
-    for key in ("interactionAct", "understoodGoal", "questionRelation", "answerScope"):
+    for key in ("interactionAct", "understoodGoal", "questionRelation", "answerScope", "taskRelation"):
         if key in directive:
             combined_directive[key] = copy.deepcopy(directive[key])
     metadata["directive"] = combined_directive

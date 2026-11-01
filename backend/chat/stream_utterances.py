@@ -1,7 +1,7 @@
 """快速流可见发言的规范化与最终结果投影。
 
-本模块拥有纯字段规则和发言单元结构；关系读取、字段修复及旧回复规范化仍通过
-各自领域端口接入。规范化不会提交会话，也不会改变快速流的恢复次数。
+本模块拥有纯字段规则和发言单元结构；协议与文本交付通过共享边界接入，缺失的
+语音/情绪字段只做本地降级。规范化不会提交会话，也不会改变快速流的恢复次数。
 """
 
 from __future__ import annotations
@@ -14,11 +14,19 @@ from agent.dialogue_architecture import TurnContract, TurnPolicy
 from agent.participant_realization import realize_participant_speech
 from agent.persona_context import PersonaContextSnapshot
 from agent.proactive_control import PROACTIVE_DIRECTIVES
-from backend.chat.presentation import ALLOWED_EMOTIONS, speech_language_profile
+from backend.chat.presentation import speech_language_profile
 from backend.chat.reply_fields import normalize_proactive_directive, normalize_relation_event
+from backend.chat.delivery import require_delivery
 from backend.common.values import clamp_int
 from backend.providers.errors import UpstreamProtocolError
+from backend.providers.reply_protocol import unwrap_reply_envelope
 from backend.tts.contract import MAX_SPEECH_UNITS
+
+
+# This is a transport/resource guard for one stream unit.  It is intentionally
+# much larger than a conversational sentence limit: wording, topic coverage,
+# and bilingual length are presentation diagnostics, not protocol failures.
+MAX_STREAM_UTTERANCE_FIELD_CHARACTERS = 50_000
 
 
 class UtteranceRuntimeOperations(Protocol):
@@ -31,12 +39,11 @@ class UtteranceContextOperations(Protocol):
 
 
 class UtteranceModelOperations(Protocol):
-    def repair_dialogue_fields_once(self, *args: Any, **kwargs: Any) -> Any: ...
+    """Reserved for native stream parsing; presentation fields never call a model."""
 
 
 class UtteranceProjectionOperations(Protocol):
     def normalize_model_reply(self, *args: Any, **kwargs: Any) -> Any: ...
-    def enforce_nickname_reaction_grounding(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -71,65 +78,55 @@ def normalize_streaming_utterance(
     persona_snapshot: PersonaContextSnapshot | None = None,
 ) -> dict[str, Any]:
     """规范单个可见发言单元，并在放行前补齐必需语音轨道。"""
+    # A provider may JSON-encode the semantic envelope once more inside the
+    # visible reply field.  Unwrap only a complete, contract-shaped mapping;
+    # URLs, code fences and field names in ordinary prose remain untouched.
+    payload = unwrap_reply_envelope(payload)
     payload = realize_participant_speech(payload)
-    text_zh = re.sub("\\s+", " ", str(payload.get("textZh") or "")).strip()
+    # ``textZh`` is the canonical display/history track.  Keep its source
+    # characters and line breaks intact; only the speech projection below may
+    # normalize whitespace.
+    text_zh = str(payload.get("textZh") or "")
+    # regex-purpose: projection (speech whitespace only; canonical text is untouched)
     spoken_ja = re.sub("\\s+", " ", str(payload.get("spokenTextJa") or "")).strip()
     speech_profile = speech_language_profile(settings)
     requires_japanese_track = speech_profile["speechLanguage"] == "ja-JP"
-    if not text_zh:
+    if not text_zh.strip():
         raise UpstreamProtocolError("streaming utterance requires non-empty Chinese")
-    if not spoken_ja and requires_japanese_track and services.runtime.configured(settings):
-        try:
-            repaired = services.model.repair_dialogue_fields_once(
-                settings,
-                {
-                    "reply": text_zh,
-                    "spokenTextJa": "",
-                    "emotion": payload.get("emotion") or "neutral",
-                    "memoryUpdates": [],
-                },
-                {"missingFields": ["spokenTextJa"], "invalidFields": []},
-                user_message=user_message,
-                recent_messages=[],
-                relationship_state=services.context.read_relationship_state(),
-                request_id=request_id,
-                persona_snapshot=persona_snapshot,
-            )
-            spoken_ja = re.sub("\\s+", " ", str(repaired.get("spokenTextJa") or "")).strip()
-            services.runtime.write_log(
-                "semantic_stream_spoken_ja_repaired",
-                requestId=request_id,
-                frozenChineseCharacters=len(text_zh),
-            )
-        except Exception as repair_error:
-            services.runtime.write_log(
-                "semantic_stream_spoken_ja_repair_failed",
-                requestId=request_id,
-                errorType=type(repair_error).__name__,
-                error=str(repair_error)[:500],
-            )
+    # The first visible segment crosses the shared delivery boundary before it
+    # can enter the stream buffer.  Topic/field wording remains ordinary text;
+    # only an actual private span can stop delivery here.  Missing speech is a
+    # presentation degradation and must not hide the Chinese answer.
+    delivery_probe = require_delivery(
+        {
+            "reply": text_zh,
+            "spokenTextJa": spoken_ja,
+            "emotion": payload.get("emotion") or "neutral",
+            "gesture": payload.get("gesture") or "none",
+        },
+        settings=settings,
+        persona_snapshot=persona_snapshot,
+        logger=getattr(services.runtime, "write_log", None),
+        request_id=request_id,
+    )
+    speech_unavailable_reason = str(
+        delivery_probe.get("speechUnavailableReason") or ""
+    ).strip()
+    # regex-purpose: projection (speech whitespace only; canonical text is untouched)
+    spoken_ja = re.sub(
+        "\\s+",
+        " ",
+        str(delivery_probe.get("spokenTextJa") or spoken_ja),
+    ).strip()
     if not spoken_ja and requires_japanese_track:
-        raise UpstreamProtocolError(
-            "streaming utterance is missing Japanese after field-only repair"
-        )
-    speech_text = text_zh if not requires_japanese_track else spoken_ja
-    if len(text_zh) > 900 or len(speech_text) > 1400:
-        raise UpstreamProtocolError("streaming utterance exceeded the sentence-level size limit")
-    if re.search(
-        "https?://|```|toolRequests|memoryUpdates|turn_(?:header|trailer)",
-        text_zh + speech_text,
-        re.I,
+        speech_unavailable_reason = speech_unavailable_reason or "optional_speech_field_missing"
+    if (
+        len(text_zh) > MAX_STREAM_UTTERANCE_FIELD_CHARACTERS
+        or len(spoken_ja) > MAX_STREAM_UTTERANCE_FIELD_CHARACTERS
     ):
-        raise UpstreamProtocolError("streaming utterance exposed internal or non-speakable content")
-    if re.search(
-        "(?:但是|不过|因为|所以|而且|如果|除非|虽然|以及|然后|つまり|だから|けれど)\\s*$",
-        text_zh + speech_text,
-    ):
-        raise UpstreamProtocolError("streaming utterance ended as an obvious fragment")
-    if requires_japanese_track:
-        size_ratio = len(spoken_ja) / max(1, len(text_zh))
-        if size_ratio < 0.22 or size_ratio > 5.2:
-            raise UpstreamProtocolError("streaming utterance bilingual size ratio is implausible")
+        raise UpstreamProtocolError("streaming utterance exceeded the transport resource limit")
+    speech_quality_warnings: list[str] = []
+    contract_warnings: list[str] = []
     covers_value = payload.get("covers")
     covers = (
         tuple((str(item).strip() for item in covers_value if str(item).strip()))
@@ -137,17 +134,14 @@ def normalize_streaming_utterance(
         else ()
     )
     if first_visible and turn_contract is not None:
-        # Semantic Stream V2 不要求模型复述后端合同标识。缺少的 covers 元数据在
-        # 此处补齐；回答是否完整仍由最终合同验证器按自然语言内容判断。
-        if not covers:
-            covers = tuple(turn_contract.first_visible_must_cover)
+        # These are useful diagnostics for the final contract audit.  They do
+        # not describe a transport failure and therefore cannot hide the first
+        # visible answer.
         missing = [item for item in turn_contract.first_visible_must_cover if item not in covers]
         if missing:
-            raise UpstreamProtocolError(
-                "first visible utterance does not cover Turn Contract: " + ",".join(missing)
-            )
+            contract_warnings.append("turn_contract_coverage_unverified")
         if payload.get("standalone", True) is not True:
-            raise UpstreamProtocolError("first visible utterance is not independently complete")
+            contract_warnings.append("first_visible_segment_not_standalone")
     normalized = services.projection.normalize_model_reply(
         {
             **(
@@ -178,12 +172,35 @@ def normalize_streaming_utterance(
         },
         settings=settings,
     )
-    normalized = services.projection.enforce_nickname_reaction_grounding(
-        user_message,
-        normalized,
-        reaction_key=request_id,
-        persona_snapshot=persona_snapshot,
-        is_first_visible=first_visible or sequence == 1,
+    normalized = dict(normalized) if isinstance(normalized, Mapping) else {"reply": text_zh}
+    normalized_text_zh = text_zh
+    # regex-purpose: projection (speech whitespace only; canonical text is untouched)
+    normalized_spoken_ja = re.sub(
+        "\\s+", " ", str(normalized.get("spokenTextJa") or spoken_ja)
+    ).strip()
+    if requires_japanese_track and normalized_spoken_ja:
+        size_ratio = len(normalized_spoken_ja) / max(1, len(normalized_text_zh))
+        if size_ratio < 0.22 or size_ratio > 5.2:
+            # Keep the canonical text, annotate the quality issue, and mute
+            # only the unreliable optional speech track.
+            speech_quality_warnings.append("speech_length_ratio_unreliable")
+            speech_unavailable_reason = speech_unavailable_reason or "speech_length_ratio_unreliable"
+            normalized_spoken_ja = ""
+    if speech_unavailable_reason:
+        normalized["spokenTextJa"] = ""
+        normalized["speechText"] = normalized_text_zh
+        normalized["textOnlyDelivery"] = True
+        normalized["speechUnavailableReason"] = speech_unavailable_reason
+        normalized["ttsUnavailableReason"] = speech_unavailable_reason
+    speech_text = (
+        normalized_text_zh
+        if not requires_japanese_track or not normalized_spoken_ja
+        else normalized_spoken_ja
+    )
+    visible_spoken_ja = (
+        ""
+        if speech_unavailable_reason
+        else str(normalized.get("spokenTextJa") or normalized_spoken_ja)
     )
     return {
         **(
@@ -195,10 +212,15 @@ def normalize_streaming_utterance(
         "proactiveDirective": normalize_proactive_directive(payload.get("proactiveDirective")),
         "proactiveDirectiveProvided": str(payload.get("proactiveDirective") or "").strip().lower()
         in PROACTIVE_DIRECTIVES,
-        "textZh": str(normalized.get("reply") or text_zh),
-        "spokenTextJa": str(normalized.get("spokenTextJa") or spoken_ja),
+        "textZh": text_zh,
+        "spokenTextJa": visible_spoken_ja,
         "speechText": str(normalized.get("speechText") or speech_text),
         "speechLanguage": str(normalized.get("speechLanguage") or speech_profile["speechLanguage"]),
+        "textOnlyDelivery": bool(normalized.get("textOnlyDelivery")),
+        "speechUnavailableReason": str(normalized.get("speechUnavailableReason") or ""),
+        "ttsUnavailableReason": str(normalized.get("ttsUnavailableReason") or ""),
+        "speechQualityWarnings": list(dict.fromkeys(speech_quality_warnings)),
+        "streamContractWarnings": list(dict.fromkeys(contract_warnings)),
         "originalAudio": (
             dict(normalized["originalAudio"])
             if isinstance(normalized.get("originalAudio"), dict)
@@ -301,6 +323,8 @@ def fast_stream_combined_result(
     )
     return {
         "reply": "\n\n".join((str(item["textZh"]) for item in utterances)),
+        'imageIds': trailer.get('imageIds') if isinstance(trailer.get('imageIds'), list) else [],
+        'galleryAccount': str(trailer.get('galleryAccount') or ''),
         "spokenTextJa": "\n\n".join((str(item["spokenTextJa"]) for item in utterances)),
         "_modelSpeechUnits": [
             {
@@ -311,6 +335,11 @@ def fast_stream_combined_result(
                 "voiceStyle": item.get("voiceStyle"),
                 "voiceTone": item.get("voiceTone"),
                 "voiceIntensity": item.get("voiceIntensity"),
+                "speechPace": item.get("speechPace"),
+                "speechSpeed": item.get("speechSpeed"),
+                "textOnlyDelivery": bool(item.get("textOnlyDelivery")),
+                "speechUnavailableReason": str(item.get("speechUnavailableReason") or ""),
+                "ttsUnavailableReason": str(item.get("ttsUnavailableReason") or ""),
                 "boundaryAfter": str(item.get("boundaryAfter") or "continue"),
             }
             for item in utterances

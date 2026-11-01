@@ -124,37 +124,33 @@ class VoicePresetCatalog:
         # A clean developer checkout receives this directory from bootstrap_dev.ps1.
         catalog = self.read_json(self.presets_path(), {})
         catalog = catalog if isinstance(catalog, dict) else {}
-        supported = self.read_json(self.defaults_path(), {}).get(
-            "supportedPresets", ["emotionclarity_v7_retrained_short", "emotionclarity_v6"])
+        defaults = self.read_json(self.defaults_path(), {})
+        supported = defaults.get(
+            "supportedPresets", ["emotionclarity_v7_retrained_short"])
         # The shipped catalog owns selectable presets. An older downloaded asset
         # bundle may still contain retired models, but must not expose them again.
         voice_root = self.voice_runtime_root()
         bundled = self._load_portable_voice_presets(voice_root)
         portable_presets = {key: bundled[key] for key in supported if key in bundled}
+        for key, preset in portable_presets.items():
+            definition = catalog.get(key, {})
+            for field in ("label", "description"):
+                if field in definition:
+                    preset[field] = definition[field]
+            # The catalog owns the active weight selection, including when an
+            # older bundle still names a retired target. Resolve this shared
+            # weight through the bundle so portable paths stay self-contained.
+            if defaults.get("sovitsModelSource") == "bootstrapSovitsModel":
+                preset["sovitsModel"] = preset["bootstrapSovitsModel"]
         if portable_presets and "custom" in bundled:
             portable_presets["custom"] = bundled["custom"]
         if portable_presets:
             return portable_presets
 
         if self.release_mode():
-
-            # Compatibility for portable folders produced before the multi-preset manifest.
-            shared = {
-                "bootstrapGptModel": str(voice_root / "emotionlite-bootstrap.ckpt"),
-                "bootstrapSovitsModel": str(voice_root / "emotionlite-bootstrap.pth"),
-                "refAudio": str(voice_root / "refs" / "audio" / "CRS_0659.wav"),
-                "refText": str(voice_root / "refs" / "text" / "calm_normal_CRS_0659.txt"),
-            }
-            return {
-                "emotionclarity_v6": {
-                    "label": "EmotionClarity V6（清晰推荐）",
-                    "description": "V4-E2 音色权重、EmotionLite 兼容引导与 V6 清晰参考。",
-                    "gptModel": str(voice_root / "emotiondetail_v4-e2.ckpt"),
-                    "sovitsModel": str(voice_root / "emotiondetail_v4_e2_s328.pth"),
-                    "styleMap": str(voice_root / "presets" / "emotionclarity_v6" / "style_map.json"),
-                    **shared,
-                },
-            }
+            # A release needs the supported bundle. Do not silently reconnect
+            # a retired model or return unverified paths from a legacy layout.
+            return {}
         return {key: catalog[key] for key in (*supported, "custom") if key in catalog}
 
 

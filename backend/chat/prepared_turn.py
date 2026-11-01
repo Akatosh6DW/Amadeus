@@ -181,8 +181,22 @@ def persist_prepared_turn(
     """在任何外部副作用之前保存本轮唯一的路由解释。"""
 
     payload = {"stateVersion": 2, **prepared.to_dict()}
+    previous = services.store.read(str(payload.get("requestId") or ""))
     services.store.write(payload)
     request_id = str(payload.get("requestId") or "")
+    if (
+        isinstance(previous, Mapping)
+        and previous.get("requestId") == request_id
+        and previous.get("interpretedInput") == payload.get("interpretedInput")
+    ):
+        changed = [key for key, value in payload.items() if previous.get(key) != value]
+        if changed:
+            services.runtime.write_log(
+                "prepared_turn_revised", requestId=request_id, changedFields=changed,
+                researchPolicy=str((payload.get("researchDecision") or {}).get("policy") or ""),
+                requiredTools=(payload.get("capabilityEnvelope") or {}).get("required_tools") or [],
+            )
+        return payload
     interpreted = (
         payload.get("interpretedInput")
         if isinstance(payload.get("interpretedInput"), dict)

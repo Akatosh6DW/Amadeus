@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from typing import Any, Mapping, Sequence
-from agent.tool_arguments import TRANSPORT_ARGUMENT_FIELDS, file_tool_argument_error
+from agent.tool_arguments import TRANSPORT_ARGUMENT_FIELDS, tool_argument_error
 from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
 from agent.todo_architecture import TodoCommand, TodoTargetRef
 from tools.safe_web import canonicalize_public_url
@@ -25,7 +25,12 @@ def canonical_tool_arguments(name: str, value: Any) -> dict[str, Any]:
     """
     ignored = TRANSPORT_ARGUMENT_FIELDS
     args = {key: val for key, val in value.items() if key not in ignored} if isinstance(value, Mapping) else {}
-    if file_tool_argument_error(name, args):
+    if name in {"todo_manage", "bookmark_manage", "qq_manage", "qq_space_write",
+                "qq_remember_alias", "qq_person_memory", "voice_configure"}:
+        args.setdefault("commitIntent", args.pop("commit_intent", True))
+    if name in {"web_search", "read_web_page"}:
+        args.pop("researchDepth", None)  # Effort selection does not change the requested evidence.
+    if tool_argument_error(name, args):
         return args  # Retain invalid input for diagnostics; never substitute a different target.
     if name in {"get_system_time", "capture_screen", "capture_camera"}:
         return {}
@@ -127,6 +132,23 @@ def tool_arguments_match(name: str, supplied: Any, planned: Any) -> bool:
     return actual == expected
 
 
+def tool_steps_match(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Match two plan steps by the operation they execute.
+
+    ``stepId`` and list position are transport/state bookkeeping.  The
+    executable identity is the tool name plus its schema-aware arguments.
+    This helper deliberately does not compare status or receipt fields.
+    """
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return False
+    name = str(left.get("name") or left.get("tool") or "").strip()
+    other_name = str(right.get("name") or right.get("tool") or "").strip()
+    if not name or name != other_name:
+        return False
+    return tool_arguments_match(name, left.get("args", left.get("arguments", {})),
+                                right.get("args", right.get("arguments", {})))
+
+
 def normalized_tool_plan(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise ValueError("tool plan must be a list of {stepId,name,args}")
@@ -147,6 +169,74 @@ def normalized_tool_plan(value: Any) -> list[dict[str, Any]]:
     return steps
 
 
+def reconcile_tool_plan(current: Sequence[Any], proposed: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Carry safe host identity and real receipts into a replacement plan.
+
+    A model may restate the same operation with a new ``stepId`` or in a new
+    order.  A replacement must still refer to the host step that already owns
+    its execution history; otherwise a successful side effect can be exposed
+    as a fresh pending step.  Matching is one-to-one and operation-based, so a
+    changed argument creates a fresh step.  Ambiguous duplicate operations are
+    left fresh unless the proposed ID identifies exactly one prior step.
+
+    Only backend progress is copied.  Model-provided status/receipt fields
+    have already been removed by :func:`normalized_tool_plan`.
+    """
+    result = deepcopy(list(proposed))
+    prior = [item for item in current if isinstance(item, Mapping) and item.get("name")]
+    matches: list[Mapping[str, Any] | None] = []
+    consumed: set[int] = set()
+
+    for item in result:
+        candidates = [
+            (index, old)
+            for index, old in enumerate(prior)
+            if index not in consumed and tool_steps_match(item, old)
+            and str(old.get("status") or "pending") not in {"invalidated", "cancelled"}
+        ]
+        if len(candidates) > 1:
+            exact = [candidate for candidate in candidates
+                     if str(item.get("stepId") or "") == str(candidate[1].get("stepId") or "")]
+            candidates = exact if len(exact) == 1 else []
+        if len(candidates) == 1:
+            index, old = candidates[0]
+            consumed.add(index)
+            matches.append(old)
+        else:
+            matches.append(None)
+
+    reserved_ids = {
+        str(old.get("stepId"))
+        for old in matches
+        if old is not None and str(old.get("stepId") or "")
+    }
+    used_ids: set[str] = set()
+    for index, (item, old) in enumerate(zip(result, matches)):
+        step_id = str(old.get("stepId")) if old is not None else str(item.get("stepId") or "")
+        if not step_id or step_id in used_ids or (old is None and step_id in reserved_ids):
+            step_id = f"step-{index + 1}"
+            suffix = 1
+            while step_id in used_ids or step_id in reserved_ids:
+                suffix += 1
+                step_id = f"step-{index + 1}-{suffix}"
+        item["stepId"] = step_id
+        used_ids.add(step_id)
+        if old is None:
+            continue
+        status = str(old.get("status") or "pending")
+        has_receipt = bool(old.get("receiptId") or old.get("receiptIds"))
+        # A completed status without a backend receipt is not execution
+        # evidence.  Keep this replacement pending rather than trusting it.
+        if status == "completed" and not has_receipt:
+            continue
+        if status in {"pending", "failed", "completed"}:
+            item["status"] = status
+            for key in ("receiptId", "receiptIds"):
+                if key in old:
+                    item[key] = deepcopy(old[key])
+    return result
+
+
 def tool_plan_identity(value: Any) -> list[dict[str, Any]]:
     """Return the safe same-turn identity for an executable tool plan.
 
@@ -162,7 +252,7 @@ def tool_plan_identity(value: Any) -> list[dict[str, Any]]:
         name = str(step["name"])
         if DEFAULT_TOOL_REGISTRY.get(name) is None:
             raise ValueError(f"tool schema is unknown: {name}")
-        if file_tool_argument_error(name, step["args"]):
+        if tool_argument_error(name, step["args"]):
             raise ValueError(f"tool arguments are invalid: {name}")
         identity.append({
             "stepId": step["stepId"],
@@ -189,7 +279,14 @@ def tool_plan_violations(task: Mapping[str, Any], requests: Sequence[Mapping[str
     for request in requests:
         name = str(request.get("name") or request.get("tool") or "")
         step_id = str(request.get("stepId") or "")
-        candidates = [step for step in steps if (str(step.get("stepId")) == step_id if step_id else step.get("name") == name)]
+        named = [step for step in steps if step.get("name") == name]
+        # Step IDs are host-owned bookkeeping.  A model may return a new ID
+        # while restating the same operation; use the ID when it identifies a
+        # current step, otherwise fall back to its unique name+arguments.
+        candidates = ([step for step in named if str(step.get("stepId")) == step_id]
+                      if step_id else named)
+        if step_id and not candidates:
+            candidates = named
         if not candidates:
             if step_id or steps:
                 violations.append("tool_not_in_current_plan:" + name)
@@ -212,10 +309,12 @@ def tool_plan_violations(task: Mapping[str, Any], requests: Sequence[Mapping[str
 def tool_step_binding(task: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
     if tool_plan_violations(task, [request]):
         return {}
-    candidates = [step for step in task.get("plan", []) if isinstance(step, Mapping)
-                  and step.get("name") == request.get("name")
-                  and (not request.get("stepId") or request["stepId"] == step.get("stepId"))
-                  and tool_arguments_match(str(step.get("name")), request.get("args"), step.get("args"))]
+    named = [step for step in task.get("plan", []) if isinstance(step, Mapping)
+             and step.get("name") == request.get("name")]
+    exact = [step for step in named
+             if request.get("stepId") and request["stepId"] == step.get("stepId")]
+    candidates = exact or [step for step in named
+                           if tool_arguments_match(str(step.get("name")), request.get("args"), step.get("args"))]
     if len(candidates) != 1:
         return {}
     return {"taskId": task.get("taskId"), "planRevision": task.get("planRevision", 0),
@@ -232,6 +331,17 @@ def receipt_matches_request(receipt: Mapping[str, Any], request: Mapping[str, An
         return False
     if (name == "read_attachment" and receipt.get("name") in {"read_file", "read_image"}
             or name == "read_image" and receipt.get("name") == "read_image"):
+        # Workspace paths are executed by the real image adapter and have a
+        # normal request signature.  Only upload-store receipts participate in
+        # the pre-executed attachment shortcut, so a path can never be
+        # mistaken for an already-read upload.
+        if name == "read_image" and "path" in args:
+            try:
+                original = json.loads(receipt.get("_cognitiveRequestSignature") or "{}")
+            except (TypeError, ValueError):
+                return False
+            return (receipt.get("name") == name == original.get("name")
+                    and tool_arguments_match(str(name), original.get("args"), args))
         if set(args) - {"attachmentId", "id", "fileName", "name"}:
             return False
         target = args.get("attachmentId") or args.get("id")
@@ -276,8 +386,6 @@ def project_tool_plan_receipts(state: Mapping[str, Any], evidence: Mapping[str, 
         if not isinstance(entry, Mapping) or entry.get("historical"):
             continue
         receipt = entry.get("receipt") or {}
-        if isinstance(receipt, Mapping) and receipt.get("attempted") is False:
-            continue
         binding = receipt.get("_cognitiveStepBinding") if isinstance(receipt, Mapping) else None
         if not isinstance(binding, Mapping) or binding.get("taskId") != task.get("taskId"):
             continue
@@ -288,10 +396,16 @@ def project_tool_plan_receipts(state: Mapping[str, Any], evidence: Mapping[str, 
                 continue
             if step.get("status") in {"invalidated", "cancelled"}:
                 continue
+            # Admission feedback is evidence that the host rejected the call
+            # before execution. It must never advance the durable plan, even
+            # when a malformed adapter/test receipt incorrectly says ok=true.
+            if receipt.get("attempted") is False or receipt.get("error") == "cognitive_task_constraint":
+                continue
             # A later rejected retry cannot undo an already successful action.
             if step.get("status") != "completed":
                 step["status"] = "completed" if receipt.get("ok") else "failed"
                 step["receiptId"] = receipt.get("toolCallId")
+                step["attempted"] = receipt.get("attempted") is not False
     return result
 
 
@@ -319,7 +433,7 @@ def project_durable_tool_progress(connection: Any, state: Mapping[str, Any], *,
     evidence = {}
     for encoded, in rows:
         receipt = json.loads(encoded)
-        if not receipt.get("toolCallId") or receipt.get("attempted") is False:
+        if not receipt.get("toolCallId"):
             continue
         try:
             request = json.loads(receipt.get("_cognitiveRequestSignature") or "{}")

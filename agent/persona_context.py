@@ -87,6 +87,7 @@ class PersonaContextSnapshot:
     fallback_reason: str | None
     legacy_module_ids: tuple[str, ...]
     retrieval_context_source: str = ""
+    reply_layers: Any = None
 
     @property
     def provider_module_ids(self) -> tuple[str, ...]:
@@ -96,7 +97,10 @@ class PersonaContextSnapshot:
 
     @property
     def uses_hybrid_provider_context(self) -> bool:
-        return self.mode == PersonaContextMode.ON.value
+        # Historical name: both the hybrid Kernel and an explicitly selected
+        # corpus persona own a frozen prompt. Repairs must not reload the
+        # default Kurisu system prompt for a Tieba turn.
+        return self.reply_layers is not None or self.mode in {PersonaContextMode.ON.value, 'tieba', 'kangba'}
 
     def safe_diagnostic(self) -> dict[str, Any]:
         """Return telemetry with no raw query, system prompt, or capsule body."""
@@ -113,7 +117,7 @@ class PersonaContextSnapshot:
             "kernelFingerprint": self.kernel_fingerprint,
             "fallbackReason": self.fallback_reason or "",
             "legacyModuleIds": list(self.legacy_module_ids),
-            "providerContext": "kernel_hybrid" if self.uses_hybrid_provider_context else "legacy",
+            "providerContext": f"{self.mode}_corpus" if self.mode in {'tieba', 'kangba'} else "kernel_hybrid" if self.uses_hybrid_provider_context else "legacy",
             "retrievalContextSource": self.retrieval_context_source,
         }
 
@@ -277,8 +281,14 @@ def build_off_persona_context_snapshot(
     legacy_system_prompt: str,
     legacy_persona_prompt: str,
     legacy_module_ids: Sequence[str],
+    provider_mode: str = PersonaContextMode.OFF.value,
+    retrieval_context_source: str = '',
 ) -> PersonaContextSnapshot:
-    """Build the legacy/off snapshot without touching Kernel or ONNX assets."""
+    """Build a fixed prompt snapshot without touching Kernel or ONNX assets.
+
+    The internal corpus provider supplies its mode so diagnostics and the
+    snapshot ID describe the prompt actually used, including during repairs.
+    """
 
     query = build_retrieval_query(current_user_message, messages, resolution)
     query_hash = runtime_fingerprint(query, length=32)
@@ -289,7 +299,7 @@ def build_off_persona_context_snapshot(
         registry_generation=0,
         relationship_generation=int(relationship_generation),
         query_hash=query_hash,
-        mode=PersonaContextMode.OFF.value,
+        mode=provider_mode,
         kernel_fingerprint="",
         selected=(),
         legacy_module_ids=legacy_ids,
@@ -302,7 +312,7 @@ def build_off_persona_context_snapshot(
         registry_generation=0,
         relationship_generation=int(relationship_generation),
         query_hash=query_hash,
-        mode=PersonaContextMode.OFF.value,
+        mode=provider_mode,
         selected_skills=(),
         candidates=(),
         system_prompt=system_prompt,
@@ -311,6 +321,7 @@ def build_off_persona_context_snapshot(
         kernel_fingerprint="",
         fallback_reason=None,
         legacy_module_ids=legacy_ids,
+        retrieval_context_source=retrieval_context_source,
     )
 
 

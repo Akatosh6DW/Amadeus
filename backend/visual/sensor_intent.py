@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 import re
 
-from backend.tools.validation import SENSOR_TOOL_NAMES, structured_sensor_authorized
 
 def screen_history_request_mode(text: str) -> str:
     """Classify explicit references to saved screenshots.
@@ -134,25 +133,13 @@ def constrain_attachment_sensor_requests(
     *,
     has_bound_attachment: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Keep a newly bound attachment authoritative over unrelated sensors."""
+    """Preserve model-selected calls when the turn also contains an attachment.
 
-    normalized = [dict(item) for item in requests if isinstance(item, dict)]
-    if not has_bound_attachment:
-        return normalized, []
-    explicitly_requested = explicitly_requested_sensor_tools(user_message)
-    accepted: list[dict[str, Any]] = []
-    rejected: list[dict[str, Any]] = []
-    for item in normalized:
-        name = str(item.get("name") or "").strip()
-        if (
-            name in SENSOR_TOOL_NAMES
-            and name not in explicitly_requested
-            and not structured_sensor_authorized(item)
-        ):
-            rejected.append(item)
-        else:
-            accepted.append(item)
-    return accepted, rejected
+    An attachment is evidence, not a permission override. The executor checks
+    the configured screen/camera permissions; requiring a second selection
+    declaration here previously discarded valid calls before that check.
+    """
+    return [dict(item) for item in requests if isinstance(item, dict)], []
 
 
 def visual_followup_tool_name(user_message: str, resolution: dict[str, Any] | None) -> str:

@@ -72,8 +72,7 @@ function Find-Conda {
         (Join-Path $condaRoot "Scripts\conda.exe"),
         (Join-Path $env:USERPROFILE "miniforge3\Scripts\conda.exe"),
         (Join-Path $env:USERPROFILE "anaconda3\Scripts\conda.exe"),
-        (Join-Path $env:LOCALAPPDATA "miniforge3\Scripts\conda.exe"),
-        "D:\Anaconda\Scripts\conda.exe"
+        (Join-Path $env:LOCALAPPDATA "miniforge3\Scripts\conda.exe")
     )
     foreach ($candidate in $candidates | Where-Object { $_ } | Select-Object -Unique) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
@@ -363,9 +362,10 @@ Ensure-Git -Conda $conda
 Ensure-WebView2
 Ensure-GptSovitsSource
 $desktopPython = Ensure-CondaEnvironment -Conda $conda -Prefix $desktopEnv -PythonVersion $environment.python.desktop
-if (-not (Test-PythonImports -Python $desktopPython -Modules @("webview", "PIL", "pypdf", "apscheduler", "dateutil", "ddgs", "certifi", "primp", "lxml", "cv2", "numpy", "onnxruntime", "tokenizers")) -or $Force) {
+if (-not (Test-PythonImports -Python $desktopPython -Modules @("webview", "PIL", "pypdf", "apscheduler", "dateutil", "ddgs", "certifi", "primp", "lxml", "cv2", "numpy", "onnxruntime", "tokenizers", "aiohttp")) -or $Force) {
     Install-PipRequirements -Python $desktopPython -Requirements (Join-Path $root "requirements-deploy.txt")
 }
+Invoke-Native -FilePath $desktopPython -Arguments @("-X", "utf8", "-m", "integrations.qq.component", "--stage-bundle", (Join-Path $root '.runtime-assets\qq-agent'))
 Ensure-VoiceEnvironment -Conda $conda -SelectedBackend $selectedBackend
 Ensure-Rhubarb
 $assetArguments = @("-X", "utf8", "tools\install_deployment_assets.py")

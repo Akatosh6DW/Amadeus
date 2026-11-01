@@ -27,7 +27,7 @@ from backend.research.sources import (
 )
 from backend.research.current_info import web_research_temporal_status
 from tools.safe_web import SafeWebError, canonicalize_public_url
-from tools.web_text import extract_query_evidence_chunks, project_web_text
+from tools.web_text import extract_query_evidence_chunks, project_web_text, rebind_reading_summary
 
 
 def extract_relevant_evidence_chunks(
@@ -285,6 +285,9 @@ def merge_web_search_results(primary: dict[str, Any], supplemental: dict[str, An
                 item.get("sourceUid")
                 or stable_source_uid(str(item.get("url") or ""))
             )
+            reading = rebind_reading_summary(source, source_uid=item["sourceUid"], url=str(item.get("url") or ""))
+            if reading is not None:
+                item["readingSummary"] = reading
             item["id"] = f"S{len(sources) + 1}"
             for key in [*aliases, f"uid:{item['sourceUid']}"]:
                 positions[key] = len(sources)
@@ -304,7 +307,7 @@ _SOURCE_CLASSIFICATION_KEYS = (
     "sourceTier", "sourceType", "sourcePolicyId", "entityMatch", "qualityFlags",
 )
 _FETCH_BUNDLE_KEYS = (
-    "body", "fetchStatus", "bodyError", "bodyChunks", "evidenceChunks",
+    "body", "fetchStatus", "bodyError", "bodyChunks", "evidenceChunks", "readingSummary",
     "truncated", "promptInjectionMarkers", "mimeType", "accessedAt",
     "requestedUrl", "finalUrl",
 )
@@ -341,6 +344,10 @@ def _merge_web_source(existing: dict[str, Any], incoming: dict[str, Any]) -> Non
         existing["url"] = canonicalize_public_url(str(winner["url"]))
         existing["canonicalUrl"] = existing["url"]
         existing["domain"] = urllib.parse.urlsplit(existing["url"]).hostname or ""
+    reading = rebind_reading_summary(winner, source_uid=str(existing.get("sourceUid") or ""),
+                                    url=str(existing.get("url") or ""))
+    if reading is not None:
+        existing["readingSummary"] = reading
     _merge_source_classification(existing, winner)
 
 

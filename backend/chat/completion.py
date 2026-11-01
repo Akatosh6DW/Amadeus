@@ -1,11 +1,17 @@
-"""回复完成核验与有限改写。
+"""回复交付与任务状态分离。
 
-本模块决定候选是否满足本轮交付契约，不执行工具，也不提交会话或认知状态。
-模型审计、附件事实与应用配置通过窄接口读取；已通过专用核验的事实边界继续
-由其原核验结果负责，不能被通用语义审计覆盖。最多改写两次后明确失败。
+当前完成入口只调用统一交付边界，不执行工具、不新增语义审计或改写轮次。
+任务成功仍由宿主验证的执行结果决定；兼容诊断函数不再否决有效正文。
 """
 
 from __future__ import annotations
+from backend.providers.reply_protocol import (
+    is_reply_envelope,
+    looks_like_truncated_reply_envelope,
+    parse_json_mapping,
+    unwrap_reply_envelope,
+    visible_reply,
+)
 
 from copy import deepcopy
 import re
@@ -13,9 +19,6 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 import uuid
 
 from agent.action_grounding import PreparedTurn
-from agent.attachment_editing import ATTACHMENT_ACTION_RULE
-from agent.cognitive_brain import CognitiveProtocolError
-from agent.cognitive_finalization import FinalProjectionAuditRepairError
 from agent.dialogue_architecture import (
     TurnContract, UtteranceInterpretation, bind_missing_input_clarification_contract,
     contract_completion_issues, final_turn_envelope,
@@ -24,10 +27,8 @@ from agent.dialogue_waiting import synchronize_response_waiting
 from agent.fingerprints import runtime_fingerprint
 from agent.persona_context import PersonaContextSnapshot
 from backend.attachments.storage import safe_attachment_name
-from backend.chat.parsing import parse_json_object
 from backend.chat.reply import EMPTY_REPLY_FALLBACK
 from backend.common.values import clamp_float
-from backend.providers.errors import UpstreamProtocolError
 
 
 class CompletionModel(Protocol):
@@ -57,28 +58,38 @@ class CompletionRuntime(Protocol):
 def reply_integrity_issues(value: Any) -> list[str]:
     """Detect transport/normalization fragments without judging the topic."""
 
-    parsed = parse_json_object(value) if isinstance(value, str) else value if isinstance(value, dict) else {}
-    reply = str((parsed or {}).get("reply") or value or "").strip()
+    if isinstance(value, Mapping) and (
+        str(value.get("structuredOutputMode") or "").strip().lower()
+        == "truncated_envelope"
+        or (
+            value.get("structuredOutputInvalid")
+            and str(value.get("structuredOutputMode") or "").strip().lower()
+            in {"truncated_envelope", "plain_json"}
+        )
+    ):
+        # normalize_model_reply exposes the parser mode so a repaired fragment
+        # cannot be mistaken for ordinary plain text at delivery time.
+        return ["structured_transport_invalid"]
+
+    parsed = parse_json_mapping(value) if isinstance(value, str) else value if isinstance(value, dict) else None
+    if isinstance(parsed, Mapping) and is_reply_envelope(parsed):
+        parsed = unwrap_reply_envelope(parsed)
+        reply = visible_reply(parsed)
+    elif isinstance(value, str):
+        if looks_like_truncated_reply_envelope(value):
+            return ["structured_transport_invalid"]
+        # A complete JSON/Code example is legitimate visible text when it does
+        # not have the shape of this application's reply envelope.
+        reply = value.strip()
+    else:
+        reply = visible_reply(parsed) if isinstance(parsed, Mapping) else ""
     if not reply:
         return ["empty_answer"]
-    issues: list[str] = []
-    if re.fullmatch(
-        r"(?:\s*\[S\d+\]\s*)+(?:[。.!！？，,；;：:]\s*)?",
-        reply,
-        re.I,
-    ):
-        issues.append("citation_only_answer")
-    elif re.search(r"^(?:\[S\d+\]\s*)+[。.!！？，,；;：:]", reply, re.I):
-        issues.append("orphaned_leading_citation")
-    if re.search(r"^[。！？；：、]", reply):
-        issues.append("orphaned_leading_punctuation")
-    if re.search(
-        r'["\'](?:spokenTextJa|emotion|gesture|voiceStyle|knowledgeConfidence|researchNeeded)["\']\s*:',
-        reply,
-        flags=re.I,
-    ):
-        issues.append("structured_transport_leak")
-    return issues
+    # Citation placement and leading punctuation are presentation/grounding
+    # metadata.  They do not identify a transport fragment: a reply may start
+    # with a citation or punctuation and still be the model's complete answer.
+    # Keep this function limited to structural transport failures and emptiness.
+    return []
 
 
 def visual_grounding_text_fingerprint(candidate: Mapping[str, Any]) -> str:
@@ -496,340 +507,60 @@ def ensure_turn_contract_completion(
     runtime: CompletionRuntime,
     log_event: Callable[..., Any],
 ) -> dict[str, Any]:
-    """按附件、专用核验、语义审计和有限改写顺序完成交付检查。"""
-    candidate = synchronize_response_waiting(result)
-    attachment_issues = attachments.issues(candidate, cognitive_body)
+    """Validate deliverability once; task success remains a separate receipt fact."""
+    from backend.chat.delivery import require_delivery
+
+    candidate = synchronize_response_waiting(dict(result))
+    annotations = []
+    try:
+        attachment_issues = list(attachments.issues(candidate, cognitive_body))
+    except Exception as error:
+        attachment_issues = ["attachment_diagnostic_unavailable:" + type(error).__name__]
     if candidate.get("_fileOutputExpected") and not candidate.get("_fileOutputs") and not candidate.get("files"):
         attachment_issues.append("required_generated_file_missing")
     if attachment_issues:
-        repair_report = {"problems": list(dict.fromkeys(attachment_issues)), "repair": ATTACHMENT_ACTION_RULE,
-                         "attachmentCapabilities": attachments.capabilities(cognitive_body or {})}
-        if isinstance(cognitive_body, dict) and attachments.has_cognitive_state(cognitive_body):
-            raise FinalProjectionAuditRepairError(candidate, repair_report, repair_report)
-        if allow_rewrite:
-            candidate = model.rewrite(settings, interpretation, contract, candidate, repair_report,
-                request_id=request_id, persona_snapshot=persona_snapshot, task_dialogue=task_dialogue)
-            return ensure_turn_contract_completion(settings, interpretation, contract, candidate,
-                model=model, attachments=attachments, runtime=runtime, log_event=log_event,
-                request_id=request_id, allow_rewrite=False, persona_snapshot=persona_snapshot,
-                cognitive_body=cognitive_body, upstream_finish_reason=upstream_finish_reason,
-                clarification_context=clarification_context, task_dialogue=task_dialogue)
-        raise CognitiveProtocolError("attachment_delivery_invalid:" + ",".join(attachment_issues))
+        candidate["attachmentDeliveryIssues"] = list(dict.fromkeys(attachment_issues))
+        annotations.extend(("legacy.task_completion", issue) for issue in attachment_issues)
+    candidate = require_delivery(candidate, settings=settings, annotations=annotations,
+                                 logger=log_event, request_id=request_id)
     verification = candidate.get("_cognitiveOutcomeVerification") or {}
+    outcome = deepcopy(candidate.get("_cognitiveOutcome") or candidate.get("outcome") or {})
+    if outcome.get("status") == "needs_input":
+        contract = bind_missing_input_clarification_contract(contract, semantic_text=interpretation.semantic_text)
+    # A deliverable answer is not proof that an external operation completed.
+    # Only the executor/cognitive receipt verifier owns operation success.
     if verification.get("valid") is True:
-        if not str(candidate.get("reply") or "").strip():
-            raise CognitiveProtocolError("final_answer_missing")
-        if (candidate.get("_cognitiveOutcome") or candidate.get("outcome") or {}).get("status") == "needs_input":
-            contract = bind_missing_input_clarification_contract(contract, semantic_text=interpretation.semantic_text)
-        # Structural outcome validation does not claim semantic correctness.
-        # Preserve partial/failed/needs_input task status during delivery.
-        completed_acts = tuple(contract.required_acts)
-        verification_method = "cognitive_outcome_validation"
-        if completed_acts is not None:
-            candidate.update({
-                "outcome": deepcopy(candidate.get("_cognitiveOutcome") or candidate.get("outcome") or {}),
-                "outcomeVerification": deepcopy(verification),
-                "completedActs": list(completed_acts),
-                "completedActsProvided": True,
-                "turnContractVerification": verification_method,
-                "turnContractSemanticAuditCalls": 0,
-                "turnContractRewriteCalls": 0,
-                "turnContract": contract.to_dict(),
-                "utteranceInterpretation": interpretation.to_dict(),
-                "standalone": True,
-                "standaloneProvided": True,
-                "turnComplete": True,
-                "turnCompleteProvided": True,
-                "dependsOnUndeliveredPrefix": False,
-                "dependsOnUndeliveredPrefixProvided": True,
-            })
-            candidate["finalTurnEnvelope"] = final_turn_envelope(
-                candidate, contract, turn_id=f"{request_id}:turn",
-                delivery_path="atomic" if allow_rewrite else "stream",
-                upstream_finish_reason=upstream_finish_reason or None,
-            ).to_dict()
-            return candidate
+        candidate["outcome"] = outcome
+        candidate["outcomeVerification"] = deepcopy(verification)
+    if not isinstance(candidate.get('completedActs'), list):
+        candidate['completedActs'] = []
+        candidate['completedActsProvided'] = False
+    candidate.update({
+        "turnContractVerification": "host_delivery_boundary",
+        "turnContractSemanticAuditCalls": 0,
+        "turnContractRewriteCalls": 0,
+        "turnContract": contract.to_dict(),
+        "utteranceInterpretation": interpretation.to_dict(),
+        "standalone": True, "standaloneProvided": True,
+        "turnComplete": True, "turnCompleteProvided": True,
+        "deliveryComplete": True,
+        # A cognitive stamp is not evidence that the requested artifact exists.
+        "taskCompletionVerified": (
+            verification.get('valid') is True
+            and outcome.get('status') == 'completed'
+            and not attachment_issues
+        ),
+        "dependsOnUndeliveredPrefix": False,
+        "dependsOnUndeliveredPrefixProvided": True,
+    })
     if upstream_finish_reason:
         candidate["upstreamFinishReason"] = upstream_finish_reason
-    source = str(candidate.get("source") or "")
-    trusted_local = bool(
-        not runtime.configured(settings)
-        or (
-            source
-            and source not in {"api", "api-stream", "local-empty-recovery"}
-            and not candidate.get("_fileOutputExpected")
-        )
-    )
-    visual_terminal_boundary = bool(candidate.get("visualGroundingTerminalBoundary"))
-    grounding_terminal_boundary = bool(candidate.get("groundingGateTerminalBoundary"))
-    evidence_limited_precision_audited = bool(
-        candidate.get("evidenceLimitedPrecisionAudited")
-        and not candidate.get("webSynthesisUnverified")
-        and not candidate.get("toolGroundingUnverified")
-    )
-    visual_grounding_audit = (
-        candidate.get("visualGroundingAudit")
-        if isinstance(candidate.get("visualGroundingAudit"), dict)
-        else {}
-    )
-    verified_visual_answer = bool(
-        visual_grounding_audit.get("passes")
-        and str(candidate.get("visualGroundingTextFingerprint") or "")
-        == visual_grounding_text_fingerprint(candidate)
-    )
-    if visual_terminal_boundary:
-        # This system-owned boundary is the completed safe outcome of a visual
-        # task whose factual candidate failed evidence review.  Sending it to a
-        # generic contract rewriter would discard the visual packet and could
-        # recreate the very hallucination that was just blocked.
-        candidate.update({
-            "completedActs": list(contract.required_acts),
-            "completedActsProvided": True,
-            "standalone": True,
-            "standaloneProvided": True,
-            "dependsOnUndeliveredPrefix": False,
-            "dependsOnUndeliveredPrefixProvided": True,
-            "turnComplete": True,
-            "turnCompleteProvided": True,
-            "turnContractVerification": "visual_fail_closed_boundary",
-        })
-    elif grounding_terminal_boundary:
-        # The grounding gate owns this fact-free report.  A generic model audit
-        # has no access to the failed evidence receipt and could reintroduce the
-        # discarded claim, so preserve the typed safe outcome as-is.
-        candidate.update({
-            "completedActs": list(contract.required_acts),
-            "completedActsProvided": True,
-            "standalone": True,
-            "standaloneProvided": True,
-            "dependsOnUndeliveredPrefix": False,
-            "dependsOnUndeliveredPrefixProvided": True,
-            "turnComplete": True,
-            "turnCompleteProvided": True,
-            "turnContractVerification": "grounding_fail_closed_boundary",
-        })
-    elif verified_visual_answer:
-        # The exact bilingual text already passed the dedicated visual audit.
-        # A generic contract rewrite cannot see that evidence packet and must
-        # not overwrite an accepted answer with an unrelated hallucination.
-        candidate.update({
-            "completedActs": list(contract.required_acts),
-            "completedActsProvided": True,
-            "standalone": True,
-            "standaloneProvided": True,
-            "dependsOnUndeliveredPrefix": False,
-            "dependsOnUndeliveredPrefixProvided": True,
-            "turnComplete": True,
-            "turnCompleteProvided": True,
-            "turnContractVerification": "verified_visual_grounding",
-        })
-    elif evidence_limited_precision_audited:
-        # The evidence-limited precision pass is the semantic owner of this
-        # web answer.  Re-auditing it with the generic contract prompt would
-        # lose its source scope and spend another model call for the same text.
-        candidate.update({
-            "completedActs": list(contract.required_acts),
-            "completedActsProvided": True,
-            "standalone": True,
-            "standaloneProvided": True,
-            "dependsOnUndeliveredPrefix": False,
-            "dependsOnUndeliveredPrefixProvided": True,
-            "turnComplete": True,
-            "turnCompleteProvided": True,
-            "turnContractVerification": "evidence_limited_precision_audit",
-        })
-    elif trusted_local:
-        candidate.update({
-            "completedActs": list(contract.required_acts),
-            "completedActsProvided": True,
-            "standalone": True,
-            "standaloneProvided": True,
-            "dependsOnUndeliveredPrefix": False,
-            "dependsOnUndeliveredPrefixProvided": True,
-            "turnComplete": True,
-            "turnCompleteProvided": True,
-            "turnContractVerification": "trusted_local_route",
-        })
-    elif runtime.can_confirm_core(
-        candidate,
-        contract,
-        text_mutated=text_mutated,
-        upstream_finish_reason=upstream_finish_reason,
-    ):
-        candidate.update({
-            "completedActs": list(contract.required_acts),
-            "completedActsProvided": True,
-            "standalone": True,
-            "standaloneProvided": True,
-            "dependsOnUndeliveredPrefix": False,
-            "dependsOnUndeliveredPrefixProvided": True,
-            "turnComplete": True,
-            "turnCompleteProvided": True,
-            "turnContractVerification": "backend_core_dialogue",
-        })
-    reasons = completion_risk_reasons(
-        candidate,
-        contract,
-        text_mutated=text_mutated and not trusted_local,
-    )
-    if (
-        trusted_local
-        or visual_terminal_boundary
-        or grounding_terminal_boundary
-        or verified_visual_answer
-        or evidence_limited_precision_audited
-    ):
-        # Local simulation and typed server-owned outcomes have no need for a
-        # generic semantic rewrite. Their completion metadata was established
-        # above from backend or dedicated evidence; do not turn a presentation
-        # heuristic into a call that can replace the accepted answer.
-        reasons = []
-    audit: dict[str, Any] = {}
-    semantic_audit_calls = 0
-    contract_rewrite_calls = 0
-    # These reasons describe backend-observable facts, not semantic quality.
-    # A model judge must never waive them merely by declaring that the prose
-    # answered the user: either the artifact exists or it does not.
-    hard_grounding_reasons = {
-        "nickname_reaction_grounding_violation",
-        "required_generated_file_missing",
-    }
-    if reasons:
-        log_event(
-            "turn_contract_semantic_audit_started",
-            requestId=request_id,
-            reasons=reasons,
-            coreDialogueProtocol=bool(candidate.get("coreDialogueProtocol")),
-            fieldRepairAttempted=bool(candidate.get("dialogueFieldRepairAttempted")),
-        )
-        semantic_audit_calls += 1
-        audit = model.audit(
-            settings,
-            interpretation,
-            contract,
-            candidate,
-            request_id=request_id,
-            clarification_context=clarification_context,
-            task_dialogue=task_dialogue,
-        )
-        contract, candidate, clarification_accepted = apply_missing_input_clarification_audit(
-            interpretation,
-            contract,
-            candidate,
-            audit,
-        )
-        if clarification_accepted:
-            reasons = []
-        elif audit.get("passes"):
-            if (
-                isinstance(candidate.get("actionReceipt"), Mapping)
-                or isinstance(candidate.get("actionReceipts"), list)
-            ):
-                candidate["externalActionOutcomeVerified"] = True
-            if str(candidate.get("memoryAction") or "none").strip().lower() != "none":
-                candidate["structuredSideEffectVerified"] = True
-            candidate.update({
-                "completedActs": list(audit.get("completedActs") or contract.required_acts),
-                "completedActsProvided": True,
-                "standalone": True,
-                "standaloneProvided": True,
-                "dependsOnUndeliveredPrefix": False,
-                "dependsOnUndeliveredPrefixProvided": True,
-                "turnComplete": True,
-                "turnCompleteProvided": True,
-                "turnContractVerification": "semantic_audit",
-            })
-            reasons = [item for item in reasons if item in hard_grounding_reasons]
-    max_contract_rewrite_calls = 2
-    while (
-        reasons
-        and allow_rewrite
-        and contract_rewrite_calls < max_contract_rewrite_calls
-    ):
-        contract_rewrite_calls += 1
-        candidate = model.rewrite(
-            settings,
-            interpretation,
-            contract,
-            candidate,
-            audit,
-            request_id=request_id,
-            persona_snapshot=persona_snapshot,
-            task_dialogue=task_dialogue,
-        )
-        reasons = completion_risk_reasons(candidate, contract)
-        if not reasons:
-            break
-        if reasons:
-            semantic_audit_calls += 1
-            audit = model.audit(
-                settings,
-                interpretation,
-                contract,
-                candidate,
-                request_id=request_id,
-                clarification_context=clarification_context,
-                task_dialogue=task_dialogue,
-            )
-            contract, candidate, clarification_accepted = apply_missing_input_clarification_audit(
-                interpretation,
-                contract,
-                candidate,
-                audit,
-            )
-            if clarification_accepted:
-                reasons = []
-            elif audit.get("passes"):
-                if (
-                    isinstance(candidate.get("actionReceipt"), Mapping)
-                    or isinstance(candidate.get("actionReceipts"), list)
-                ):
-                    candidate["externalActionOutcomeVerified"] = True
-                if str(candidate.get("memoryAction") or "none").strip().lower() != "none":
-                    candidate["structuredSideEffectVerified"] = True
-                candidate.update({
-                    "completedActs": list(audit.get("completedActs") or contract.required_acts),
-                    "completedActsProvided": True,
-                    "standalone": True,
-                    "standaloneProvided": True,
-                    "dependsOnUndeliveredPrefix": False,
-                    "dependsOnUndeliveredPrefixProvided": True,
-                    "turnComplete": True,
-                    "turnCompleteProvided": True,
-                    "turnContractVerification": "model_rewrite_and_audit",
-                })
-                reasons = [item for item in reasons if item in hard_grounding_reasons]
-    if reasons:
-        log_event(
-            "turn_contract_rejected",
-            requestId=request_id,
-            contract=contract.to_dict(),
-            reasons=reasons,
-            audit=audit,
-        )
-        raise UpstreamProtocolError(
-            "model reply did not complete the current Turn Contract: "
-            + ",".join(reasons)
-        )
-    final_attachment_issues = attachments.issues(candidate, cognitive_body)
-    if final_attachment_issues:
-        raise CognitiveProtocolError("attachment_delivery_invalid:" + ",".join(final_attachment_issues))
-    candidate["turnContract"] = contract.to_dict()
-    candidate["turnContractSemanticAuditCalls"] = semantic_audit_calls
-    candidate["turnContractRewriteCalls"] = contract_rewrite_calls
-    candidate["utteranceInterpretation"] = interpretation.to_dict()
-    envelope = final_turn_envelope(
-        candidate,
-        contract,
-        turn_id=f"{request_id or uuid.uuid4().hex}:turn",
+    candidate["finalTurnEnvelope"] = final_turn_envelope(
+        candidate, contract, turn_id=f"{request_id or uuid.uuid4().hex}:turn",
         delivery_path="atomic" if allow_rewrite else "stream",
         upstream_finish_reason=upstream_finish_reason or None,
-    )
-    candidate["finalTurnEnvelope"] = envelope.to_dict()
-    log_event(
-        "turn_contract_completed",
-        requestId=request_id,
-        verification=str(candidate.get("turnContractVerification") or "model_declaration"),
-        envelope=envelope.to_dict(),
-    )
+        delivery_validated=True,
+    ).to_dict()
+    log_event("turn_contract_completed", requestId=request_id,
+              verification="host_delivery_boundary", taskStatus=outcome.get("status", "unverified"))
     return candidate

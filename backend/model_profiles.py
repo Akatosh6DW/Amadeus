@@ -17,6 +17,14 @@ from typing import Any, Callable, Mapping
 import urllib.parse
 import uuid
 
+from backend.model_capacity import (
+    COMPACT_THRESHOLD_SETTING,
+    CONTEXT_LIMIT_SETTING,
+    normalize_model_capacity_settings,
+    model_capacity_profile,
+    model_capacity_suggestion,
+)
+
 
 PROFILE_VERSION = 1
 MAX_PROFILES = 32
@@ -30,6 +38,8 @@ NETWORK_MODES = frozenset({"auto", "direct", "system_proxy", "explicit_proxy"})
 PROFILE_FIELDS = (
     "apiEndpoint",
     "apiModel",
+    CONTEXT_LIMIT_SETTING,
+    COMPACT_THRESHOLD_SETTING,
     "apiNetworkMode",
     "apiProxyUrl",
     "useResponseFormat",
@@ -198,11 +208,17 @@ class ModelProfileService:
         cognitive = str(raw.get("cognitiveRepairModel") or "follow").strip().lower()
         if cognitive not in {"follow", "pro"}:
             cognitive = "follow"
+        capacity = normalize_model_capacity_settings(
+            raw,
+            endpoint=endpoint,
+            model=model,
+        )
         return {
             "id": profile_id,
             "name": name,
             "apiEndpoint": endpoint,
             "apiModel": model,
+            **capacity,
             "apiKey": key,
             "apiNetworkMode": mode,
             "apiProxyUrl": proxy,
@@ -213,6 +229,16 @@ class ModelProfileService:
 
     @staticmethod
     def _public_record(record: Mapping[str, Any]) -> dict[str, Any]:
+        capacity = model_capacity_profile(
+            record.get("apiEndpoint"), record.get("apiModel")
+        ).to_public_dict()
+        suggestion = model_capacity_suggestion(
+            record.get("apiEndpoint"), record.get("apiModel"),
+            record.get(CONTEXT_LIMIT_SETTING),
+        )
+        if suggestion:
+            capacity["suggestedLimit"] = suggestion["suggestedLimit"]
+            capacity["suggestionSource"] = suggestion["source"]
         return {
             key: record.get(key)
             for key in (
@@ -220,18 +246,36 @@ class ModelProfileService:
                 "name",
                 "apiEndpoint",
                 "apiModel",
+                CONTEXT_LIMIT_SETTING,
+                COMPACT_THRESHOLD_SETTING,
                 "apiNetworkMode",
                 "apiProxyUrl",
                 "useResponseFormat",
                 "cognitiveRepairModel",
                 "updatedAt",
             )
-        } | {"apiKeySet": bool(record.get("apiKey"))}
+        } | {
+            "apiKeySet": bool(record.get("apiKey")),
+            "apiContextCapacity": capacity,
+        }
 
     @staticmethod
     def _profile_matches(record: Mapping[str, Any], settings: Mapping[str, Any]) -> bool:
-        return all(record.get(key) == settings.get(key) for key in PROFILE_FIELDS) and (
-            str(record.get("apiKey") or "") == str(settings.get("apiKey") or "")
+        if any(
+            record.get(key) != settings.get(key)
+            for key in PROFILE_FIELDS
+            if key not in {CONTEXT_LIMIT_SETTING, COMPACT_THRESHOLD_SETTING}
+        ):
+            return False
+        current_capacity = normalize_model_capacity_settings(
+            settings,
+            endpoint=settings.get("apiEndpoint"),
+            model=settings.get("apiModel"),
+        )
+        return (
+            record.get(CONTEXT_LIMIT_SETTING) == current_capacity[CONTEXT_LIMIT_SETTING]
+            and record.get(COMPACT_THRESHOLD_SETTING) == current_capacity[COMPACT_THRESHOLD_SETTING]
+            and str(record.get("apiKey") or "") == str(settings.get("apiKey") or "")
         )
 
     def _ensure_current_snapshot(self, state: dict[str, Any], settings: Mapping[str, Any]) -> bool:
@@ -334,6 +378,12 @@ class ModelProfileService:
             "name": name,
             "apiEndpoint": endpoint,
             "apiModel": model,
+            CONTEXT_LIMIT_SETTING: body.get(
+                CONTEXT_LIMIT_SETTING, source.get(CONTEXT_LIMIT_SETTING)
+            ),
+            COMPACT_THRESHOLD_SETTING: body.get(
+                COMPACT_THRESHOLD_SETTING, source.get(COMPACT_THRESHOLD_SETTING)
+            ),
             "apiKey": key,
             "apiNetworkMode": mode,
             "apiProxyUrl": proxy,

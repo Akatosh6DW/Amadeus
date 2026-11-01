@@ -11,9 +11,29 @@
     let editing = false, editingId = null, dirty = false, busy = false, bound = false;
     let revision = 0, clearKey = false;
     const selected = () => profiles.find(p => p.id === selectedProfileId);
+    const optionalElement = name => el[name] || globalThis.document?.getElementById?.(name) || null;
+    const contextLimitInput = () => el.contextLimit || optionalElement("apiContextLimitInput");
+    const compactThresholdInput = () => el.compactThreshold || optionalElement("apiContextCompactThresholdInput");
+    const capacityHint = () => el.capacityHint || optionalElement("apiContextCapacityHint");
     function status(message, error = false) {
       el.status.textContent = message;
       el.status.classList.toggle("error", error);
+    }
+    function renderCapacityHint(profile = selected()) {
+      const hint = capacityHint();
+      if (!hint) return;
+      const metadata = profile?.apiContextCapacity;
+      if (!metadata?.known || !Number.isFinite(Number(metadata.contextLimit))) {
+        hint.textContent = "未确认该服务商的模型窗口；未知网关不会自动扩大容量。";
+        return;
+      }
+      const known = Number(metadata.contextLimit);
+      const configured = Number(profile?.apiContextLimit);
+      const suggested = Number(metadata.suggestedLimit);
+      const suffix = Number.isFinite(configured) && configured < known
+        ? `当前硬上限为 ${configured.toLocaleString()}，低于已知容量${Number.isFinite(suggested) ? `；可考虑上调至 ${suggested.toLocaleString()}` : ""}。`
+        : "当前硬上限采用已知模型容量。";
+      hint.textContent = `已确认模型容量约 ${known.toLocaleString()} tokens；${suffix}`;
     }
     function render(payload = {}) {
       if (Array.isArray(payload.profiles)) profiles = payload.profiles;
@@ -33,6 +53,7 @@
       el.create.disabled = busy || editing;
       for (const name of ["save", "saveUse", "cancel"]) el[name].disabled = busy || !editing;
       for (const name of ["name", "endpoint", "model", "apiKey", "networkMode", "proxy", "responseFormat", "cognitive"]) el[name].disabled = busy;
+      for (const input of [contextLimitInput(), compactThresholdInput()]) if (input) input.disabled = busy;
       if (el.clearKey) {
         el.clearKey.disabled = busy || !editingId || !profiles.find(p => p.id === editingId)?.apiKeySet;
         el.clearKey.textContent = clearKey ? "撤销移除 Key" : "移除此配置已保存的 Key";
@@ -41,6 +62,7 @@
       const active = profiles.find(p => p.id === activeProfileId);
       el.active.textContent = active ? `当前使用：${active.name}（${active.apiModel}）`
         : `当前使用：${getDraft()?.apiModel || "尚未配置"}（尚未绑定已保存配置）`;
+      renderCapacityHint();
       return { profiles: profiles.slice(), activeProfileId };
     }
     async function read(url, init) {
@@ -78,6 +100,10 @@
       el.proxy.value = p.apiProxyUrl || "";
       el.responseFormat.checked = p.useResponseFormat !== false;
       el.cognitive.value = p.cognitiveRepairModel || "follow";
+      const limitInput = contextLimitInput();
+      const thresholdInput = compactThresholdInput();
+      if (limitInput) limitInput.value = String(p.apiContextLimit ?? "");
+      if (thresholdInput) thresholdInput.value = String(p.apiContextCompactThreshold ?? "");
       if (el.keyHint) el.keyHint.textContent = p.apiKeySet ? "这套配置已保存 Key，留空或保持圆点即可保留。" : "这套配置尚未设置 Key。";
       el.save.textContent = isNew ? "保存配置" : "保存修改";
       status(isNew ? "正在新增配置；当前使用的配置保持不变。" : `正在编辑“${p.name}”；保存后可选择是否使用。`);
@@ -91,12 +117,16 @@
     }
     function draftPayload() {
       const key = el.apiKey.value.trim();
+      const limitInput = contextLimitInput();
+      const thresholdInput = compactThresholdInput();
       return {
         ...(editingId ? { id: editingId } : {}), name: el.name.value.trim(),
         apiEndpoint: el.endpoint.value.trim(), apiModel: el.model.value.trim(),
         apiKey: clearKey ? "__CLEAR__" : key && key !== savedApiKeyMask ? key : editingId ? "__KEEP__" : "__CLEAR__",
         apiNetworkMode: el.networkMode.value, apiProxyUrl: el.proxy.value.trim(),
         cognitiveRepairModel: el.cognitive.value, useResponseFormat: el.responseFormat.checked,
+        ...(limitInput ? { apiContextLimit: limitInput.value.trim() } : {}),
+        ...(thresholdInput ? { apiContextCompactThreshold: thresholdInput.value.trim() || null } : {}),
       };
     }
     async function useProfile(id) {
@@ -170,6 +200,9 @@
             render();
           }
         } });
+      }
+      for (const input of [contextLimitInput(), compactThresholdInput()]) {
+        for (const event of ["input", "change"]) input?.addEventListener(event, () => { if (editing) dirty = true; });
       }
       render(); return true;
     }

@@ -96,6 +96,8 @@ class MemoryUpdateService:
             candidate = self.ports.normalize_candidate(raw)
             if candidate is None:
                 continue
+            if not candidate.get("shouldSave", True):
+                continue
             content = str(candidate["content"]).strip(" ，,:：。！？?!")
             if not content or content in self.ports.generic_noise():
                 continue

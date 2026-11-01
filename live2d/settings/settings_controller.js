@@ -154,6 +154,24 @@
       }
     }
 
+    async function refreshFields(fields, renderPatch) {
+      const token = ++loadToken;
+      const saveTokenAtStart = saveToken;
+      const response = await request("/api/settings");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      if (token !== loadToken || saveTokenAtStart !== saveToken || saveInFlight > 0) return { stale: true };
+      const patch = Object.fromEntries(fields.filter(key =>
+        Object.prototype.hasOwnProperty.call(data.settings || {}, key),
+      ).map(key => [key, data.settings[key]]));
+      const normalized = replaceSnapshot({ ...getSettings(), ...patch }, "tool-settings-refresh");
+      // Leave unrelated, unsaved form fields alone.
+      for (const key of Object.keys(patch)) delete formDraft[key];
+      renderPatch?.(normalized);
+      applySettingsToUi?.();
+      return normalized;
+    }
+
     async function save(update = {}, message = "设置已保存", applyWindow = false) {
       const operation = ++saveToken;
       const previousSettings = normalizeSettings(getSettings());
@@ -220,6 +238,7 @@
       bind,
       load,
       acceptExternalSettings,
+      refreshFields,
       save,
       setDraft,
       clearDraft,

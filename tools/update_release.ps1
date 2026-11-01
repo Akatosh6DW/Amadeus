@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$script:ProcessTreeInspectionUnavailable = $false
 
 function Write-UpdateLog([string]$Message) {
     $line = "{0} {1}" -f ([DateTime]::UtcNow.ToString("o")), $Message
@@ -76,31 +77,37 @@ function Write-UpdateStatus([bool]$Ok, [string]$Phase, [string]$ErrorMessage) {
 }
 
 function Get-ProcessSnapshot {
-    try {
-        return @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | ForEach-Object {
-            [pscustomobject]@{
-                Id = [int]$_.ProcessId
-                ParentId = [int]$_.ParentProcessId
-                Path = [string]$_.ExecutablePath
-                Created = [string]$_.CreationDate
-            }
-        })
-    } catch {
-        Write-UpdateLog "could not inspect process tree: $($_.Exception.Message)"
+    if (-not $script:ProcessTreeInspectionUnavailable) {
         try {
-            return @(Get-Process -ErrorAction Stop | ForEach-Object {
-                $path = ""
-                try { $path = [string]$_.Path } catch { }
+            return @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | ForEach-Object {
                 [pscustomobject]@{
-                    Id = [int]$_.Id
-                    ParentId = 0
-                    Path = $path
-                    Created = ""
+                    Id = [int]$_.ProcessId
+                    ParentId = [int]$_.ParentProcessId
+                    Path = [string]$_.ExecutablePath
+                    Created = [string]$_.CreationDate
                 }
             })
         } catch {
-            return @()
+            # WMI process inspection can be denied for the helper account.  Keep
+            # the fallback for the initial ownership snapshot, but do not repeat
+            # the slow failed query during the 250 ms liveness polling loop.
+            $script:ProcessTreeInspectionUnavailable = $true
+            Write-UpdateLog "could not inspect process tree: $($_.Exception.Message)"
         }
+    }
+    try {
+        return @(Get-Process -ErrorAction Stop | ForEach-Object {
+            $path = ""
+            try { $path = [string]$_.Path } catch { }
+            [pscustomobject]@{
+                Id = [int]$_.Id
+                ParentId = 0
+                Path = $path
+                Created = ""
+            }
+        })
+    } catch {
+        return @()
     }
 }
 
@@ -121,6 +128,50 @@ function Get-ExplicitProcessSnapshot([string]$Root, [int[]]$Ids) {
             }
         } catch {
             # The process may have exited during the handoff.
+        }
+    }
+    return @($records)
+}
+
+function Test-CapturedProcessCreation([string]$CapturedCreated, [object]$Process) {
+    if ([string]::IsNullOrWhiteSpace($CapturedCreated)) { return $true }
+    try {
+        try {
+            $capturedTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($CapturedCreated)
+        } catch {
+            $capturedTime = [DateTime]::Parse(
+                $CapturedCreated,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::AssumeUniversal
+            )
+        }
+        $currentTime = $Process.StartTime
+        $delta = [Math]::Abs(($currentTime.ToUniversalTime() - $capturedTime.ToUniversalTime()).TotalSeconds)
+        return $delta -lt 1
+    } catch {
+        # If process creation cannot be verified, do not act on a reused PID.
+        return $false
+    }
+}
+
+function Get-LiveCapturedProcessSnapshot([string]$Root, [object[]]$Captured) {
+    $records = @()
+    foreach ($capturedRecord in $Captured) {
+        try {
+            $process = Get-Process -Id ([int]$capturedRecord.Id) -ErrorAction Stop
+            $path = [string]$process.Path
+            $samePath = [StringComparer]::OrdinalIgnoreCase.Equals($path, [string]$capturedRecord.Path)
+            $sameCreation = Test-CapturedProcessCreation ([string]$capturedRecord.Created) $process
+            if ($samePath -and $sameCreation -and (Test-Inside $Root $path)) {
+                $records += [pscustomobject]@{
+                    Id = [int]$process.Id
+                    ParentId = [int]$capturedRecord.ParentId
+                    Path = $path
+                    Created = [string]$capturedRecord.Created
+                }
+            }
+        } catch {
+            # A process may have exited between polls or deny process metadata.
         }
     }
     return @($records)
@@ -164,8 +215,15 @@ function Get-OwnProcessSnapshot([string]$Root, [int]$AnchorPid, [int[]]$Explicit
 }
 
 function Get-LiveOwnProcessSnapshot([string]$Root, [object[]]$Captured) {
+    if (-not $Captured) { return @() }
+    if ($script:ProcessTreeInspectionUnavailable) {
+        return @(Get-LiveCapturedProcessSnapshot $Root $Captured)
+    }
     $records = @(Get-ProcessSnapshot)
-    if (-not $Captured -or -not $records) { return @() }
+    if ($script:ProcessTreeInspectionUnavailable) {
+        return @(Get-LiveCapturedProcessSnapshot $Root $Captured)
+    }
+    if (-not $records) { return @() }
     $capturedById = @{}
     foreach ($record in $Captured) {
         $capturedById[[int]$record.Id] = $record

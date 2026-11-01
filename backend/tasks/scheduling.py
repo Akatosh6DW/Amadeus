@@ -27,6 +27,78 @@ from schedule_service import (
 )
 
 
+_SCHEDULE_SOURCE_ID_KEYS = (
+    "messageId", "message_id", "sourceMessageId", "source_message_id",
+    "turnId", "turn_id", "sourceTurnId", "source_turn_id", "id",
+)
+
+
+def _real_message_id(message: Mapping[str, Any]) -> str:
+    """Return an id already present on a history row; never derive one."""
+
+    for key in _SCHEDULE_SOURCE_ID_KEYS:
+        value = str(message.get(key) or "").strip()
+        if value:
+            return value[:200]
+    metadata = message.get("meta") or message.get("metadata")
+    if isinstance(metadata, Mapping):
+        for key in _SCHEDULE_SOURCE_ID_KEYS:
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                return value[:200]
+    return ""
+
+
+def _current_source_message(
+    messages: Sequence[Mapping[str, Any]],
+    user_message: str,
+) -> Mapping[str, Any] | None:
+    """Select a current user row only when its real id is already supplied."""
+
+    target = str(user_message or "").strip()
+    for item in reversed(messages):
+        if not isinstance(item, Mapping) or str(item.get("role") or "").lower() != "user":
+            continue
+        if not _real_message_id(item):
+            continue
+        content = str(item.get("content") or item.get("text") or "").strip()
+        if content == target or (target and target.endswith(content)):
+            return item
+    return None
+
+
+def _schedule_prompt_message(item: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Preserve source identity in recovery context without inventing ids."""
+
+    content = str(item.get("content") or item.get("text") or "").strip()
+    if not content:
+        return None
+    result: dict[str, Any] = {
+        "role": "assistant" if str(item.get("role") or "").lower() == "assistant" else "user",
+        "content": content,
+    }
+    for key in (
+        "messageId", "message_id", "turnId", "turn_id", "sourceMessageId",
+        "sourceTurnId", "contextSource", "sourceType", "origin",
+    ):
+        value = item.get(key)
+        if value not in (None, ""):
+            result[key] = value
+    for container_key in ("meta", "metadata", "contextMetadata", "context_metadata"):
+        metadata = item.get(container_key)
+        if isinstance(metadata, Mapping):
+            selected = {
+                key: metadata[key]
+                for key in (
+                    "messageId", "message_id", "turnId", "turn_id", "sourceMessageId",
+                    "sourceTurnId", "contextSource", "sourceType", "origin",
+                )
+                if metadata.get(key) not in (None, "") and key not in result
+            }
+            result.update(selected)
+    return result
+
+
 @dataclass(frozen=True)
 class ScheduleServicePorts:
     """日程应用服务所需的 state DB、模型和诊断端口。"""
@@ -60,6 +132,8 @@ class ScheduleWorkflowService:
         *,
         request_id: str,
         user_message: str,
+        source_messages: Sequence[Mapping[str, Any]] | None = None,
+        current_message: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Validate and persist a model semantic decision, never a prose guess."""
 
@@ -83,7 +157,23 @@ class ScheduleWorkflowService:
                 },
                 "workflow": {},
             }
-        grounded_intent = ground_schedule_temporal_precision(intent, user_message)
+        # ``None`` is the explicitly supported pre-v2 compatibility call: it
+        # only has the user text and therefore uses the legacy exact-clock
+        # boundary.  Real chat callers pass the history list (including an
+        # empty list), which makes a missing/unknown source a clarification.
+        if source_messages is None:
+            grounded_intent = ground_schedule_temporal_precision(intent, user_message)
+        else:
+            grounded_intent = ground_schedule_temporal_precision(
+                intent,
+                payload if isinstance(payload, Mapping) else user_message,
+                source_messages=source_messages,
+                current_message=(
+                    current_message
+                    if isinstance(current_message, Mapping)
+                    else _current_source_message(source_messages, user_message)
+                ),
+            )
         if grounded_intent != intent:
             self.ports.write_log(
                 "schedule_temporal_precision_rejected",
@@ -151,6 +241,7 @@ class ScheduleWorkflowService:
         """
 
         workflow_prompt = self.current_schedule_workflow_prompt()
+        current_row = _current_source_message(messages, user_message)
         payload: dict[str, Any] = {
             "model": settings["apiModel"],
             "temperature": 0.1,
@@ -168,19 +259,22 @@ class ScheduleWorkflowService:
                     "不要写角色回复，不要依据单个词触发。输出唯一 JSON 对象，顶层只能有 scheduleIntent。"
                     "todo_manage 支持 recurrenceRule=daily、weekly、weekdays、monthly 以及后端接受的 RFC5545 RRULE；"
                     "用户要求暂停或恢复现有任务时使用 action=pause 或 action=resume，并保留目标绑定。"
-                    "没有明确钟点时创建全天任务，dueAt为空，明确的日期保留到dueDate；"
-                    "不要索要 exactClockTime，也不要把 recurrenceRule 当成缺失能力。"
+                    "没有明确钟点时不要凭空补具体钟点；依据用户原话决定是否留空 dueAt 或询问仍缺少的必要字段，"
+                    "不要把时间语义擅自改写成全天任务，也不要把 recurrenceRule 当成缺失能力。"
                 )},
                 *([{"role": "system", "content": workflow_prompt}] if workflow_prompt else []),
                 *[
-                    {
-                        "role": "assistant" if item.get("role") == "assistant" else "user",
-                        "content": str(item.get("content") or ""),
-                    }
+                    prompt_item
                     for item in messages[-8:]
-                    if isinstance(item, Mapping) and str(item.get("content") or "").strip()
+                    if isinstance(item, Mapping)
+                    for prompt_item in (_schedule_prompt_message(item),)
+                    if prompt_item is not None
                 ],
-                {"role": "user", "content": str(user_message or "")},
+                (
+                    dict(_schedule_prompt_message(current_row) or {})
+                    if current_row is not None
+                    else {"role": "user", "content": str(user_message or "")}
+                ),
             ],
         }
         if settings.get("useResponseFormat"):
@@ -214,10 +308,17 @@ class ScheduleWorkflowService:
     ) -> dict[str, Any]:
         """Apply a typed decision, recovering only a missing protocol field."""
 
+        # A legacy request may carry no history rows at all.  Preserve the
+        # pre-v2 current-message compatibility boundary in that case; once a
+        # real history list is present, even an empty source lookup is strict
+        # and cannot authorize an unreferenced clock.
+        source_rows: Sequence[Mapping[str, Any]] | None = messages if messages else None
         decision = self.apply_model_schedule_payload(
             payload,
             request_id=request_id,
             user_message=user_message,
+            source_messages=source_rows,
+            current_message=_current_source_message(messages, user_message),
         )
         if not decision.get("omitted") or isinstance(
             (payload or {}).get("cognitive"), Mapping
@@ -250,6 +351,8 @@ class ScheduleWorkflowService:
             recovered,
             request_id=request_id,
             user_message=user_message,
+            source_messages=source_rows,
+            current_message=_current_source_message(messages, user_message),
         )
         decision["recoveredFromMissingProtocol"] = True
         self.ports.write_log(
@@ -281,21 +384,12 @@ class ScheduleWorkflowService:
         ) or (body is not None and set(intent.get("missingFields") or []) == {"exactClockTime"})
         if not needs_typed_repair or not policy.get("requiresUserResponse"):
             return prior_content
-        recover_all_day = bool(
-            body is not None
-            and set(intent.get("missingFields") or []) == {"exactClockTime"}
-        )
         repair_instruction = (
-            SCHEDULE_INTENT_PROMPT + "\n上一版擅自补了具体钟点。用户没有指定钟点并不缺信息："
-            "请依据原请求重新生成全天任务的结构化日程及工具调用，dueAt为空，保留明确日期和重复规则。"
-            "使用 REPLACE_TOOL_PLAN.value=[{stepId,name,args}] 更新当前尚未执行的认知计划，"
-            "calls 的 name/args 必须与新计划一致；不要询问几点，也不要在收到执行回执前声称已创建。"
-            "沿用本轮 JSON 协议。\n被拒绝的日程判定："
-            if recover_all_day else
             "上一版回复缺少结构化日程字段，独立语义判定已经完成。"
             "严格依据下面的日程判定重写面向用户的最终回复；不得改变判定、不得调用工具、"
             "不得声称已经记住、写入、安排或设置提醒。只询问 missingFields 中仍缺少的最少信息，"
-            "并用自然的人格口吻明确说明当前尚未写入。若上一版包含本轮要求的原作绰号反应，"
+            "并用自然的人格口吻明确说明当前尚未写入。不要依据正则或关键词自行改变用户的时间意图，"
+            "也不要把具体钟点改写成全天任务。若上一版包含本轮要求的原作绰号反应，"
             "保留该反应并继续完成日程追问。仍按本轮既有 JSON 回复协议输出。\n日程判定："
         )
         payload: dict[str, Any] = {
@@ -318,32 +412,16 @@ class ScheduleWorkflowService:
             payload["response_format"] = {"type": "json_object"}
         if "deepseek.com" in str(settings.get("apiEndpoint") or ""):
             payload["thinking"] = {"type": "disabled"}
-        if recover_all_day:
-            repaired = self.ports.send_brain(
-                body,
-                dict(settings),
-                payload,
-                timeout=60,
-                request_id=request_id,
-                purpose="schedule_all_day_repair",
-            )
-        else:
-            repaired = self.ports.send_request(
-                dict(settings),
-                payload,
-                timeout=60,
-                request_id=request_id,
-                purpose="schedule_reply_repair",
-            )
+        repaired = self.ports.send_request(
+            dict(settings),
+            payload,
+            timeout=60,
+            request_id=request_id,
+            purpose="schedule_reply_repair",
+        )
         parsed = self.ports.parse_json(repaired)
         if not isinstance(parsed, dict):
             raise UpstreamProtocolError("schedule reply repair returned no JSON object")
-        if recover_all_day:
-            body["_scheduleDecision"] = self.apply_model_schedule_payload(
-                parsed,
-                request_id=request_id,
-                user_message=user_message,
-            )
         self.ports.write_log(
             "schedule_reply_repaired_from_typed_decision",
             requestId=str(request_id)[:120],
@@ -377,6 +455,7 @@ class ScheduleWorkflowService:
         ]
         if not todo_reads:
             return None
+        current_row = _current_source_message(messages, user_message)
         payload: dict[str, Any] = {
             "model": settings["apiModel"],
             "temperature": 0.1,
@@ -400,14 +479,17 @@ class ScheduleWorkflowService:
                     "本地日程证据：" + json.dumps(todo_reads, ensure_ascii=False, separators=(",", ":"))
                 )},
                 *[
-                    {
-                        "role": "assistant" if item.get("role") == "assistant" else "user",
-                        "content": str(item.get("content") or ""),
-                    }
+                    prompt_item
                     for item in messages[-8:]
-                    if isinstance(item, Mapping) and str(item.get("content") or "").strip()
+                    if isinstance(item, Mapping)
+                    for prompt_item in (_schedule_prompt_message(item),)
+                    if prompt_item is not None
                 ],
-                {"role": "user", "content": str(user_message or "")},
+                (
+                    dict(_schedule_prompt_message(current_row) or {})
+                    if current_row is not None
+                    else {"role": "user", "content": str(user_message or "")}
+                ),
             ],
         }
         if settings.get("useResponseFormat"):
@@ -432,6 +514,8 @@ class ScheduleWorkflowService:
             parsed,
             request_id=request_id,
             user_message=user_message,
+            source_messages=messages,
+            current_message=_current_source_message(messages, user_message),
         )
         revised["reconsideredAfterTodoEvidence"] = True
         self.ports.write_log(

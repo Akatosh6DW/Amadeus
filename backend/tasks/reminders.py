@@ -24,6 +24,51 @@ def scheduled_delivery_status(result: dict[str, Any], model_status: str) -> str:
         return "unknown"
     return model_status
 
+
+def _scheduled_error_details(error: BaseException) -> dict[str, str]:
+    """Keep a bounded, machine-readable cause with the cached execution result."""
+
+    message = ' '.join(str(error).split())[:500]
+    return {
+        'type': type(error).__name__,
+        'message': message or type(error).__name__,
+    }
+
+
+def _ensure_scheduled_error(result: dict[str, Any], status: str) -> dict[str, Any]:
+    """Make model-reported failures auditable without trusting prose as success."""
+
+    if status != 'failed':
+        return result
+    existing = result.get('scheduledExecutionError')
+    if isinstance(existing, dict) and str(existing.get('message') or '').strip():
+        return result
+    detail = result.get('error') or result.get('failureReason') or 'model reported execution failure'
+    result['scheduledExecutionError'] = {
+        'type': 'model_reported_failure',
+        'message': ' '.join(str(detail).split())[:500],
+    }
+    return result
+
+
+def _honest_scheduled_reply(result: dict[str, Any], status: str) -> dict[str, Any]:
+    """Do not deliver a natural-language promise as if an action succeeded."""
+
+    if status == 'completed':
+        return result
+    if status == 'failed':
+        result['reply'] = '定时任务执行失败，未完成交付；不会自动重做已发生或未知的操作。'
+        result['spokenTextJa'] = '予約タスクは実行に失敗し、完了を確認できなかったわ。自動ではやり直さない。'
+    else:
+        result['reply'] = '定时任务尚未确认完成，缺少完整执行回执；不会自动重做。'
+        result['spokenTextJa'] = '予約タスクはまだ完了を確認できず、完全な実行結果がないわ。自動ではやり直さない。'
+    # The normal pipeline may already have projected the model's speech plan
+    # before the scheduler knows the action is incomplete. Remove that stale
+    # projection so delivery cannot read the old promise instead of this status.
+    for key in ('speechText', 'textZh', 'speechUnits', 'speechUnitContract', '_modelSpeechUnits'):
+        result.pop(key, None)
+    return result
+
 @dataclass(frozen=True)
 class StateOperations:
     state_database: Callable[..., Any]
@@ -202,10 +247,15 @@ class ReminderService:
             if status not in {'completed', 'failed', 'unknown'}:
                 status = 'unknown'
         except Exception as error:
-            self.write_log('scheduled_task_failed', runId=run_id, errorType=type(error).__name__)
+            details = _scheduled_error_details(error)
+            self.write_log('scheduled_task_failed', runId=run_id,
+                           errorType=details['type'], errorMessage=details['message'])
             status = 'failed'
             result = {'reply': '定时任务已触发，但执行没有正常结束。可能已有部分操作完成，我不会自动重做。',
-                      'spokenTextJa': '予約タスクは起動したけれど、正常に終了しなかったわ。自動では繰り返さない。'}
+                      'spokenTextJa': '予約タスクは起動したけれど、正常に終了しなかったわ。自動では繰り返さない。',
+                      'scheduledExecutionError': details}
+        result = _ensure_scheduled_error(result, status)
+        result = _honest_scheduled_reply(result, status)
         result.update(scheduledExecutionStatus=status, scheduledRunId=run_id,
                       proactiveDirective='none', proactiveDirectiveProvided=False,
                       requiresUserResponse=False, requiresUserResponseProvided=True, expectedResponseType='')
@@ -216,6 +266,7 @@ class ReminderService:
             result.pop(key, None)
         with self.state.state_database() as connection:
             finished = finish_todo_run(connection, run_id, status=status, result=result,
-                                       receipt={'task': occurrence['task']})
+                                       receipt={'task': occurrence['task'],
+                                                'steps': result.get('scheduledToolReceipts', [])})
         self.write_log('scheduled_task_finished', runId=run_id, status=status)
         return finished

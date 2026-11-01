@@ -10,8 +10,7 @@ import uuid
 
 from agent.cognitive_runtime import task_tool_violations
 from agent.cognitive_tools import canonical_tool_arguments, tool_step_binding
-from agent.todo_architecture import todo_mutation_explicitly_requested, todo_mutation_prohibited
-from agent.tool_arguments import file_tool_argument_error
+from agent.tool_arguments import tool_argument_error
 from agent.tool_architecture import (
     ToolRegistry,
     TurnPreflight,
@@ -19,12 +18,48 @@ from agent.tool_architecture import (
     validate_tool_choice,
 )
 from agent.turn_runtime import ToolResultEnvelope, utc_now_iso
+from backend.tools.trust import TrustDecision, evaluate_tool_trust, normalize_trust_context
 
 
 SENSOR_TOOL_NAMES = frozenset({"capture_screen", "capture_camera"})
 TOOL_AUTHORIZATIONS = frozenset({"none", "read", "write", "observe", "navigate"})
 # 已持久化的审计/协议标识，模块迁出后仍沿用原值。
 AUDIT_EXECUTOR_ID = "server.execute_agent_tools"
+
+
+def _record_policy_check(
+    check_id: str,
+    *,
+    blocked: bool,
+    request_id: str,
+    reason: str,
+    logger: Callable[..., Any],
+) -> dict[str, Any]:
+    """Record a registry decision when the host's check registry is present.
+
+    The protocol branch can be tested without the optional registry module, so
+    its absence is diagnostic-only.  The registry never replaces the real
+    permission or executor checks below.
+    """
+
+    try:
+        from agent.check_policy import Action, record
+    except ImportError:
+        return {}
+    try:
+        return record(
+            check_id,
+            Action.BLOCK_TOOL if blocked else Action.LOG,
+            logger=logger,
+            request_id=request_id,
+            reason=reason[:240],
+            decisive=False,
+            strict=False,
+        )
+    except Exception:
+        # Policy diagnostics cannot turn a valid tool decision into a runtime
+        # failure; the host executor remains authoritative.
+        return {}
 
 
 @dataclass
@@ -64,6 +99,37 @@ def structured_tool_authorization(request: Mapping[str, Any] | None) -> str:
     if not isinstance(selection, Mapping):
         return "none"
     return normalize_tool_authorization(selection.get("toolAuthorization"))
+
+
+def canonical_model_tool_call(request: Mapping[str, Any] | None) -> bool:
+    """Return whether *request* is a current structured model call.
+
+    The request array is already the model's typed choice by the time it
+    reaches validation.  Requiring the model to repeat that choice in a
+    second ``selection.toolAuthorization`` object made ordinary calls fail
+    after the semantic protocol had already selected them.  A normalized
+    call carries an ``args`` mapping. Optional audit reasons and selection
+    metadata must not change whether the requested operation exists.
+    """
+
+    return bool(
+        isinstance(request, Mapping)
+        and str(request.get("name") or request.get("tool") or "").strip()
+        and isinstance(request.get("args"), Mapping)
+    )
+
+
+def canonical_model_authorization_allows(
+    request: Mapping[str, Any] | None,
+    expected: str,
+) -> bool:
+    """A current call is intent; selection metadata is not host authority.
+
+    Keep the compatibility parameter for old callers. Real permissions and
+    active task restrictions are enforced once at execution, regardless of
+    what the model wrote in a redundant authorization field.
+    """
+    return canonical_model_tool_call(request)
 
 
 def structured_sensor_authorized(request: Mapping[str, Any] | None) -> bool:
@@ -133,6 +199,56 @@ def visual_tool_matches_perception_target(tool_name: str, target_domain: str) ->
     return str(tool_name or "") in expected.get(str(target_domain or ""), set())
 
 
+def _todo_commit_intent(args: Mapping[str, Any]) -> bool:
+    """Read the structured command's intent marker, never natural language."""
+
+    return args.get("commitIntent") is True or args.get("commit_intent") is True
+
+
+def commit_intent_is_true(args: Mapping[str, Any] | None) -> bool:
+    """Check the adapter's typed commit marker without truthiness coercion."""
+
+    return bool(isinstance(args, Mapping) and _todo_commit_intent(args))
+
+
+def schedule_policy_allows_todo_write(
+    decision: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether a supplied schedule decision authorizes a write.
+
+    An absent decision is the legacy/direct-tool route and remains eligible
+    for the command's own ``commitIntent`` check.  A present decision must be
+    an executing, allowed policy; wording in ``user_question`` is never read.
+    """
+
+    if decision is None:
+        return True
+    if bool(decision.get("omitted")):
+        return False
+    policy = decision.get("policy")
+    return bool(
+        isinstance(policy, Mapping)
+        and str(policy.get("action") or "") == "execute"
+        and policy.get("allowed")
+    )
+
+
+def todo_write_is_structurally_authorized(
+    decision: Mapping[str, Any] | None,
+    args: Mapping[str, Any],
+) -> bool:
+    """Require typed schedule policy plus command intent when supplied.
+
+    A direct structured tool call without a schedule decision remains
+    compatible with the existing tool route and only needs its command's
+    ``commitIntent``.  Once a schedule decision exists, ``omitted`` or a
+    non-executing policy carries no write authority.  The user question is
+    deliberately absent from this function.
+    """
+
+    return schedule_policy_allows_todo_write(decision) and _todo_commit_intent(args)
+
+
 def build_execution_plan(
     requests: list[dict[str, Any]],
     settings: dict[str, Any],
@@ -150,6 +266,7 @@ def build_execution_plan(
     is_agent_file_action_query: Callable[[str], bool],
     update_progress: Callable[..., Any],
     write_log: Callable[..., Any],
+    trust_context: Mapping[str, Any] | None = None,
 ) -> ToolExecutionPlan:
     """先完成整批策略和逐项校验，再交给执行层处理副作用。
 
@@ -157,27 +274,50 @@ def build_execution_plan(
     显式授权未命中时惰性调用；校验顺序本身也是行为契约。
     """
 
-    decision = schedule_decision or {}
-    policy = decision.get("policy") or {}
-    if not decision.get("omitted") and policy and (
-        policy.get("action") != "execute" or not policy.get("allowed")
-    ) and any(item.get("name") == "todo_manage" for item in requests):
-        return ToolExecutionPlan(early_results=[
-            {"name": str(item.get("name") or ""), "ok": False,
-             "error": "schedule_write_not_authorized", "attempted": False}
-            for item in requests
-        ])
-    violations = task_tool_violations(cognitive_state or {}, requests, registry)
-    if violations:
-        return ToolExecutionPlan(early_results=[
-            {"name": str(item.get("name") or ""), "ok": False,
-             "error": "cognitive_task_constraint", "violations": violations, "attempted": False}
-            for item in requests if isinstance(item, Mapping)
-        ])
+    decision = schedule_decision
+    normalized_trust_context = normalize_trust_context(trust_context)
 
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     active_preflight = preflight or build_turn_preflight(user_question)
     plan = ToolExecutionPlan()
+    progress_started = False
+
+    def append_preexecution_rejection(
+        *,
+        name: str,
+        tool_call_id: str,
+        error: str,
+        reason: str,
+        violations: Sequence[str] = (),
+    ) -> None:
+        """Keep one concrete failure beside the request that caused it."""
+
+        rejected: dict[str, Any] = {
+            "name": name,
+            "ok": False,
+            "error": error,
+            "reason": reason,
+            "toolCallId": tool_call_id,
+            "attempted": False,
+        }
+        if violations:
+            rejected["violations"] = list(violations)
+        rejected["_toolResultEnvelope"] = ToolResultEnvelope.from_legacy_result(
+            rejected,
+            turn_id=f"{request_id}:turn" if request_id else "",
+            started_at=utc_now_iso(),
+            provenance={"executor": AUDIT_EXECUTOR_ID, "validation": {"allowed": False, "reason": reason}},
+        ).to_dict()
+        write_log(
+            "tool_result_received",
+            requestId=request_id,
+            toolCallId=tool_call_id,
+            toolName=name,
+            ok=False,
+            error=error,
+            validationReason=reason,
+        )
+        plan.operations.append({"kind": "result", "result": rejected})
     # 一整批待办共享模型所见的后端时间，且时间不进入模型可伪造的参数。
     time_anchor = None
     if settings.get("permissionReadSystemTime") and any(item.get("name") == "todo_manage" for item in requests):
@@ -185,16 +325,21 @@ def build_execution_plan(
         time_anchor = datetime.fromisoformat(clock_iso) if clock_iso else datetime.now().astimezone()
         if time_anchor.tzinfo is None:
             raise ValueError("schedule_time_anchor_must_have_timezone")
-    if requests and request_id:
-        update_progress(request_id, "tool-executing", "正在执行本轮已验证的工具调用")
-
     for request in requests:
         if not isinstance(request, dict):
             continue
         name = str(request.get("name") or "").strip()
-        args = request.get("args") if isinstance(request.get("args"), dict) else {}
+        args = dict(request.get("args")) if isinstance(request.get("args"), dict) else {}
+        # The selected call is the execution decision. Older adapters still
+        # require this transport flag; fill it at the host boundary rather
+        # than asking the model to register the same decision twice.
+        if canonical_model_tool_call(request) and name in {
+            "todo_manage", "bookmark_manage", "qq_manage", "qq_space_write",
+            "qq_remember_alias", "qq_person_memory", "voice_configure",
+        }:
+            args.setdefault("commitIntent", args.pop("commit_intent", True))
         signature = tool_request_signature({"name": name, "args": args})
-        operation_identity = (signature, str(request.get("stepId") or ""))
+        operation_identity = signature
         if not name or operation_identity in seen:
             continue
         seen.add(operation_identity)
@@ -207,14 +352,26 @@ def build_execution_plan(
         binding = tool_step_binding((cognitive_state or {}).get("task") or {}, request)
         if binding:
             plan.cognitive_bindings[tool_call_id] = binding
+        request_violations = task_tool_violations(
+            cognitive_state or {}, [request], registry,
+        )
+        if request_violations:
+            append_preexecution_rejection(
+                name=name,
+                tool_call_id=tool_call_id,
+                error="cognitive_task_constraint",
+                reason="cognitive_task_constraint",
+                violations=request_violations,
+            )
+            continue
         sensor_explicit = (
             name in SENSOR_TOOL_NAMES
             and (
-                bool(cognitive_state)
-                or name in explicitly_requested_sensor_tools(user_question)
-                or structured_sensor_authorized(request)
+                structured_sensor_authorized(request)
+                or canonical_model_authorization_allows(request, "observe")
             )
         )
+        current_model_call = canonical_model_tool_call(request)
         explicit = bool(
             sensor_explicit
             or (
@@ -224,8 +381,7 @@ def build_execution_plan(
             or (
                 name == "open_browser"
                 and (
-                    is_open_browser_query(user_question)
-                    or pending_browser_action_continuation(user_question)
+                    canonical_model_authorization_allows(request, "navigate")
                     or structured_browser_authorized(request)
                     or bool(args.get("bookmarkId"))
                 )
@@ -233,7 +389,10 @@ def build_execution_plan(
             or (
                 name in {"list_directory", "read_text_file", "create_directory", "write_text_file"}
                 and (
-                    is_agent_file_action_query(user_question)
+                    canonical_model_authorization_allows(
+                        request,
+                        "read" if name in {"list_directory", "read_text_file"} else "write",
+                    )
                     or (
                         name in {"list_directory", "read_text_file"}
                         and structured_tool_authorization(request) in {"read", "write"}
@@ -245,21 +404,41 @@ def build_execution_plan(
                 )
             )
             or (
+                name == "qq_identity"
+                and (current_model_call or structured_tool_authorization(request) in {"read", "write"})
+            )
+            or (
+                name == "qq_media"
+                and args.get("action") == "search"
+                and (current_model_call or structured_tool_authorization(request) in {"read", "write"})
+            )
+            or (
                 name == "todo_manage"
-                and not todo_mutation_prohibited(user_question)
                 and (
-                    todo_mutation_explicitly_requested(user_question)
-                    or bool(args.get("commitIntent") or args.get("commit_intent"))
+                    (
+                        todo_write_is_structurally_authorized(decision, args)
+                        and (
+                            not isinstance(request.get("selection"), Mapping)
+                            or structured_tool_authorization(request) == "write"
+                        )
+                    )
+                    or (
+                        canonical_model_authorization_allows(request, "write")
+                        and _todo_commit_intent(args)
+                    )
                 )
             )
             or (
-                name == "bookmark_manage"
-                and structured_tool_authorization(request) == "write"
-                and bool(args.get("commitIntent") or args.get("commit_intent"))
+                name in {"bookmark_manage", "qq_manage", "qq_space_write", "qq_remember_alias", "qq_person_memory", "voice_configure"}
+                and _todo_commit_intent(args)
+                and (
+                    canonical_model_authorization_allows(request, "write")
+                    or structured_tool_authorization(request) == "write"
+                )
             )
         )
         request_preflight = active_preflight
-        if cognitive_state and sensor_explicit:
+        if sensor_explicit:
             sensor_request = {**request, "selection": {
                 **dict(request.get("selection") or {}), "toolAuthorization": "observe",
                 "targetDomain": "screen" if name == "capture_screen" else "physical_user",
@@ -270,6 +449,26 @@ def build_execution_plan(
         validation = validate_tool_choice(
             name, request_preflight, settings, explicitly_requested=explicit,
         )
+        argument_error = tool_argument_error(name, args) if validation.allowed else None
+        trust_decision = (
+            evaluate_tool_trust(name, args, normalized_trust_context)
+            if validation.allowed and argument_error is None
+            else TrustDecision("allow", "validation_rejected_before_trust")
+        )
+        permission_check = _record_policy_check(
+            "permission.executor",
+            blocked=not validation.allowed,
+            request_id=request_id,
+            reason=validation.reason,
+            logger=write_log,
+        )
+        trust_check = _record_policy_check(
+            "permission.untrusted_target",
+            blocked=trust_decision.action != "allow",
+            request_id=request_id,
+            reason=trust_decision.reason,
+            logger=write_log,
+        )
         write_log(
             "tool_choice_validated",
             requestId=request_id,
@@ -277,29 +476,64 @@ def build_execution_plan(
             toolName=name,
             validation=validation.to_dict(),
             perceptionTarget=request_preflight.perception.target_domain,
+            trustDecision=trust_decision.to_dict(),
+            permissionCheck=permission_check,
+            trustCheck=trust_check,
         )
-        argument_error = file_tool_argument_error(name, args) if validation.allowed else None
-        if validation.allowed and argument_error is None:
+        if validation.allowed and argument_error is None and trust_decision.action == "allow":
+            if not progress_started:
+                update_progress(request_id, "tool-executing", "正在执行本轮已验证的工具调用")
+                progress_started = True
             if sensor_explicit and visual_tool_matches_perception_target(
                 name, request_preflight.perception.target_domain,
             ):
                 plan.validated_observation_targets[tool_call_id] = request_preflight.perception.target_domain
-            plan.operations.append({
+            operation = {
                 "kind": "execute", "name": name, "args": args,
                 "toolCallId": tool_call_id, "timeAnchor": time_anchor,
-            })
+                "hostTrust": {
+                    "schema": normalized_trust_context['schema'],
+                    "decision": trust_decision.to_dict(),
+                    "untrustedInput": normalized_trust_context['tainted'],
+                },
+            }
+            if name in {'qq_history', 'qq_manage', 'qq_identity', 'qq_remember_alias', 'qq_person_memory', 'qq_media'}:
+                target = ((cognitive_state or {}).get('task') or {}).get('target')
+                targets = target if isinstance(target, list) else [target]
+                account = next((item.get('account') for item in targets if isinstance(item, Mapping)
+                                and item.get('type') == args.get('targetType')
+                                and str(item.get('id')) == str(args.get('targetId'))), None)
+                if account:
+                    operation['qqAccount'] = str(account)
+            if name in {'qq_space', 'qq_space_write'} and normalized_trust_context.get('qzoneAccount'):
+                operation['qqAccount'] = normalized_trust_context['qzoneAccount']
+            plan.operations.append(operation)
             continue
-        error_name = "tool_arguments_invalid" if argument_error else (
-            "permission_denied"
-            if validation.reason.startswith("permission_denied:")
-            else "tool_choice_rejected"
+        error_name = (
+            "tool_arguments_invalid" if argument_error else
+            "target_confirmation_required" if trust_decision.action == "confirm" else
+            "unknown_delivery_not_retryable"
+            if trust_decision.action == "block"
+            and trust_decision.reason == "unknown_delivery_not_retryable" else
+            "trust_policy_blocked" if trust_decision.action == "block" else
+            "permission_denied" if validation.reason.startswith("permission_denied:") else
+            "tool_choice_rejected"
+        )
+        rejection_reason = (
+            trust_decision.reason
+            if trust_decision.action in {"confirm", "block"}
+            else "Correct the fields listed in argumentError; the tool was not executed."
+            if argument_error
+            else validation.reason
         )
         rejected = {
             "name": name,
             "ok": False,
             "error": error_name,
-            "reason": "Correct the fields listed in argumentError; the tool was not executed." if argument_error else validation.reason,
-            "requiresClarification": validation.requires_clarification,
+            "reason": rejection_reason,
+            "requiresClarification": (
+                True if trust_decision.action == "confirm" else validation.requires_clarification
+            ),
             "toolCallId": tool_call_id,
             "attempted": False,
         }
@@ -307,6 +541,8 @@ def build_execution_plan(
             rejected.update(argumentError=argument_error, attempted=False, requiresClarification=False)
         if validation.reason.startswith("permission_denied:"):
             rejected["permission"] = validation.reason.split(":", 1)[1]
+        if trust_decision.action in {"confirm", "block"}:
+            rejected["trustDecision"] = trust_decision.to_dict()
         rejected["_toolResultEnvelope"] = ToolResultEnvelope.from_legacy_result(
             rejected,
             turn_id=f"{request_id}:turn" if request_id else "",
@@ -321,6 +557,7 @@ def build_execution_plan(
             ok=False,
             error=error_name,
             validationReason=validation.reason,
+            trustDecision=trust_decision.to_dict(),
         )
         plan.operations.append({"kind": "result", "result": rejected})
     return plan

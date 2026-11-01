@@ -12,6 +12,7 @@ import json
 from typing import Any, Callable, Mapping
 
 from backend.common.text import unique_strings
+from agent.memory_purpose import MEMORY_PURPOSE_PROMPT
 from backend.providers.errors import UpstreamProtocolError
 
 
@@ -60,17 +61,23 @@ class MemoryGenerationService:
                 {
                     "role": "system",
                     "content": (
+                        MEMORY_PURPOSE_PROMPT +
                         "你是长期记忆结构修复器，不参与聊天，也不靠关键词规则做新的保存决定。"
+                        "这个入口仅提取 personal 信息，其余类别交给主对话对应工具与偏好协议；没有个人事实时返回空数组。"
                         "主对话模型已经通过 memoryAction=save 决定本轮应保存；你只把当前用户原话"
                         "整理成一到四条结构化记录。只输出 JSON：{\"memoryUpdates\":[{\"type\":"
                         "\"user_memory|task_state|correction|episode|shared_reference\",\"content\":\"中文记忆\","
                         "\"subject\":\"...\",\"predicate\":\"...\",\"object\":\"...\","
                         "\"polarity\":\"positive|negative|neutral\",\"modality\":"
                         "\"asserted|requested|corrected\",\"cardinality\":\"single|multi\","
-                        "\"importance\":0.0,\"shouldSave\":true,\"sourceSpan\":\"逐字用户原话\"}]}。"
+                        "\"importance\":0.0,\"shouldSave\":true,\"sourceSpan\":\"逐字用户原话\","
+                        "\"sourceTurnIds\":[\"真实 turnId\"],\"sourceRole\":\"user\","
+                        "\"sourceType\":\"recent_dialogue\"}]}。"
                         "sourceSpan 必须是 userMessage 中连续、逐字存在的片段；object 也必须能从该片段"
                         "逐字复制出来，不能换同义词。拿不准 sourceSpan 时可以直接逐字复制整个"
-                        "userMessage。不得引用 assistantReply，不得扩写隐私或虚构事实。"
+                        "userMessage。sourceTurnIds/sourceMessageId 只能引用输入中已有的真实 ID，"
+                        "不得生成 turn_1 等占位符。sourceRole 必须是 user；不得引用 assistantReply，"
+                        "不得扩写隐私或虚构事实。"
                     ),
                 },
                 {
@@ -110,6 +117,7 @@ class MemoryGenerationService:
                     updates,
                     user_message,
                     diagnostics=last_diagnostics,
+                    source_type="memory_action_repair",
                 )
                 if grounded:
                     return grounded
@@ -170,7 +178,8 @@ class MemoryGenerationService:
                 )
 
         instruction = (
-            "你要为一个长期陪伴型 Amadeus 智能体整理长期记忆文件。"
+            MEMORY_PURPOSE_PROMPT +
+            "你要为一个长期陪伴型 Amadeus 智能体整理长期记忆文件；此入口只生成 personal 信息，其余交回对应存储。"
             "只保留长期有用、稳定、可帮助之后对话的信息。"
             "不要保存一次性闲聊。不要保存敏感隐私，除非用户明确要求长期记住。"
             "严格区分说话人：只能从 role=user 和 userNotes 提取用户事实；role=assistant 的猜测、"
@@ -180,6 +189,8 @@ class MemoryGenerationService:
             "\"polarity\":\"positive|negative\",\"modality\":\"asserted|requested|corrected\","
             "\"cardinality\":\"single|multi\",\"importance\":0.0,\"sourceSpan\":\"逐字用户原话\"}]}。"
             "最多 32 条；sourceSpan 必须逐字来自 recentMessages 中 role=user 或 userNotes，不能引用 assistant。"
+            "sourceTurnIds/evidence.turnId/sourceMessageId 只能引用 recentMessages 已有的真实 ID，"
+            "不得创建占位 ID；subject/sourceRole/sourceType 必须与结构化来源一致。"
         )
         payload: dict[str, Any] = {
             "model": settings["apiModel"],
@@ -216,7 +227,13 @@ class MemoryGenerationService:
         )
         if notes:
             user_evidence += "\n" + notes
-        grounded = self.ports.grounded_updates(memories, user_evidence, limit=32)
+        grounded = self.ports.grounded_updates(
+            memories,
+            user_evidence,
+            limit=32,
+            source_messages=messages[-40:],
+            source_type="memory_generation",
+        )
         with self.ports.persistence_lock:
             if self.ports.clear_generation(settings) != expected_clear_generation:
                 self.ports.write_log(

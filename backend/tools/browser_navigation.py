@@ -222,13 +222,44 @@ class BrowserNavigation:
                         "targetKind": "search" if browser_intent == "search" else "url",
                         "websiteMemory": website_memory,
                     }, action_receipt, deduplicated=True)
+                # The durable lookup intentionally returns only accepted actions.
+                # An unknown transport outcome still must be retained by the
+                # request key, because a retry with a fresh action id could
+                # otherwise replay a browser side effect whose outcome is
+                # already uncertain.
+                unknown = next(
+                    (
+                        item for item in reversed(self.receipts.read_action_receipt_records())
+                        if isinstance(item, dict)
+                        and str(item.get("tool") or "") == "open_browser"
+                        and str(item.get("idempotencyKey") or "") == idempotency_key
+                        and str(item.get("status") or "") == "unknown"
+                    ),
+                    None,
+                )
+                if unknown:
+                    return finish({
+                        "name": "open_browser",
+                        "ok": False,
+                        "url": safe_url,
+                        "targetKind": "search" if browser_intent == "search" else "url",
+                        "error": str(unknown.get("error") or "transport_receipt_unknown"),
+                    }, dict(unknown), deduplicated=True)
             previous = next(
                 (
                     item for item in reversed(self.receipts.read_action_receipt_records())
                     if isinstance(item, dict)
                     and str(item.get("actionId") or "") == action_id
                     and str(item.get("resolvedTarget") or "") == safe_url
-                    and str(item.get("status") or "") in {"accepted", "rejected", "failed"}
+                    # An unknown outcome may already have reached the browser.
+                    # Keep the action idempotent and surface that uncertainty
+                    # instead of replaying a side effect on the next turn.
+                    and str(item.get("status") or "") in {
+                        "accepted",
+                        "rejected",
+                        "failed",
+                        "unknown",
+                    }
                 ),
                 None,
             )

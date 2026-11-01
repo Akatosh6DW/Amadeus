@@ -15,8 +15,8 @@ from backend.tts.contract import batch_model_speech_units
 from .parsing import (
     extract_complete_json_string_field,
     looks_like_incomplete_structured_reply,
-    parse_json_object,
 )
+from backend.providers.reply_protocol import is_reply_envelope, is_nested_reply_envelope, parse_json_mapping
 from .presentation import (
     ALLOWED_EMOTIONS,
     ALLOWED_GESTURES,
@@ -51,6 +51,7 @@ def normalize_model_reply(
     default_settings: dict[str, Any],
     configured: Callable[[dict[str, Any] | None], bool],
     normalize_spoken_japanese_terms: Callable[[Any], str],
+    persona_snapshot=None,
 ) -> dict[str, Any]:
     """按原模型契约归一化回复，保持字段处理顺序与缺失标记语义。
 
@@ -63,18 +64,31 @@ def normalize_model_reply(
     structured_output_recovered = False
     structured_output_invalid = False
     structured_output_missing = False
+    structured_output_mode = "mapping"
     if isinstance(value, str):
         original = value
-        value = parse_json_object(value)
-        if value is None:
+        parsed_value = parse_json_mapping(value)
+        if parsed_value is None:
+            structured_output_mode = "plain_text"
             structured_output_missing = True
             if looks_like_incomplete_structured_reply(original):
+                structured_output_mode = "truncated_envelope"
                 recovered_reply = extract_complete_json_string_field(original, "reply")
                 structured_output_recovered = bool(recovered_reply)
                 structured_output_invalid = True
                 value = {"reply": recovered_reply}
             else:
                 value = {"reply": original}
+        elif is_reply_envelope(parsed_value):
+            structured_output_mode = "json_envelope"
+            value = parsed_value
+        else:
+            # A complete JSON/JavaScript example is legitimate visible content,
+            # not a malformed dialogue envelope.  Keep its source text so the
+            # delivery validator can distinguish it from a parsed protocol.
+            structured_output_mode = "plain_json"
+            structured_output_missing = True
+            value = {"reply": original}
     if not isinstance(value, dict):
         value = {}
     value = realize_participant_speech(value)
@@ -173,12 +187,17 @@ def normalize_model_reply(
     turn_complete_provided = isinstance(value.get("turnComplete"), bool)
     nested_reply = value.get("reply")
     if isinstance(nested_reply, str):
-        nested_value = parse_json_object(nested_reply)
-        if isinstance(nested_value, dict) and isinstance(nested_value.get("reply"), str):
+        nested_value = parse_json_mapping(nested_reply)
+        if (
+            isinstance(nested_value, dict)
+            and is_nested_reply_envelope(nested_value)
+            and isinstance(nested_value.get("reply"), str)
+        ):
             # 嵌套 JSON 只重算原逻辑指定的部分标记；其他标记已取自外层模型响应。
             # Some OpenAI-compatible providers occasionally JSON-encode the
             # whole structured response into the reply field. Decode that
             # transport wrapper instead of showing raw JSON to the user.
+            structured_output_mode = "double_envelope"
             value = synchronize_response_waiting({**value, **nested_value})
             proactive_directive_provided = (
                 str(value.get("proactiveDirective") or "").strip().lower()
@@ -254,6 +273,17 @@ def normalize_model_reply(
         raw_memory_candidates = value.get("memory_candidates") or value.get("memoryCandidates")
     structured_memory_candidates = memory_candidates_from_model(raw_memory_candidates)
     memories = [item["content"] for item in structured_memory_candidates]
+    raw_question_source = value.get("questionSource") or value.get("question_source")
+    question_source = None
+    if isinstance(raw_question_source, Mapping):
+        question_source = {
+            key: str(raw_question_source.get(key) or "").strip()[:160]
+            for key in (
+                "role", "speaker", "sourceRole", "sourceType", "origin",
+                "sourceMessageId", "sourceTurnId",
+            )
+            if raw_question_source.get(key) not in (None, "")
+        }
     relation_event_provided = (
         bool(value.get("relationEventProvided"))
         if isinstance(value.get("relationEventProvided"), bool)
@@ -278,7 +308,8 @@ def normalize_model_reply(
             configured(settings)
             and str((settings or {}).get("ttsProvider") or "").strip().lower() == "gpt-sovits"
         )
-        if not needs_semantic_spoken_alignment:
+        from backend.context.reply_layers import independent_persona
+        if not needs_semantic_spoken_alignment and not independent_persona(persona_snapshot):
             spoken_text_ja = fallback_spoken_text_ja(reply)
     # The legacy scalar count carries no boundary information and therefore
     # cannot authorize segmentation.  Only explicit ordered units do.
@@ -291,8 +322,29 @@ def normalize_model_reply(
     speech_segment_count = (
         model_speech_segment_count or 1
     )
-    speech_pace = normalize_speech_pace(value.get("speechPace") or value.get("speech_pace"), value.get("speechSpeed"))
-    speech_speed = clamp_float(value.get("speechSpeed"), 0.62, 1.45, SPEECH_PACE_SPEED[speech_pace])
+    raw_speech_pace = (
+        value.get("speechPace")
+        if value.get("speechPace") is not None
+        else value.get("speech_pace")
+    )
+    speech_speed_value = value.get("speechSpeed")
+    speech_pace_provided = bool(str(raw_speech_pace or "").strip())
+    speech_speed_provided = speech_speed_value is not None
+    speech_pace = (
+        normalize_speech_pace(raw_speech_pace, speech_speed_value)
+        if speech_pace_provided or speech_speed_provided
+        else ""
+    )
+    speech_speed = (
+        clamp_float(speech_speed_value, 0.62, 1.45, SPEECH_PACE_SPEED[speech_pace])
+        if speech_pace
+        else None
+    )
+    speech_delivery_fields = (
+        {"speechPace": speech_pace, "speechSpeed": speech_speed}
+        if speech_pace
+        else {}
+    )
     voice_style = str(value.get("voiceStyle") or "calm")
     delivery_mode = str(value.get("deliveryMode") or value.get("delivery_mode") or "normal").strip().lower()
     delivery_mode = "outburst" if delivery_mode == "outburst" else "normal"
@@ -347,6 +399,8 @@ def normalize_model_reply(
         expected_response_type = ""
     return {
         **({"_participantSpeechRealized": True} if value.get("_participantSpeechRealized") is True else {}),
+        "imageIds": value.get('imageIds') if isinstance(value.get('imageIds'), list) else [],
+        "galleryAccount": str(value.get('galleryAccount') or ''),
         "reply": reply,
         "spokenTextJa": spoken_text_ja,
         "speechText": speech_text,
@@ -357,8 +411,7 @@ def normalize_model_reply(
         "voiceTone": voice_tone,
         "voiceIntensity": voice_intensity,
         "voiceIntensitySource": voice_intensity_source,
-        "speechPace": speech_pace,
-        "speechSpeed": speech_speed,
+        **speech_delivery_fields,
         "speechSegmentCount": speech_segment_count,
         "speechSegmentCountMissingFromModel": speech_segment_count_missing_from_model,
         "speechSegmentCountSource": (
@@ -396,14 +449,15 @@ def normalize_model_reply(
         "structuredOutputRecovered": structured_output_recovered,
         "structuredOutputInvalid": structured_output_invalid,
         "structuredOutputMissingFromModel": structured_output_missing,
+        "structuredOutputMode": structured_output_mode,
         "spokenTextJaMissingFromModel": spoken_text_ja_missing_from_model,
         "emotionMissingFromModel": emotion_missing_from_model,
-        "stageDirectionsRemoved": bool(reply_stage_directions or spoken_stage_directions),
         "requiresUserResponse": requires_user_response,
         "requiresUserResponseProvided": requires_user_response_provided,
         "semanticKind": str(value.get("semanticKind") or value.get("kind") or semantic_kind).strip().lower()[:40],
         "outcome": deepcopy(value.get("outcome")) if isinstance(value.get("outcome"), Mapping) else None,
         "questionRelation": question_relation(value.get("questionRelation")),
+        **({"questionSource": question_source} if question_source else {}),
         "proactiveDirective": proactive_directive,
         "proactiveDirectiveProvided": proactive_directive_provided,
         "expectedResponseType": expected_response_type,

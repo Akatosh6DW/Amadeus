@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="/live2d/local_api.js?v=20260910-local-session"></script>
     <title>Amadeus System</title>
-    <link rel="stylesheet" href="live2d.css?v=20261025-model-profiles">
+    <link rel="stylesheet" href="live2d.css?v=20261031-waiting-icon">
   </head>
   <body>
     <section class="boot-sequence" id="bootSequence" aria-hidden="true">
@@ -48,6 +48,9 @@
       <div class="boot-scanlines" aria-hidden="true"></div>
     </section>
     <canvas id="stage"></canvas>
+    <div id="proactiveWaitingIndicator" class="proactive-waiting-indicator" role="status" aria-live="polite" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 15.4A8.5 8.5 0 0 1 8.6 4.5 8.5 8.5 0 1 0 19.5 15.4Z"/><path d="m15.5 4 .5 1.5 1.5.5-1.5.5-.5 1.5-.5-1.5-1.5-.5 1.5-.5Z"/></svg>
+    </div>
     <div class="window-resize-handle" data-window-resize="n" title="拖动缩放窗口" aria-hidden="true"></div>
     <div class="window-resize-handle" data-window-resize="s" title="拖动缩放窗口" aria-hidden="true"></div>
     <div class="window-resize-handle" data-window-resize="e" title="拖动缩放窗口" aria-hidden="true"></div>
@@ -186,14 +189,24 @@
         </section>
         <div class="chat-log" id="chatLog"></div>
         <form class="chat-form" id="chatForm">
+        <details class="qq-activity" id="qqActivity" hidden>
+          <summary id="qqActivitySummary" aria-live="polite">QQ 动态</summary>
+          <div class="qq-activity-body">
+            <button id="qqConfigureBtn" type="button">管理 QQ</button>
+            <div class="qq-activity-list" id="qqActivityList"></div>
+            <span class="hint">完整配置请打开设置 → QQ；本页不会要求输入 6190 管理密钥。</span>
+          </div>
+        </details>
           <input id="attachmentInput" type="file" multiple hidden>
           <div class="reply-anchor-preview hidden" id="replyAnchorPreview" aria-live="polite">
             <span><strong id="replyAnchorLabel">回复消息</strong><small id="replyAnchorText"></small></span>
             <button id="cancelReplyAnchorBtn" type="button" title="取消回复" aria-label="取消回复">×</button>
           </div>
           <div class="attachment-tray hidden" id="attachmentTray" aria-live="polite"></div>
+          <div class="composer-tools" id="composerTools" aria-label="当前选择的工具" hidden></div>
+          <div class="tool-picker-menu" id="toolPickerMenu" role="menu" aria-label="添加图片、文件或工具" hidden></div>
           <div class="chat-compose-row">
-            <button class="attach-file-btn" id="attachFileBtn" type="button" title="添加图片或文件" aria-label="添加图片或文件">＋</button>
+            <button class="attach-file-btn" id="attachFileBtn" type="button" title="添加图片、文件或工具" aria-label="添加图片、文件或工具" aria-haspopup="menu" aria-controls="toolPickerMenu" aria-expanded="false">＋</button>
             <textarea id="userInput" rows="1" autocomplete="off" placeholder="输入消息，或添加图片/文件..." aria-label="消息"></textarea>
             <button class="send-message-btn" id="chatSubmitBtn" type="submit" title="发送" aria-label="发送">
               <svg class="send-line-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -801,6 +814,7 @@
           <button data-tab="interaction" type="button">互动</button>
           <button data-tab="voice" type="button">声音</button>
           <button data-tab="permissions" type="button">权限</button>
+          <button data-tab="qq" type="button">QQ</button>
           <button data-tab="memory" type="button">记忆</button>
           <!-- AMADEUS_RELEASE_STRIP_START:persona-tab -->
           <button class="release-path-hidden" data-tab="persona" type="button">人格</button>
@@ -839,6 +853,15 @@
             模型名称（Model）
             <input id="apiModelInput" spellcheck="false" placeholder="填写要使用的模型 ID">
           </label>
+          <label class="field">
+            硬上下文上限（tokens）
+            <input id="apiContextLimitInput" type="number" min="4096" max="16777216" step="1" inputmode="numeric" placeholder="未知服务默认 65536">
+          </label>
+          <label class="field">
+            提前压缩阈值（可选，tokens）
+            <input id="apiContextCompactThresholdInput" type="number" min="1024" max="16777215" step="1" inputmode="numeric" placeholder="留空使用自动策略">
+          </label>
+          <div class="hint" id="apiContextCapacityHint">硬上限决定请求预算；提前压缩阈值留空时使用自动策略。</div>
           <label class="field">
             纠正与自修复模型
             <select id="cognitiveRepairModelInput">
@@ -1079,9 +1102,10 @@
         </div>
 
         <div class="tab-page" data-page="voice">
+          <div class="hint">回复我：这里控制主界面的语音朗读和语言。QQ 回复别人的语音开关、频率和语言在「QQ 设置 → 怎么回复」中单独配置，也可为每个联系人分别设置。</div>
           <label class="check-row">
             <input id="voiceEnabledInput" type="checkbox">
-            <span>语音朗读</span>
+            <span>朗读主界面给我的回复</span>
           </label>
           <label class="check-row">
             <input id="lipSyncEnabledInput" type="checkbox">
@@ -1102,10 +1126,10 @@
           <div class="hint">当前默认关闭，便于与原始拼接方式对比；切换不更换模型、权重或参考音频。</div>
           <div class="two-col">
             <label class="field">
-              Amadeus System 发声语言
+              回复我的语音语言
               <select id="speechLanguageInput">
-                <option value="ja-JP">日语（当前生产方案）</option>
-                <option value="zh-CN">中文（工程实验版）</option>
+                <option value="ja-JP">日文</option>
+                <option value="zh-CN">中文</option>
               </select>
             </label>
             <label class="field">
@@ -1126,7 +1150,7 @@
             TTS Locale（由发声语言同步）
             <input id="voiceLocaleInput" spellcheck="false" placeholder="ja-JP" readonly>
           </label>
-          <div class="hint">中文模式直接朗读完整中文回复；日语模式继续使用语义对齐后的日文发声稿。切换语言会重启 GPT-SoVITS。</div>
+          <div class="hint">中文模式朗读中文回复；日语模式使用对应的日文发声稿。主界面和 QQ 可分别选择语言，共用原来的音色与合成服务。</div>
           <div class="two-col">
             <label class="field">
               本地 TTS
@@ -1151,21 +1175,14 @@
               <strong>GPT-SoVITS</strong>
               <span id="gptSovitsStatus">未启动</span>
             </div>
-            <div class="two-col">
-              <label class="field">
-                声音预设
-                <select id="gptSovitsPresetInput">
-                  <option value="emotionclarity_v7_retrained_short">EmotionClarity V7（短句增强默认）</option>
-                  <option value="emotionclarity_v6">EmotionClarity V6（清晰推荐）</option>
-                  <option value="custom">自定义路径</option>
-                </select>
-              </label>
+            <input id="gptSovitsPresetInput" type="hidden" value="emotionclarity_v7_retrained_short">
+            <div class="hint" id="gptSovitsPresetHint">中文使用清晰发音方案，日文沿用原有发音方式。</div>
+            <details>
+              <summary>服务设置</summary>
               <label class="field">
                 服务端口
                 <input id="gptSovitsPortInput" type="number" min="1024" max="65535" step="1">
               </label>
-            </div>
-            <div class="hint" id="gptSovitsPresetHint">选择预设只会把参数载入下方表单，不会保存，也不会切换正在运行的模型。</div>
             <label class="field">
               Conda 环境
               <input id="gptSovitsCondaEnvInput" spellcheck="false">
@@ -1200,6 +1217,7 @@
               情绪参考映射 Style Map
               <input id="gptSovitsStyleMapInput" spellcheck="false" placeholder="可选：按 calm/sharp/soft 等语气选择参考音频">
             </label>
+            </details>
             <div class="hint">“保存并启动/重启”会保存本页全部语音参数，并立即让 GPT-SoVITS 使用它们；“仅保存”不会立刻重启，但新配置会在下次启动时生效。若开启自动启动，下一次发声可能触发该启动。</div>
             <div class="button-row">
               <button id="startGptSovitsBtn" type="button">保存并启动/重启模型</button>
@@ -1232,6 +1250,11 @@
             <span>允许 Amadeus System 读取 Agent 工作区内的文件和目录</span>
           </label>
           <label class="check-row">
+            <input id="permissionQqControlInput" type="checkbox">
+            <span>允许 Amadeus 查看 QQ 代管状态、生成回复草稿，以及按要求暂停或恢复代管</span>
+          </label>
+          <div class="hint">在设置顶部的「QQ」页扫码、选择回复范围和模式。Amadeus 使用自己的身份处理 QQ 消息；账号用途和对外说话方式分别设置。</div>
+          <label class="check-row">
             <input id="permissionFileWriteInput" type="checkbox">
             <span>允许 Amadeus System 在 Agent 工作区内创建或修改文本文件</span>
           </label>
@@ -1255,25 +1278,305 @@
               <span id="webSearchStatus">权限关闭</span>
             </div>
             <label class="field">
-              搜索服务
+              主搜索
               <select id="webSearchProviderInput">
+                <option value="deepseek">DeepSeek Search（搜索/抓取成功各 0.005 元）</option>
                 <option value="duckduckgo">DuckDuckGo Lite（免 Key）</option>
                 <option value="bing">Bing（免 Key）</option>
                 <option value="brave">Brave Search API（需要 Key）</option>
               </select>
             </label>
             <label class="field">
-              搜索 API Key
-              <input id="webSearchApiKeyInput" type="password" spellcheck="false" placeholder="DuckDuckGo 不需要填写">
+              备用搜索
+              <select id="webSearchFallbackProviderInput">
+                <option value="bing">Bing 网页搜索（主搜索无结果或失败时使用）</option>
+                <option value="duckduckgo">DuckDuckGo 网页搜索</option>
+                <option value="none">关闭备用搜索</option>
+              </select>
+            </label>
+            <label class="field">
+              搜索服务 Key
+              <input id="webSearchApiKeyInput" type="password" spellcheck="false" placeholder="官方 DeepSeek 端点留空复用主 Key；其他模型需独立 DeepSeek Search Key">
             </label>
             <label class="field">
               每次来源数量
               <input id="webSearchMaxResultsInput" type="number" min="1" max="8" step="1">
             </label>
-            <div class="hint">只访问公网 HTTP(S) 文本页面；本机、局域网、异常端口、下载文件和超大响应会被拒绝。网页内容不会写入长期记忆。启用后，搜索服务与来源网站可看到查询请求和你的公网 IP。</div>
+            <div class="hint">主搜索无结果或失败时，自动用备用服务继续查询；DeepSeek 读不到正文时也会尝试直接读取网页。官方 DeepSeek 模型端点可复用主 Key，其他模型使用独立搜索 Key；密钥不会发给备用搜索。普通检索以中文 60%、英文 40% 为目标，新闻和学术以中文 30%、英文 70% 为目标，按相关性和原始资料质量取舍。只访问公开网页。</div>
             <button class="full-button" id="testWebSearchBtn" type="button">测试搜索与正文读取</button>
           </div>
           <button class="full-button" id="savePermissionsBtn" type="button">保存权限设置</button>
+        </div>
+
+        <div class="tab-page" data-page="qq" id="qqSetup">
+          <div class="qq-page" data-qq="main-page">
+          <div class="model-box qq-overview">
+            <div class="qq-run-row">
+              <div class="qq-run-copy">
+                <strong class="qq-title">QQ 代管</strong>
+                <span class="qq-state" data-qq="status" role="status" aria-live="polite">正在读取状态…</span>
+                <p data-qq="message" class="qq-note">读取完成后，这里会显示下一步操作</p>
+              </div>
+              <button class="qq-main-toggle" data-qq="toggle" type="button" title="正在读取状态" aria-label="正在读取状态" disabled>…</button>
+            </div>
+            <p class="qq-setup-account" data-qq="account">正在读取登录账号…</p>
+            <details class="qq-details qq-login-details" data-qq="login-details" hidden>
+              <summary>手机扫码登录</summary>
+              <div class="qq-setup-login" data-qq="login" hidden>
+                <img data-qq="qr" alt="使用手机 QQ 扫码登录" width="192" height="192" hidden>
+                <p class="qq-note" data-qq="login-note">手机 QQ 扫码并确认登录；登录后再选择回复对象</p>
+                <button data-qq="refresh-qr" type="button" title="刷新登录二维码" aria-label="刷新登录二维码">刷新二维码</button>
+              </div>
+            </details>
+            <details class="qq-details qq-account-settings" data-qq="account-switcher">
+              <summary>账号与登录</summary>
+              <div class="qq-account-switcher">
+                <div class="qq-account-switch-row">
+                  <label class="field">已保存的 QQ 配置
+                    <select data-qq="account-profiles" aria-label="已保存的 QQ 配置"></select>
+                  </label>
+                  <button data-qq="select-account" type="button" title="切换到选中的 QQ 配置" aria-label="切换到选中的 QQ 配置" disabled>切换配置账号</button>
+                </div>
+                <label class="field">新增 QQ 账号
+                  <input data-qq="new-account" type="text" inputmode="numeric" autocomplete="off" placeholder="填写 QQ 号后点击切换">
+                </label>
+                <label class="field">账号用途
+                  <select data-qq="account-role" aria-label="账号用途">
+                    <option value="assistant">Amadeus 的专用账号</option>
+                    <option value="owner">我的个人账号（由 Amadeus 代回）</option>
+                  </select>
+                </label>
+                <p class="qq-note" data-qq="account-profile-note" role="status" aria-live="polite">账号用途、设置、联系人和聊天上下文按账号独立保存；切换后暂停，需登录对应账号。</p>
+              </div>
+              <div data-qq="component-setup" hidden>
+                <p class="qq-note" data-qq="component-note">QQ 接入组件已内置，代管默认关闭</p>
+                <details class="qq-details" data-qq="client-picker">
+                  <summary>手动指定 QQ 路径</summary>
+                  <label class="field">QQ.exe 路径<input data-qq="client-path" placeholder="例如 C:\Program Files\Tencent\QQNT\QQ.exe"></label>
+                </details>
+                <button data-qq="setup" type="button" title="连接本机 QQ" aria-label="连接本机 QQ">连接本机 QQ</button>
+                <p class="qq-note">扫码登录后，再点击顶部主控开始代管</p>
+              </div>
+              <div data-qq="account-change" hidden>
+                <p class="qq-note" data-qq="account-change-note"></p>
+                <button data-qq="use-account" type="button" title="使用当前已登录的 QQ 账号及其独立配置" aria-label="使用当前已登录的 QQ 账号及其独立配置">使用这个账号</button>
+              </div>
+
+            </details>
+            <details class="qq-details qq-owner-settings" data-qq="owner-settings">
+              <summary>主人权限</summary>
+              <div class="qq-owner-settings-body">
+              <label class="field">你的本人 QQ 号
+                <textarea data-qq="owner-ids" rows="2" inputmode="numeric" placeholder="可填写多个 QQ 号，用逗号或换行分隔"></textarea>
+              </label>
+              <label class="check-row">
+                <input data-qq="owner-control-enabled" type="checkbox">
+                <span>允许主人通过 QQ 操控助手</span>
+              </label>
+              <label class="check-row">
+                <input data-qq="owner-control-in-groups" type="checkbox" disabled>
+                <span>也允许主人在群里 @ 助手时下指令</span>
+              </label>
+              <label class="check-row">
+                <input data-qq="owner-developer-mode" type="checkbox" disabled>
+                <span>开发者指令入口：/dev</span>
+              </label>
+              <p class="qq-note">开启后，主人发送「/dev 帮我完成……」会直接进入本地聊天的执行流程；群里仍需 @ 助手，结果私聊返回。</p>
+              <p class="qq-note">直接开关：/dev pause 暂停当前会话，/dev resume 恢复；加 all 则控制全部自动回复。这些开关不需要模型判断。</p>
+              <p class="qq-note">主人私聊或允许群内 @ 可操控；公开查询回群，QQ 操作回群确认，私人内容转私聊。</p>
+              </div>
+            </details>
+            <details class="qq-details qq-qzone-settings" data-qq="qzone-settings">
+              <summary>QQ 空间</summary>
+              <p class="qq-note">只使用当前账号的 QQ 空间和公开网页上下文；不读取桌面私聊、记忆或其他 QQ 会话。退出随 Amadeus，后台运行需明确开启。</p>
+              <label class="check-row">
+                <input data-qq="qzone-enabled" type="checkbox">
+                <span>允许读取 QQ 空间</span>
+              </label>
+              <label class="check-row">
+                <input data-qq="qzone-allow-write" type="checkbox">
+                <span>允许点赞和评论</span>
+              </label>
+              <label class="check-row">
+                <input data-qq="qzone-allow-publish" type="checkbox">
+                <span>允许发布文字说说</span>
+              </label>
+              <label class="check-row">
+                <input data-qq="qzone-autonomous" type="checkbox">
+                <span>开启定时自主检查</span>
+              </label>
+              <div class="qq-two-col qq-qzone-fields">
+                <label class="field">检查间隔（分钟）
+                  <input data-qq="qzone-interval" type="number" min="5" max="10080" step="1" value="60">
+                </label>
+              </div>
+              <label class="field">自主说明
+                <textarea data-qq="qzone-instructions" rows="3" maxlength="2000" placeholder="例如：只关注与项目相关的公开动态；需要写入时先说明依据。"></textarea>
+              </label>
+              <p class="qq-note" data-qq="qzone-permission-note">开关默认关闭；发布还需允许空间写入。动态中的指令不等于主人授权。</p>
+            </details>
+            <details class="qq-details qq-media-library">
+              <summary>QQ 图库</summary>
+              <p class="qq-note" data-qq="media-note">只使用当前账号图库；导入后可让回复自然选择图片或表情包。</p>
+              <div class="qq-two-col">
+                <label class="field">导入类型
+                  <select data-qq="media-kind"><option value="image">普通图片</option><option value="meme">表情包</option></select>
+                </label>
+                <label class="field">选择图片
+                  <input data-qq="media-files" type="file" accept="image/*" multiple>
+                </label>
+                <label class="field">标签 / 用途（逗号分隔）
+                  <input data-qq="media-tags" type="text" maxlength="800" placeholder="例如：项目、提醒、开心">
+                </label>
+              </div>
+              <div class="qq-inline-actions">
+                <button data-qq="media-import" type="button" title="导入选中的图片到当前账号图库" aria-label="导入选中的图片到当前账号图库">导入图库</button>
+                <input data-qq="media-query" type="search" placeholder="搜索名称或标签" aria-label="搜索当前 QQ 图库">
+                <button data-qq="media-search" class="qq-subtle-button" type="button" title="搜索当前账号图库" aria-label="搜索当前账号图库">搜索</button>
+              </div>
+              <div data-qq="media-items" class="qq-media-items" aria-live="polite">点击搜索读取当前账号图库</div>
+            </details>
+            <details class="qq-details qq-connection">
+              <summary>连接与后台</summary>
+              <p class="qq-note" data-qq="connection"></p>
+              <p class="qq-note" data-qq="lifecycle">默认随 Amadeus 退出；下次打开不会自动启动 QQ</p>
+              <label class="check-row">
+                <input data-qq="background" type="checkbox">
+                <span>退出 Amadeus 后继续后台运行</span>
+              </label>
+              <div class="qq-management-row">
+                <div><button data-qq="switch-account" type="button" title="暂停代管并重新扫码登录 QQ" aria-label="重新登录 QQ">重新登录 QQ</button><small>重新扫码；不切换已保存配置</small></div>
+                <div><button data-qq="refresh" type="button" title="重新检查 QQ 连接并保留编辑" aria-label="刷新 QQ 状态">刷新状态</button><small>保留正在编辑的设置</small></div>
+                <div><button data-qq="stop" class="qq-exit" type="button" title="停止回复并关闭 QQ 连接" aria-label="退出 QQ 后台" disabled>退出 QQ 后台</button><small>保留好友和回复设置</small></div>
+              </div>
+            </details>
+          </div>
+          <div class="model-box">
+            <div class="model-box-head"><strong>回复谁</strong><span data-qq="scope-count"></span></div>
+            <p class="qq-note">点击对象旁的「设置」进入专属页面；▶ / ⏸ 控制是否回复这个对象。</p>
+            <p class="qq-note" data-qq="names-status" role="status"></p>
+            <div data-qq="muted" class="qq-conversations" aria-live="polite">尚未添加好友或群</div>
+            <details class="qq-details" data-qq="add-section">
+              <summary>添加好友或群</summary>
+              <div class="qq-contact-picker">
+                <label class="field">选择联系人
+                  <select data-qq="contact"><option value="">连接 QQ 后读取好友和群</option></select>
+                </label>
+                <div class="qq-inline-actions">
+                  <button data-qq="add-contact" type="button">加入列表</button>
+                  <button data-qq="load-contacts" class="qq-subtle-button" type="button">刷新联系人</button>
+                </div>
+                <p class="qq-note" data-qq="contacts-status" role="status" aria-live="polite">添加后点击底部「保存设置」</p>
+              </div>
+            </details>
+            <details class="qq-details">
+              <summary>手动编辑 QQ 号和群号</summary>
+              <label class="field">好友 QQ 号
+                <textarea data-qq="friends" rows="2" placeholder="多个号码用逗号或换行分隔；删除号码即可移出列表"></textarea>
+              </label>
+              <label class="field">群号
+                <textarea data-qq="groups" rows="2" placeholder="留空不回复群；群内需要 @ 当前账号"></textarea>
+              </label>
+            </details>
+          </div>
+          <details class="model-box qq-default-settings">
+            <summary>回复设置</summary>
+            <p class="qq-note">未单独设置的好友和群使用这些默认值。要只调整某个人，请点击该对象旁的「设置」。</p>
+            <label class="field">回复方式
+              <select data-qq="mode">
+                <option value="review">先生成草稿，我确认后才发送</option>
+                <option value="auto">自动回复，直接发送</option>
+              </select>
+            </label>
+            <label class="field">QQ 人格模式
+              <select data-qq="reply-style">
+                <option value="auto">按场景：私聊红莉栖 · 群聊贴吧（默认）</option>
+                <option value="game">红莉栖人格</option>
+                <option value="tieba">贴吧人格 · 孙吧语料</option>
+                <option value="kangba">最强攻击性语料</option>
+              </select>
+            </label>
+            <p class="qq-note" data-qq="corpus-status" role="status" aria-live="polite"></p>
+            <p class="qq-note">每个对象的「设置」可单独切换。本地主对话保持红莉栖人格。主人也可私聊或在群里 @ 她发送 /persona 孙吧、/persona 抗吧、/persona game；/persona auto 恢复当前会话的默认值，修改后与这里同步。</p>
+            <label class="field">回复形式
+              <select data-qq="reply-format">
+                <option value="text">文字回复（默认）</option>
+                <option value="voice">语音回复</option>
+              </select>
+            </label>
+            <label class="field">每条 QQ 气泡字数上限（0 不拆分）
+              <input data-qq="bubble-chars" type="number" min="0" max="240" step="1" value="60">
+            </label>
+            <p class="qq-note">按完整句或分句分成多条消息，URL、代码和数字不从中间截断，最多 8 条。</p>
+            <label class="field">语音回复频率（%，仅语音模式生效）
+              <input data-qq="voice-percent" type="number" min="0" max="100" step="1" value="100">
+            </label>
+            <label class="field">QQ 回复别人的语音语言
+              <select data-qq="speech-language">
+                <option value="inherit">跟随桌面语音语言（默认）</option>
+                <option value="zh-CN">中文</option>
+                <option value="ja-JP">日文</option>
+              </select>
+            </label>
+            <p class="qq-note">语音模式由主人明确开启，QQ 来信不能切换。0% 只发文字，100% 每条语音，中间值按每条回复的概率选择；文字模式始终只发文字。语音复用桌面音色与合成设置，语言可单独选择；已生成草稿保持生成时的语言。</p>
+            <label class="field">回复要求
+              <textarea data-qq="instructions" rows="2" maxlength="2000" placeholder="例如：一两句话，语气随意一点。也可以直接和助手说。"></textarea>
+            </label>
+            <label class="field">对外说话方式
+              <select data-qq="identity">
+                <option value="assistant">以 Amadeus 自己的身份说话</option>
+                <option value="owner">代我用第一人称回复</option>
+              </select>
+            </label>
+            <p class="qq-note">默认可按每个对象单独调整；账号用途和发言方式分别保存。</p>
+            <details class="qq-details">
+              <summary>发送上限、延迟与上下文</summary>
+              <label class="field">每小时发送上限（0 表示不限）<input data-qq="quota" type="number" min="0" step="1" value="0"></label>
+              <p class="qq-note">这是本机对整个账号的总量设置，好友和群合计；默认不限。</p>
+              <label class="field">回复等待方式<select data-qq="delay-mode"><option value="fixed">固定停顿</option><option value="length">随字数增加等待时间</option></select></label>
+              <div class="qq-two-col">
+                <label class="field">基础停顿（秒）<input data-qq="delay" type="number" min="0" max="30" step="1" value="3"></label>
+                <label class="field">读取最近几条消息<input data-qq="history" type="number" min="0" max="30" step="1" value="10"></label>
+              </div>
+              <label class="check-row">
+                <input data-qq="compact" type="checkbox" checked>
+                <span>单行回复，不在句末加句号</span>
+              </label>
+              <p class="qq-note">等待会小幅随机浮动。按字数模式额外增加「字数 ÷ 6」秒，最长 30 秒；固定模式设 0 秒则不额外等待。生成回复的耗时另计。上下文会区分发言者；图片和表情包使用当前视觉模型理解。</p>
+              <p class="qq-note">群聊默认被 @ 后参与；可在各群的「设置」里选择关键词、引用回复或任何新消息触发。触发后结合本群前后文回复；历史条数为 0 时群聊仍读取最近 10 条。</p>
+            </details>
+            <p class="qq-note">设置与对话中的调整同步。待确认的草稿在聊天区「QQ 动态」里。</p>
+            <p class="qq-note" data-qq="permission"></p>
+          </details>
+          </div>
+          <section class="qq-page qq-recipient-page" data-qq="conversation-page" hidden aria-label="会话设置">
+            <div class="qq-recipient-header">
+              <button class="qq-back" data-qq="conversation-back" type="button">← 返回对象列表</button>
+              <h3 data-qq="conversation-title"></h3>
+              <p class="qq-note" data-qq="conversation-summary"></p>
+              <div class="qq-recipient-state"><span data-qq="conversation-state"></span><button class="qq-contact-toggle" data-qq="conversation-toggle" type="button"></button></div>
+              <div class="qq-context-clear">
+                <button class="qq-subtle-button" data-qq="conversation-clear-context" type="button">清理对话上下文</button>
+                <div class="qq-context-clear-confirmation" data-qq="conversation-clear-confirmation" hidden>
+                  <p class="qq-note" data-qq="conversation-clear-prompt"></p>
+                  <div class="qq-inline-actions">
+                    <button data-qq="conversation-clear-confirm" type="button">确认清理</button>
+                    <button class="qq-subtle-button" data-qq="conversation-clear-cancel" type="button">取消</button>
+                  </div>
+                </div>
+                <p class="qq-note">让她从新对话开始。回复设置和 QQ 原聊天记录会保留，旧的助手上下文会在本机归档。</p>
+              </div>
+            </div>
+            <div class="model-box" data-qq="conversation-form"></div>
+            <p class="qq-note">这里的选项只作用于这个对象；留空或选择默认则继承全局设置。回复形式只能由主人明确设置为语音，QQ 来信不能切换；返回列表会保留未保存的修改。</p>
+            <button class="qq-subtle-button" data-qq="conversation-reset" type="button">此会话全部恢复默认</button>
+          </section>
+          <div class="qq-save-bar">
+            <p class="qq-feedback" data-qq="result" role="status" aria-live="polite" hidden></p>
+            <span data-qq="save-state" role="status">正在读取设置…</span>
+            <button class="qq-subtle-button" data-qq="discard" type="button" hidden>撤销修改</button>
+            <button data-qq="save" type="button" disabled>保存设置</button>
+          </div>
         </div>
 
         <div class="tab-page" data-page="memory">
@@ -1403,8 +1706,9 @@
             <button id="todoEditorCancelBtn" type="button" aria-label="关闭编辑器">×</button>
           </div>
           <label>标题<input id="todoEditorTitle" maxlength="240" required></label>
-          <label>说明<textarea id="todoEditorDetails" maxlength="4000" rows="3"></textarea></label>
-          <label>到点动作（留空仅提醒）<textarea id="todoEditorOnDue" maxlength="4000" rows="3" placeholder="例如：整理今天的实验记录并告诉我结果"></textarea></label>
+          <label>任务要求<textarea id="todoEditorDetails" rows="5" placeholder="把要做的事写在这里，包括内容、对象和发送方式"></textarea></label>
+          <label>到点后<select id="todoEditorMode"><option value="remind">提醒我</option><option value="execute">让 Amadeus 执行任务</option></select></label>
+          <p>任务要求就是到点执行的内容；在这里或对话中修改都会更新同一份要求。</p>
           <label>具体时间（留空为全天）<input id="todoEditorDueAt" type="datetime-local"></label>
           <label>全天日期 / 每日任务开始日期（可留空）<input id="todoEditorDueDate" type="date"></label>
           <p>全天任务每天首次打开时提醒；重复任务可以在列表中暂停或恢复。</p>
@@ -1485,8 +1789,12 @@
     <script>window.PIXI = PIXI;</script>
     <script src="/assets/vendor/live2d/pixi-live2d-display-cubism4.min.js"></script>
     <script src="proactive_logic.js?v=20260721-release-tool-vision-selection-v78"></script>
-    <script src="chat/proactive_controller.js?v=20260923-proactive-controller"></script>
+    <script src="chat/proactive_controller.js?v=20261031-proactive-waiting"></script>
     <script src="chat/reminder_polling.js?v=20260923-reminder-polling"></script>
+    <script src="chat/delivery_projection.js?v=20261031-structured-delivery-projection"></script>
+    <script src="chat/qq_activity.js?v=20261031-quiet-success"></script>
+    <script src="chat/tool_picker.js?v=20261026-qq-controls"></script>
+    <script src="settings/qq_setup.js?v=20261031-forum-personas"></script>
     <script src="chat/todo_controller.js?v=20261024-recurring-ui"></script>
     <script src="emotion_intensity_curve.js?v=20260727-end-dense-v135"></script>
     <script src="annotated_expression_map.js?v=20260728-agent-permissions-v142"></script>
@@ -1511,12 +1819,12 @@
     <script src="chat/history_search.js?v=20260921"></script>
     <script src="chat/conversation_picker.js?v=20260921-conversation-picker-controller"></script>
     <script src="chat/bookmarks.js?v=20260921-bookmarks-controller"></script>
-    <script src="chat/message_view.js?v=20260921-message-view-controller"></script>
+    <script src="chat/message_view.js?v=20261031-quiet-history"></script>
     <script src="chat/conversation_state.js?v=20260923-conversation-state-controller"></script>
     <script src="audio/mouth_shapes.js?v=20260921"></script>
     <script src="chat/speech_playback.js?v=20260921"></script>
-    <script src="chat/chat_controller.js?v=20260923-chat-controller"></script>
-    <script src="chat/thinking_indicator.js?v=20260923-thinking-indicator-controller"></script>
+    <script src="chat/chat_controller.js?v=20261031-quiet-delivery"></script>
+    <script src="chat/thinking_indicator.js?v=20261031-waiting-icon"></script>
     <script src="settings/settings_controller.js?v=20261025-settings-controller"></script>
     <script src="settings/update_controller.js?v=20261022-update-controller"></script>
     <script src="settings/model_profile_controller.js?v=20261025-model-profile-editor"></script>
@@ -1531,6 +1839,6 @@
     <script src="developer/model_editor.js?v=20260923-model-editor-controller"></script>
     <script src="developer/voice_reference_controller.js?v=20260923-voice-reference-controller"></script>
     <script src="developer/parameter_lab.js?v=20260923-parameter-lab"></script>
-    <script src="live2d_app.js?v=20261025-profile-editor"></script>
+    <script src="live2d_app.js?v=20261031-proactive-waiting"></script>
   </body>
 </html>

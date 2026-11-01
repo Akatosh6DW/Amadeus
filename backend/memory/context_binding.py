@@ -48,8 +48,24 @@ class CognitiveMemoryBindingService:
             mid for mid, item in by_memory.items()
             if item.get("status") != "active"
         }
+        rejected_text = {
+            record.content for record in records
+            if record.memory_id in blocked
+        }
+        selected_contents = set(memories) - rejected_text
+        # A stored memory is available for retrieval, not permanently active
+        # prompt content. Rebuild its view from this turn's selected records,
+        # including fresh provenance after a correction. Keep retractions and
+        # same-turn, uncommitted beliefs so the reducer can still correct them.
+        projected_ids = {record.memory_id for record in records}
+        beliefs[:] = [item for item in beliefs if not (
+            isinstance(item, Mapping) and item.get('status') == 'active'
+            and (str(item.get('beliefId') or '').startswith('memory:')
+                 or item.get('memoryId') in projected_ids)
+        )]
         for record in records:
-            if record.memory_id not in by_memory and record.active and record.source_span:
+            if (record.memory_id not in blocked and record.active and record.source_span
+                    and record.content in selected_contents):
                 beliefs.append({
                     "beliefId": "memory:" + record.memory_id,
                     "memoryId": record.memory_id,
@@ -67,11 +83,6 @@ class CognitiveMemoryBindingService:
             body["_cognitiveOverlay"]["state"] = state
         else:
             body["_cognitiveBase"] = state
-        rejected_text = {
-            record.content for record in records
-            if record.memory_id in blocked
-        }
-        selected_contents = set(memories) - rejected_text
         memory_evidence: dict[str, dict[str, Any]] = {}
         for record in records:
             if record.active and record.source_span and record.content in selected_contents:
@@ -90,7 +101,9 @@ class CognitiveMemoryBindingService:
                 memory_evidence[ref] = entry
                 memory_evidence[record.memory_id] = entry
         body["_cognitiveEvidence"] = {
-            **(body.get("_cognitiveEvidence") or {}),
+            **{key: value for key, value in (body.get("_cognitiveEvidence") or {}).items()
+               if not (isinstance(value, Mapping) and value.get('sourceType') == 'user_memory'
+                       and value.get('historical'))},
             **memory_evidence,
         }
         return (

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from agent.action_grounding import PreparedTurn
-from agent.tool_architecture import build_turn_preflight
+from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
 from backend.tools.validation import normalize_tool_authorization
 
 
@@ -55,51 +55,10 @@ class ToolRequestService:
         resolution = resolution or self.ports.contextual_reference_resolution(user_message, messages)
         prepared = prepared_turn or self.ports.prepare_action_turn(user_message)
         requests: list[dict[str, Any]] = []
-        tool_preflight = build_turn_preflight(user_message, messages)
-        for tool_id in tool_preflight.mandatory_capabilities:
-            if tool_id not in {"capture_screen", "capture_camera"}:
-                continue
-            requests.append({
-                "name": tool_id,
-                "reason": (
-                    "semantic perception target requires current screen evidence"
-                    if tool_id == "capture_screen"
-                    else "semantic perception target requires current camera evidence"
-                ),
-                "selection": {
-                    "source": "unified_tool_preflight",
-                    "targetDomain": tool_preflight.perception.target_domain,
-                    "confidence": tool_preflight.perception.confidence,
-                },
-            })
-        if self.ports.is_time_query(user_message):
-            requests.append({"name": "get_system_time", "reason": "user asked current time/date"})
+        # The model owns tool selection in the cognitive path.  Local keyword
+        # classifiers may provide capability hints to prompts, but they must
+        # not turn time/visual wording into an execution obligation here.
         attachment_followup = self.ports.is_attachment_followup_query(user_message)
-        followup_visual_tool = (
-            ""
-            if attachment_followup
-            else self.ports.visual_followup_tool_name(user_message, resolution)
-        )
-        screen_history_mode = self.ports.screen_history_request_mode(user_message)
-        if (
-            screen_history_mode != "history_only"
-            and tool_preflight.perception.target_domain != "physical_user"
-            and (
-                tool_preflight.perception.target_domain != "unknown_visual"
-                or followup_visual_tool == "capture_screen"
-            )
-            and (self.ports.is_screen_query(user_message) or followup_visual_tool == "capture_screen")
-            and not any(item.get("name") == "capture_screen" for item in requests)
-        ):
-            requests.append({"name": "capture_screen", "reason": "user asked about screen/desktop"})
-        if (
-            tool_preflight.perception.target_domain not in {
-                "screen", "uploaded_image", "document", "unknown_visual",
-            }
-            and (self.ports.is_camera_query(user_message) or followup_visual_tool == "capture_camera")
-            and not any(item.get("name") == "capture_camera" for item in requests)
-        ):
-            requests.append({"name": "capture_camera", "reason": "user asked about camera/current appearance"})
         browser_continuation = prepared.pending_relation.relation == "continue"
         saved_bookmark_args = (
             self.ports.browser_action_args(user_message, messages, prepared)
@@ -131,15 +90,10 @@ class ToolRequestService:
             # An unresolved browser target is reported to QueryLoop.  The main
             # model may then choose web_search; this action parser must not create
             # a network request from lexical matching either.
-        workspace_request = self.ports.infer_workspace_current_state_request(
-            user_message,
-            (resolution or {}).get("referenceLedger")
-            if isinstance((resolution or {}).get("referenceLedger"), Mapping)
-            else None,
-        )
-        if workspace_request is not None:
-            requests.append(workspace_request)
-        # Reading/searching public information is intentionally not inferred here.
+        # File reads/listing are intentionally not inferred from natural
+        # language.  The cognitive model must emit a concrete file call; its
+        # arguments, permission and receipt are then checked by the executor.
+        # Reading/searching public information is likewise not inferred here.
         # Web schemas are exposed to the main model, which must emit the structured
         # tool_use itself after interpreting the complete turn.
         has_research = any(item.get("name") in {"web_search", "read_web_page"} for item in requests)
@@ -189,13 +143,9 @@ def normalize_tool_requests(value: Any) -> list[dict[str, Any]]:
             args = item.get("args") if isinstance(item.get("args"), dict) else {}
         else:
             continue
-        if name in {
-            "get_system_time", "capture_screen", "capture_camera", "web_search", "read_web_page",
-            "read_attachment", "read_image",
-            "list_directory", "read_text_file", "create_directory", "write_text_file", "open_browser",
-            "todo_search", "todo_list", "todo_manage", "bookmark_list", "bookmark_manage",
-            "local_compute",
-        }:
+        # Registry owns capability names; authorization remains in validation.
+        # A separate list silently discarded newly registered QQ tool calls.
+        if DEFAULT_TOOL_REGISTRY.get(name) is not None:
             selection = (
                 dict(item.get("selection"))
                 if isinstance(item, dict) and isinstance(item.get("selection"), Mapping)

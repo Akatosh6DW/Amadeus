@@ -15,24 +15,17 @@ from agent.dialogue_architecture import (
     TurnContract, UtteranceInterpretation, bind_current_visual_failure_contract,
     bind_current_visual_observation_contract, build_turn_contract, choose_turn_policy,
 )
-from agent.epistemic_architecture import grounded_claim_gate_decision, research_receipt_from_tool_results
+from agent.epistemic_architecture import research_receipt_from_tool_results
 from agent.participant_realization import strip_participant_realization_metadata
 from agent.persona_context import PersonaContextSnapshot
 from agent.proactive_control import PROACTIVE_DIRECTIVES
 from agent.research_architecture import EpistemicPlan, create_epistemic_plan
 from agent.visual_grounding import has_current_visual_evidence as has_typed_visual_evidence
-from backend.chat.completion import visual_grounding_text_fingerprint
-from backend.chat.errors import GroundingGateError
-from backend.chat.grounding import (
-    soft_fact_gate_can_degrade,
-    soft_grounding_boundary_reply, terminal_grounding_boundary_reply,
-)
-from backend.chat.presentation import SPEECH_PACE_SPEED, requested_speech_pace
+from backend.chat.delivery import require_delivery
+from backend.chat.presentation import speech_language_profile
 from backend.chat.reply_fields import normalize_proactive_directive, resolve_proactive_directive
 from backend.common.text import unique_strings
 from backend.providers.errors import UpstreamProtocolError
-from backend.research.citations import readable_public_source_uids
-from backend.visual.grounding import current_visual_grounding_verified, native_visual_input_delivered
 
 @dataclass(frozen=True)
 class ContextOperations:
@@ -51,7 +44,6 @@ class EvidenceOperations:
 
     apply_attachment_read_failure_boundary: Callable[..., Any]
     attach_verified_web_sources: Callable[..., Any]
-    rewrite_reply_for_grounding_gate: Callable[..., Any]
     enforce_external_action_receipt: Callable[..., Any]
     repair_reference_attribution_once: Callable[..., Any]
     refresh_visual_grounding_for_current_text: Callable[..., Any]
@@ -67,13 +59,7 @@ class PresentationOperations:
     align_spoken_text_ja: Callable[..., Any]
     punctuation_fallback_speech_units: Callable[..., Any]
     speech_unit_contract_for_result: Callable[..., Any]
-    enforce_identity_grounding: Callable[..., Any]
     enforce_speaker_attribution_grounding: Callable[..., Any]
-    enforce_direct_social_request: Callable[..., Any]
-    enforce_explicit_supportive_tone: Callable[..., Any]
-    enforce_distress_support_tone: Callable[..., Any]
-    enforce_explicit_laugh_request: Callable[..., Any]
-    enforce_explicit_choice_grounding: Callable[..., Any]
 
 
 @dataclass(frozen=True)
@@ -100,6 +86,163 @@ class ReplyFinalizer:
         self.write_log = write_log
         self.update_progress = update_progress
 
+    def _repair_missing_speech_units(
+        self,
+        settings: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        request_id: str = "",
+        persona_snapshot: PersonaContextSnapshot | None = None,
+    ) -> dict[str, Any]:
+        """补齐 accepted stream 中缺失的日语单元，同时冻结中文轨道。
+
+        快路径的中文单元已经通过 stream delivery 放行，不能再用整轮重写来
+        修复一个缺失的日语字段。这里逐个调用既有的有界日语对齐器；任何一
+        个单元修复失败都转为明确的 text-only 结果，避免把部分日语误当成完整
+        音频计划。
+        """
+
+        if speech_language_profile(settings)["speechLanguage"] != "ja-JP":
+            return result
+        # Voice-disabled turns must not add a new remote alignment request just
+        # because the accepted stream omitted an optional Japanese field.
+        if not settings.get("voiceEnabled", True):
+            return result
+        source_units = result.get("_modelSpeechUnits")
+        if not isinstance(source_units, list) or not source_units:
+            return result
+        if not any(
+            isinstance(item, Mapping)
+            and not str(item.get("spokenTextJa") or item.get("ja") or "").strip()
+            for item in source_units
+        ):
+            return result
+
+        alignment_persona_snapshot = (
+            persona_snapshot
+            if persona_snapshot is not None and persona_snapshot.uses_hybrid_provider_context
+            else None
+        )
+        repaired_units: list[dict[str, Any]] = []
+        failed_indexes: list[int] = []
+        repaired_count = 0
+        for index, raw_unit in enumerate(source_units):
+            unit = dict(raw_unit) if isinstance(raw_unit, Mapping) else {}
+            text_zh = str(unit.get("textZh") or unit.get("zh") or "").strip()
+            spoken_ja = str(unit.get("spokenTextJa") or unit.get("ja") or "").strip()
+            if not text_zh:
+                unit["textOnlyDelivery"] = True
+                unit["speechUnavailableReason"] = "spoken_alignment_failed"
+                unit["ttsUnavailableReason"] = "spoken_alignment_failed"
+                failed_indexes.append(index)
+                repaired_units.append(unit)
+                continue
+            if spoken_ja:
+                unit["textZh"] = text_zh
+                unit["spokenTextJa"] = spoken_ja
+                unit["textOnlyDelivery"] = False
+                unit.pop("speechUnavailableReason", None)
+                unit.pop("ttsUnavailableReason", None)
+                repaired_units.append(unit)
+                continue
+
+            unit_result = {
+                **result,
+                "reply": text_zh,
+                "textZh": text_zh,
+                "spokenTextJa": "",
+                "spokenTextJaMissingFromModel": True,
+            }
+            try:
+                aligned = (
+                    self.presentation.align_spoken_text_ja(
+                        settings,
+                        unit_result,
+                        persona_snapshot=alignment_persona_snapshot,
+                    )
+                    if alignment_persona_snapshot is not None
+                    else self.presentation.align_spoken_text_ja(settings, unit_result)
+                )
+            except Exception as error:
+                self.write_log(
+                    "spoken_ja_unit_repair_failed",
+                    requestId=request_id,
+                    unitIndex=index,
+                    errorType=type(error).__name__,
+                    error=str(error)[:500],
+                )
+                aligned = {}
+            fixed = str(aligned.get("spokenTextJa") or "").strip() if isinstance(aligned, Mapping) else ""
+            if fixed and not str(aligned.get("speechUnavailableReason") or "").strip():
+                unit["textZh"] = text_zh
+                unit["spokenTextJa"] = fixed
+                unit["textOnlyDelivery"] = False
+                unit.pop("speechUnavailableReason", None)
+                unit.pop("ttsUnavailableReason", None)
+                repaired_count += 1
+            else:
+                unit["textZh"] = text_zh
+                unit["spokenTextJa"] = ""
+                unit["textOnlyDelivery"] = True
+                unit["speechUnavailableReason"] = "spoken_alignment_failed"
+                unit["ttsUnavailableReason"] = "spoken_alignment_failed"
+                failed_indexes.append(index)
+            repaired_units.append(unit)
+
+        result["_modelSpeechUnits"] = repaired_units
+        if failed_indexes:
+            playable_spoken = [
+                str(item.get("spokenTextJa") or "").strip()
+                for item in repaired_units
+                if str(item.get("textZh") or "").strip()
+                and str(item.get("spokenTextJa") or "").strip()
+                and not bool(item.get("textOnlyDelivery"))
+            ]
+            if playable_spoken:
+                # A failed unit is a local text-only hole in the ordered plan.
+                # Keep the valid units in the canonical Japanese projection so
+                # the buffered stream and final contract can deliver them.
+                result["spokenTextJa"] = "\n\n".join(playable_spoken)
+                result["speechText"] = result["spokenTextJa"]
+                result["textOnlyDelivery"] = False
+                result["speechPartialDelivery"] = True
+                result["speechPartialFailureUnitIndexes"] = failed_indexes
+                result["speechUnavailableReason"] = "spoken_alignment_partial_failure"
+                result["ttsUnavailableReason"] = "spoken_alignment_partial_failure"
+                result["spokenTextJaMissingFromModel"] = True
+                result["spokenTextJaRepaired"] = bool(repaired_count)
+                result["spokenTextJaRepairMode"] = "per_unit_partial"
+                result["spokenTextJaRepairFailedUnitIndexes"] = failed_indexes
+                return result
+
+            # No unit has a usable Japanese track.  Keep the canonical answer
+            # visible, but make the whole turn explicitly text-only.
+            result["spokenTextJa"] = ""
+            result["speechText"] = str(result.get("reply") or "")
+            result["textOnlyDelivery"] = True
+            result.pop("speechPartialDelivery", None)
+            result.pop("speechPartialFailureUnitIndexes", None)
+            result["speechUnavailableReason"] = "spoken_alignment_failed"
+            result["ttsUnavailableReason"] = "spoken_alignment_failed"
+            result["spokenTextJaMissingFromModel"] = True
+            result["spokenTextJaRepaired"] = bool(repaired_count)
+            result["spokenTextJaRepairMode"] = "per_unit_failed"
+            result["spokenTextJaRepairFailedUnitIndexes"] = failed_indexes
+            return result
+
+        result["spokenTextJa"] = "\n\n".join(
+            str(item.get("spokenTextJa") or "").strip() for item in repaired_units
+        )
+        result["spokenTextJaMissingFromModel"] = False
+        result["spokenTextJaRepaired"] = bool(repaired_count)
+        result["spokenTextJaRepairMode"] = "per_unit_alignment"
+        result["textOnlyDelivery"] = False
+        result.pop("speechPartialDelivery", None)
+        result.pop("speechPartialFailureUnitIndexes", None)
+        result.pop("speechUnavailableReason", None)
+        result.pop("ttsUnavailableReason", None)
+        return result
+
     def finalize(
         self,
         settings: dict[str, Any],
@@ -122,7 +265,8 @@ class ReplyFinalizer:
 
         if not isinstance(model_result, dict):
             raise UpstreamProtocolError("normalized upstream reply is not an object")
-        result = dict(model_result)
+        result = require_delivery(model_result, settings=settings, logger=self.write_log, request_id=request_id)
+        canonical_reply = result["reply"]
         if cognitive_body is not None:
             self.context.bind_turn_context_to_result(cognitive_body, result)
         cognitive_final = (result.get("_cognitiveOutcomeVerification") or {}).get("valid") is True
@@ -184,21 +328,20 @@ class ReplyFinalizer:
         if not isinstance(chat_metrics, dict):
             chat_metrics = {}
         chat_metrics["requestId"] = request_id
+        source_messages = None
+        if isinstance(cognitive_body, Mapping):
+            source_messages = [dict(row) for row in cognitive_body.get('messages', []) if isinstance(row, Mapping)]
+            current_id = str(chat_metrics.get('userMessageId') or cognitive_body.get('userMessageId') or '')
+            if current_id and not any(str(row.get('messageId') or row.get('id') or '') == current_id for row in source_messages):
+                source_messages.append({'messageId': current_id, 'role': 'user', 'content': user_message})
         conversation_tool_results = (
             result.get("_conversationToolResults")
             if isinstance(result.get("_conversationToolResults"), list)
             else []
         )
-        result = self.evidence.apply_attachment_read_failure_boundary(
-            result,
-            conversation_tool_results,
-        )
         receipt = research_receipt_from_tool_results(
             request_id,
             conversation_tool_results,
-        )
-        citation_source_uids = readable_public_source_uids(
-            conversation_tool_results
         )
         epistemic_plan = (
             EpistemicPlan.from_dict(prepared_for_contract.epistemic_plan)
@@ -239,147 +382,6 @@ class ReplyFinalizer:
         if isinstance(cognitive_body, dict):
             cognitive_body["_cognitiveTurnContract"] = contract
         epistemic_state = epistemic_plan.epistemic_state()
-        effective_research_policy = (
-            epistemic_plan.research_policy
-            if settings.get("permissionWebSearch")
-            and not result.get("webSearchFailed")
-            and not result.get("webEvidenceLimited")
-            else "forbidden"
-        )
-        # Web confidence and source coverage guide generation. They must not
-        # replace the model's answer with a fixed uncertainty sentence.
-        gate_decision = None
-        if not cognitive_final:
-            # Field repair in call_upstream may have changed Japanese after the first
-            # visual audit. Renew that receipt BEFORE the generic gate consumes it.
-            result = self.evidence.refresh_visual_grounding_for_current_text(
-                settings, semantic_task_request, result, conversation_tool_results,
-                request_id=request_id, phase="pre_claim_gate",
-                task_dialogue=task_dialogue,
-            )
-            gate_decision = grounded_claim_gate_decision(
-                str(result.get("reply") or ""),
-                epistemic_state,
-                receipt,
-                research_policy=effective_research_policy,
-                visual_evidence_verified=(current_visual_grounding_verified(result, conversation_tool_results)
-                                          or native_visual_input_delivered(result, conversation_tool_results)),
-                citation_source_uids=citation_source_uids,
-                enforce_web_claims=False,
-            )
-            self.write_log(
-                "grounded_claim_gate_decision",
-                requestId=request_id,
-                planId=epistemic_plan.plan_id,
-                planRevision=epistemic_plan.revision,
-                decision=gate_decision.to_dict(),
-            )
-            if (
-                gate_decision.status in {"REWRITE_WITH_UNCERTAINTY", "BLOCK"}
-                and self.configured(settings)
-            ):
-                self.update_progress(
-                    request_id,
-                    "grounding-rewrite",
-                    "正在收敛缺少证据的断言",
-                )
-                result = self.evidence.rewrite_reply_for_grounding_gate(
-                    settings,
-                    user_message,
-                    result,
-                    gate_decision,
-                    epistemic_plan,
-                    request_id=request_id,
-                    persona_snapshot=persona_snapshot,
-                )
-                result = self.evidence.refresh_visual_grounding_for_current_text(
-                    settings, semantic_task_request, result, conversation_tool_results,
-                    request_id=request_id, phase="post_claim_rewrite",
-                    task_dialogue=task_dialogue,
-                )
-                gate_decision = grounded_claim_gate_decision(
-                    str(result.get("reply") or ""),
-                    epistemic_state,
-                    receipt,
-                    research_policy=effective_research_policy,
-                    visual_evidence_verified=(current_visual_grounding_verified(result, conversation_tool_results)
-                                              or native_visual_input_delivered(result, conversation_tool_results)),
-                    citation_source_uids=citation_source_uids,
-                    enforce_web_claims=False,
-                )
-                self.write_log(
-                    "grounded_claim_gate_rewrite_decision",
-                    requestId=request_id,
-                    planId=epistemic_plan.plan_id,
-                    planRevision=epistemic_plan.revision,
-                    decision=gate_decision.to_dict(),
-                )
-            if gate_decision.status != "PASS":
-                self.write_log(
-                    "grounded_claim_gate_model_rewrite_rejected",
-                    requestId=request_id,
-                    violations=list(gate_decision.reasons),
-                    gateStatus=gate_decision.status,
-                    planId=epistemic_plan.plan_id,
-                    planRevision=epistemic_plan.revision,
-                    claimType="epistemic_or_research_claim",
-                )
-                if soft_fact_gate_can_degrade(epistemic_state, gate_decision):
-                    for cleanup_pass in range(1, 3):
-                        soft_boundary_targets = list(
-                            getattr(gate_decision, "missing_verification_targets", ()) or ()
-                        )
-                        result = soft_grounding_boundary_reply(result, gate_decision)
-                        self.write_log(
-                            "grounded_claim_gate_soft_boundary_applied",
-                            requestId=request_id,
-                            planId=epistemic_plan.plan_id,
-                            planRevision=epistemic_plan.revision,
-                            cleanupPass=cleanup_pass,
-                            targets=soft_boundary_targets,
-                        )
-                        gate_decision = grounded_claim_gate_decision(
-                            str(result.get("reply") or ""),
-                            epistemic_state,
-                            receipt,
-                            research_policy=effective_research_policy,
-                            visual_evidence_verified=False,
-                            citation_source_uids=citation_source_uids,
-                            enforce_web_claims=False,
-                        )
-                        if gate_decision.status == "PASS":
-                            break
-                        if not soft_fact_gate_can_degrade(epistemic_state, gate_decision):
-                            break
-                else:
-                    result = terminal_grounding_boundary_reply(result)
-                    gate_decision = grounded_claim_gate_decision(
-                        str(result.get("reply") or ""),
-                        epistemic_state,
-                        receipt,
-                        research_policy=effective_research_policy,
-                        visual_evidence_verified=False,
-                        citation_source_uids=citation_source_uids,
-                        enforce_web_claims=False,
-                    )
-                self.write_log(
-                    "grounded_claim_gate_terminal_boundary_decision",
-                    requestId=request_id,
-                    planId=epistemic_plan.plan_id,
-                    planRevision=epistemic_plan.revision,
-                    decision=gate_decision.to_dict(),
-                )
-            if gate_decision.status != "PASS":
-                self.write_log(
-                    "grounded_claim_gate_rejected",
-                    requestId=request_id,
-                    violations=list(gate_decision.reasons),
-                    gateStatus=gate_decision.status,
-                    planId=epistemic_plan.plan_id,
-                    planRevision=epistemic_plan.revision,
-                    claimType="epistemic_or_research_claim",
-                )
-                raise GroundingGateError(gate_decision)
         if receipt:
             result["researchReceipt"] = receipt.to_dict()
             self.write_log(
@@ -394,73 +396,10 @@ class ReplyFinalizer:
             )
         result["epistemicState"] = epistemic_state.to_dict()
         result["epistemicPlan"] = epistemic_plan.to_dict()
-        if gate_decision is not None:
-            result["groundingGate"] = gate_decision.to_dict()
-        else:
-            result["groundingGate"] = {
-                "status": "PASS",
-                "authority": "main_model_outcome",
-                "checks": "references_and_receipts",
-            }
+        result["groundingGate"] = {"status": "NOT_EVALUATED", "authority": "generation_context_and_host_receipts"}
         postprocess_text_mutations: list[dict[str, Any]] = []
-
-        def apply_validating_transform(
-            stage: str,
-            transformer,
-            current: dict[str, Any],
-        ) -> dict[str, Any]:
-            before_reply = str(current.get("reply") or "")
-            before_spoken = str(current.get("spokenTextJa") or "")
-            transformed = transformer(user_message, current)
-            if not isinstance(transformed, dict):
-                raise TypeError(f"{stage} returned {type(transformed).__name__}")
-            changed_fields: list[str] = []
-            if str(transformed.get("reply") or "") != before_reply:
-                changed_fields.append("reply")
-                transformed["reply"] = before_reply
-            if str(transformed.get("spokenTextJa") or "") != before_spoken:
-                changed_fields.append("spokenTextJa")
-                transformed["spokenTextJa"] = before_spoken
-            if changed_fields:
-                postprocess_text_mutations.append({
-                    "stage": stage,
-                    "changedFields": changed_fields,
-                    "accepted": False,
-                    "reason": "postprocessor_may_validate_metadata_but_must_not_author_prose",
-                })
-                transformed["postprocessTextMutationRejected"] = True
-            return transformed
-
-        before_external = {
-            "reply": str(result.get("reply") or ""),
-            "spokenTextJa": str(result.get("spokenTextJa") or ""),
-        }
-        result = result if cognitive_final else self.evidence.enforce_external_action_receipt(result, conversation_tool_results)
-        external_changed = [
-            key for key in ("reply", "spokenTextJa")
-            if str(result.get(key) or "") != before_external[key]
-        ]
-        if external_changed:
-            postprocess_text_mutations.append({
-                "stage": "external_action_receipt",
-                "changedFields": external_changed,
-                "accepted": True,
-                "reason": "tool_receipt_truth_grounding_requires_contract_revalidation",
-            })
-        result = self.presentation.enforce_nickname_reaction_grounding(
-            user_message,
-            result,
-            reaction_key=request_id,
-            persona_snapshot=persona_snapshot,
-        )
-        if not cognitive_final and isinstance(result.get("_referenceLedger"), Mapping):
-            result = self.evidence.repair_reference_attribution_once(
-                settings,
-                result,
-                result["_referenceLedger"],
-                request_id=request_id,
-                persona_snapshot=persona_snapshot,
-            )
+        if not cognitive_final:
+            result = self.evidence.enforce_external_action_receipt(result, conversation_tool_results)
         if (
             conversation_tool_results
             and not isinstance(result.get("sources"), list)
@@ -472,23 +411,6 @@ class ReplyFinalizer:
             )
         ):
             result = self.evidence.attach_verified_web_sources(result, conversation_tool_results)
-        if not isinstance(result.get("dialogueValidation"), dict):
-            validation = self.presentation.dialogue_validation_for_result(result, inferred_policy)
-            result["dialoguePolicy"] = inferred_policy.to_dict()
-            result["dialogueValidation"] = validation.to_dict()
-            chat_metrics.update({
-                "replyMode": inferred_policy.reply_mode,
-                "actionBudget": inferred_policy.action_budget,
-                "turnPolicyReason": inferred_policy.reason,
-                "turnPolicy": inferred_policy.to_dict(),
-                "replySentences": validation.sentence_count,
-                "replyCharacters": validation.character_count,
-                "assistantPhraseHits": list(validation.forbidden_phrase_hits),
-                "dialogueValidationIssues": list(validation.issues),
-                "dialogueStylePostDeliveryViolation": bool(
-                    preserve_accepted_text and validation.needs_rewrite
-                ),
-            })
         warnings: list[str] = []
 
         def warn(stage: str, error: Exception) -> None:
@@ -500,27 +422,6 @@ class ReplyFinalizer:
                 errorType=type(error).__name__,
                 error=str(error)[:500],
             )
-
-        transformer_stages = () if (cold_shoulder_short_circuit or preserve_accepted_text) else (
-            ("identity_grounding", self.presentation.enforce_identity_grounding),
-            ("speaker_attribution", self.presentation.enforce_speaker_attribution_grounding),
-            ("direct_social_request", self.presentation.enforce_direct_social_request),
-            ("explicit_supportive_tone", self.presentation.enforce_explicit_supportive_tone),
-            ("distress_support_tone", self.presentation.enforce_distress_support_tone),
-            ("explicit_laugh_request", self.presentation.enforce_explicit_laugh_request),
-            ("explicit_choice_grounding", self.presentation.enforce_explicit_choice_grounding),
-        )
-        for stage, transformer in transformer_stages:
-            try:
-                result = apply_validating_transform(stage, transformer, result)
-            except Exception as error:
-                warn(stage, error)
-
-        requested_pace = "" if cold_shoulder_short_circuit else requested_speech_pace(user_message)
-        if requested_pace:
-            result["speechPace"] = requested_pace
-            result["speechSpeed"] = SPEECH_PACE_SPEED[requested_pace]
-            result["speechPaceSource"] = "user_request"
 
         align_started = time.perf_counter()
         if not preserve_accepted_text:
@@ -570,6 +471,22 @@ class ReplyFinalizer:
                     # unavailability explicit instead of playing unrelated audio.
                     result["speechUnavailableReason"] = "spoken_alignment_failed"
                     result["ttsUnavailableReason"] = "spoken_alignment_failed"
+        if preserve_accepted_text:
+            try:
+                result = self._repair_missing_speech_units(
+                    settings,
+                    result,
+                    request_id=request_id,
+                    persona_snapshot=persona_snapshot,
+                )
+            except Exception as error:
+                warn("spoken_ja_unit_repair", error)
+                result["spokenTextJa"] = ""
+                result["speechText"] = str(result.get("reply") or "")
+                result["textOnlyDelivery"] = True
+                result["speechUnavailableReason"] = "spoken_alignment_failed"
+                result["ttsUnavailableReason"] = "spoken_alignment_failed"
+                result["spokenTextJaRepairMode"] = "per_unit_failed"
         spoken_align_ms = round((time.perf_counter() - align_started) * 1000)
 
         if isinstance(stream_preamble, dict):
@@ -582,13 +499,7 @@ class ReplyFinalizer:
                 result["streamPreamble"] = dict(stream_preamble)
                 result["streamPreambleExcludedFromFinal"] = True
 
-        if not cognitive_final:
-            result = self.evidence.refresh_visual_grounding_for_current_text(
-                settings, semantic_task_request, result, conversation_tool_results,
-                request_id=request_id, phase="final_text",
-                task_dialogue=task_dialogue,
-            )
-
+        result["reply"] = canonical_reply
         result = self.evidence.ensure_turn_contract_completion(
             settings,
             interpretation,
@@ -607,33 +518,6 @@ class ReplyFinalizer:
                 chat_metrics,
             ),
         )
-        if not cognitive_final and has_typed_visual_evidence(conversation_tool_results):
-            contracted_hash = visual_grounding_text_fingerprint(result)
-            if str(result.get("visualGroundingTextFingerprint") or "") != contracted_hash:
-                result = self.evidence.refresh_visual_grounding_for_current_text(
-                    settings, semantic_task_request, result, conversation_tool_results,
-                    request_id=request_id, phase="post_contract",
-                    task_dialogue=task_dialogue,
-                )
-                if result.get("visualGroundingTerminalBoundary"):
-                    result = self.evidence.ensure_turn_contract_completion(
-                        settings,
-                        interpretation,
-                        contract,
-                        result,
-                        request_id=request_id,
-                        text_mutated=False,
-                        allow_rewrite=False,
-                        upstream_finish_reason=upstream_finish,
-                        persona_snapshot=persona_snapshot,
-                        task_dialogue=task_dialogue,
-                        cognitive_body=cognitive_body,
-                        clarification_context=self.context.clarification_context_for_turn(
-                            result,
-                            prepared_for_contract,
-                            chat_metrics,
-                        ),
-                    )
         if persona_snapshot is not None:
             result["personaContextSnapshotId"] = persona_snapshot.snapshot_id
         if (
@@ -659,10 +543,21 @@ class ReplyFinalizer:
                     unitCount=len(fallback_units),
                     ellipsisIsBoundary=False,
                 )
-        generated_files = self.persistence.materialize_generated_files(result)
+        try:
+            generated_files = self.persistence.materialize_generated_files(result)
+        except Exception as error:
+            generated_files = []
+            warn("generated_files", error)
         if generated_files:
             result["files"] = generated_files
-        result = self.presentation.speech_unit_contract_for_result(result, request_id=request_id)
+        try:
+            result = self.presentation.speech_unit_contract_for_result(result, request_id=request_id)
+        except Exception as error:
+            warn("speech_units", error)
+            result["speechUnavailableReason"] = "speech_projection_failed"
+            result.pop("speechUnits", None)
+        result["reply"] = canonical_reply
+        result = require_delivery(result, settings=settings, logger=self.write_log, request_id=request_id)
         chat_metrics.update({
             "turnContractVerification": result.get("turnContractVerification") or "",
             "turnContractSemanticAuditCalls": int(result.get("turnContractSemanticAuditCalls") or 0),
@@ -732,6 +627,7 @@ class ReplyFinalizer:
             result["_deferredPersistence"] = {
                 "chatMetrics": dict(chat_metrics),
                 "coldShoulderShortCircuit": cold_shoulder_short_circuit,
+                "sourceMessages": source_messages,
             }
             return result
 
@@ -743,6 +639,7 @@ class ReplyFinalizer:
             interpretation=interpretation,
             chat_metrics=chat_metrics,
             cold_shoulder_short_circuit=cold_shoulder_short_circuit,
+            source_messages=source_messages,
         )
         warnings = unique_strings([*warnings, *persistence_warnings])
         result["ok"] = True

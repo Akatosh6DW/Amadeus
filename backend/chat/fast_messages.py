@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+from backend.context.prompt_assembly import system_message
+from agent.engineering_contracts import compact_engineering_enabled, schedule_prompt
+
 from dataclasses import dataclass, replace
 import json
 import math
@@ -31,6 +34,7 @@ from agent.schedule_architecture import SCHEDULE_INTENT_PROMPT
 from agent.tool_architecture import TurnPreflight, build_turn_preflight
 from agent.turn_context import pin_reply_context
 from backend.context.recall import retrieved_memory_prompt
+from backend.chat.preparation_cache import resolve_turn_references
 from backend.context.reference import contextual_reference_prompt, message_needs_recent_context
 
 
@@ -193,7 +197,8 @@ def build_fast_stream_messages(
         services.context.frozen_turn_relationship_state(body)
         or services.context.read_relationship_state()
     )
-    context_resolution = services.context.contextual_reference_resolution(
+    context_resolution = resolve_turn_references(
+        body, services.context.contextual_reference_resolution,
         user_message,
         messages,
         request_id=request_id,
@@ -218,89 +223,67 @@ def build_fast_stream_messages(
         body, user_message, snapshot=active_persona_snapshot, relationship_state=relationship_state
     )
     explicit_context_control = services.prompts.body_context_control_prompt(body)
+    from agent.engineering_contracts import PRELOADED_TOOL_KEY
+    from backend.context.reply_layers import reply_layer_messages, independent_persona
+    independent = independent_persona(active_persona_snapshot)
+    body[PRELOADED_TOOL_KEY] = list(active_capability.initially_loaded_tool_ids)
     result: list[dict[str, str]] = [
-        {"role": "system", "content": active_persona_snapshot.system_prompt},
-        {"role": "system", "content": policy.natural_dialogue_style},
-        {"role": "system", "content": deep_persona_prompt},
-        {"role": "system", "content": turn_persona_context["factsPrompt"]},
-        {"role": "system", "content": policy_prompt(active_policy)},
-        {"role": "system", "content": policy.speaker_attribution_rule},
-        {"role": "system", "content": policy.technical_accuracy_rule},
-        {"role": "system", "content": policy.emotion_selection_rule},
-        {"role": "system", "content": policy.amadeus_tool_rule},
-        {"role": "system", "content": SCHEDULE_INTENT_PROMPT},
-        {
-            "role": "system",
-            "content": services.prompts.tool_preflight_prompt(
+        *reply_layer_messages(active_persona_snapshot, policy.natural_dialogue_style, policy.emotion_selection_rule),
+        system_message('backend/chat/fast_messages.py:227', turn_persona_context["factsPrompt"], source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('backend/chat/fast_messages.py:228', policy_prompt(active_policy), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('dialogue.speaker', policy.speaker_attribution_rule, source='backend/chat/fast_messages.py', category='engineering'),
+        system_message('engineering.accuracy', policy.technical_accuracy_rule, source='backend/chat/fast_messages.py', category='engineering'),
+        *([system_message('tools.legacy', policy.amadeus_tool_rule, source='backend/chat/fast_messages.py', category='engineering')]
+          if not services.context.cognitive_turn_state(body) else []),
+        system_message('schedule.intent', schedule_prompt(body, cognitive=bool(services.context.cognitive_turn_state(body))), source='backend/chat/fast_messages.py', category='engineering'),
+        system_message('capability.current', services.prompts.tool_preflight_prompt(
                 active_tool_preflight, active_capability
-            ),
-        },
+            ), source='backend/chat/fast_messages.py', category='mixed'),
         *(
             [
-                {
-                    "role": "system",
-                    "content": services.prompts.todo_reconciliation_prompt(
+                system_message('backend/chat/fast_messages.py:242', services.prompts.todo_reconciliation_prompt(
                         body.get("_todoReconciliation")
-                    ),
-                }
+                    ), source='backend/chat/fast_messages.py', category='unclassified')
             ]
             if services.prompts.todo_reconciliation_prompt(body.get("_todoReconciliation"))
             and (not services.context.cognitive_turn_state(body))
             else []
         ),
-        {
-            "role": "system",
-            "content": services.prompts.relationship_context_prompt(relationship_state),
-        },
-        {
-            "role": "system",
-            "content": services.prompts.dignity_boundary_context_prompt(
+        system_message('backend/chat/fast_messages.py:253', '' if independent else services.prompts.relationship_context_prompt(relationship_state), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('backend/chat/fast_messages.py:257', '' if independent else services.prompts.dignity_boundary_context_prompt(
                 relationship_state,
                 (
                     body.get("_dignityAssessment")
                     if isinstance(body.get("_dignityAssessment"), dict)
                     else None
                 ),
-            ),
-        },
-        {"role": "system", "content": services.prompts.transition_style_prompt(messages)},
-        {
-            "role": "system",
-            "content": services.prompts.permission_context_prompt(settings, body=body),
-        },
-        {
-            "role": "system",
-            "content": retrieved_memory_prompt(
+            ), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('backend/chat/fast_messages.py:268', '' if independent else services.prompts.transition_style_prompt(messages), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('backend/chat/fast_messages.py:269', services.prompts.permission_context_prompt(settings, body=body), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('memory.retrieved', retrieved_memory_prompt(
                 memories,
                 memory_records,
                 memory_need,
                 cognitive_state=services.context.cognitive_turn_state(body),
-            ),
-        },
-        {
-            "role": "system",
-            "content": services.prompts.conversation_context_prompt(
+            ), source='backend/chat/fast_messages.py', category='mixed'),
+        system_message('conversation.context', services.prompts.conversation_context_prompt(
                 user_message,
                 active_policy,
                 memory_need,
                 context_resolution,
                 context_state=services.context.frozen_turn_context_state(body),
                 cognitive_state=services.context.cognitive_turn_state(body),
-            ),
-        },
-        {
-            "role": "system",
-            "content": services.prompts.session_temporal_context_prompt(
+            ), source='backend/chat/fast_messages.py', category='mixed'),
+        system_message('backend/chat/fast_messages.py:293', services.prompts.session_temporal_context_prompt(
                 user_message, settings=settings
-            ),
-        },
+            ), source='backend/chat/fast_messages.py', category='unclassified'),
     ]
     if explicit_context_control:
-        result.append({"role": "system", "content": explicit_context_control})
+        result.append(system_message('backend/chat/fast_messages.py:301', explicit_context_control, source='backend/chat/fast_messages.py', category='unclassified'))
     if explicit_reply_context:
-        result.append({"role": "system", "content": explicit_reply_context})
+        result.append(system_message('backend/chat/fast_messages.py:303', explicit_reply_context, source='backend/chat/fast_messages.py', category='unclassified'))
     if attribution:
-        result.append({"role": "system", "content": attribution})
+        result.append(system_message('backend/chat/fast_messages.py:305', attribution, source='backend/chat/fast_messages.py', category='unclassified'))
     adjacent_messages = (
         messages
         if services.context.cognitive_turn_state(body)
@@ -313,54 +296,54 @@ def build_fast_stream_messages(
             body, adjacent_messages[-active_policy.recent_message_limit :]
         )
     )
-    if identity_context:
-        result.append({"role": "system", "content": identity_context})
+    if identity_context and not independent:
+        result.append(system_message('backend/chat/fast_messages.py:319', identity_context, source='backend/chat/fast_messages.py', category='unclassified'))
     # 混合人格上下文也必须保留原始昵称反应的精确单元合同。
-    nickname_prompt = services.prompts.nickname_reaction_prompt(user_message, request_id)
+    nickname_prompt = '' if independent else services.prompts.nickname_reaction_prompt(user_message, request_id)
     if nickname_prompt:
-        result.append({"role": "system", "content": nickname_prompt})
+        result.append(system_message('backend/chat/fast_messages.py:323', nickname_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
     motif_prompt = (
         ""
         if active_persona_snapshot.uses_hybrid_provider_context
         else services.prompts.canon_style_motif_prompt(user_message)
     )
     if motif_prompt:
-        result.append({"role": "system", "content": motif_prompt})
+        result.append(system_message('backend/chat/fast_messages.py:330', motif_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
     result.append(
-        {
-            "role": "system",
-            "content": services.prompts.immediate_context_prompt(
+        system_message('conversation.immediate', services.prompts.immediate_context_prompt(
                 messages,
                 user_message,
                 active_policy,
                 context_state=services.context.frozen_turn_context_state(body),
                 cognitive_state=services.context.cognitive_turn_state(body),
-            ),
-        }
+            ), source='backend/chat/fast_messages.py', category='mixed')
     )
     if pending_question:
-        result.append({"role": "system", "content": pending_question})
+        result.append(system_message('backend/chat/fast_messages.py:344', pending_question, source='backend/chat/fast_messages.py', category='unclassified'))
     if todo_pending:
-        result.append({"role": "system", "content": todo_pending})
+        result.append(system_message('backend/chat/fast_messages.py:346', todo_pending, source='backend/chat/fast_messages.py', category='unclassified'))
     if schedule_state:
-        result.append({"role": "system", "content": schedule_state})
+        result.append(system_message('backend/chat/fast_messages.py:348', schedule_state, source='backend/chat/fast_messages.py', category='unclassified'))
     contextual_prompt = contextual_reference_prompt(context_resolution)
     if contextual_prompt:
-        result.append({"role": "system", "content": contextual_prompt})
+        result.append(system_message('backend/chat/fast_messages.py:351', contextual_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
     result.append(
-        {"role": "system", "content": turn_contract_prompt(active_interpretation, active_contract)}
+        system_message('backend/chat/fast_messages.py:353', turn_contract_prompt(active_interpretation, active_contract), source='backend/chat/fast_messages.py', category='unclassified')
     )
     fact_policy_prompt = services.prompts.claim_level_fact_policy_prompt(prepared)
     if fact_policy_prompt:
-        result.append({"role": "system", "content": fact_policy_prompt})
+        result.append(system_message('backend/chat/fast_messages.py:357', fact_policy_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
     result.append(
-        {
-            "role": "system",
-            "content": "[Capability Envelope：与回复长度相互独立]\n"
+        system_message('backend/chat/fast_messages.py:359', "[Capability Envelope：与回复长度相互独立]\n"
             + json.dumps(
                 {
                     "researchDecision": active_decision.to_dict(),
-                    "capabilityEnvelope": active_capability.to_dict(),
+                    # Compact capability.current owns permissions, discovery
+                    # and selected schemas. Do not repeat routing defaults as
+                    # a second, apparently authoritative tool decision.
+                    **({} if compact_engineering_enabled() else {
+                        "capabilityEnvelope": active_capability.to_dict(),
+                    }),
                 },
                 ensure_ascii=False,
             )
@@ -368,28 +351,22 @@ def build_fast_stream_messages(
                 "\n联网工具按用户请求与信息需要选择，用 kind=tool_use 和 calls 调用；取得结果后继续同一工具循环。research_policy=forbidden 时不得联网。"
                 if services.context.cognitive_turn_state(body)
                 else "\nresearch_policy=allowed 且知识信心不足时必须输出 research_escalation，不能把不确定的外部事实写成 FinalAnswer。research_policy=forbidden 时不得联网升级。"
-            ),
-        }
+            ), source='backend/chat/fast_messages.py', category='unclassified')
     )
     attachment_binding = services.prompts.current_turn_attachment_binding_prompt(body)
     if attachment_binding:
-        result.append({"role": "system", "content": attachment_binding})
+        result.append(system_message('backend/chat/fast_messages.py:378', attachment_binding, source='backend/chat/fast_messages.py', category='unclassified'))
     # 线协议紧邻用户消息。上下文块较多时，服务商通常更重视靠后的 system
     # 消息；放在这里可以减少模型退化为普通文本、破坏流协议的概率。
     result.append(
-        {
-            "role": "system",
-            "content": (
-                policy.cognitive_dialogue_reply_rule
+        system_message('backend/chat/fast_messages.py:382', policy.cognitive_dialogue_reply_rule
                 if services.context.cognitive_turn_state(body)
-                else policy.utterance_stream_reply_rule
-            ),
-        }
+                else policy.utterance_stream_reply_rule, source='backend/chat/fast_messages.py', category='unclassified')
     )
     cognition = services.prompts.cognitive_turn_prompt(body)
     if cognition:
         body["_cognitiveOutcomeRequired"] = True
-        result.append({"role": "system", "content": cognition})
+        result.append(system_message('backend/chat/fast_messages.py:394', cognition, source='backend/chat/fast_messages.py', category='unclassified'))
     result.append({"role": "user", "content": user_message})
     return pin_reply_context(result, body.get("_turnContextSnapshot"))
 

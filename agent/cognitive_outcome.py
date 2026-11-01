@@ -37,7 +37,7 @@ OUTCOME_PROTOCOL = """[完成情况]
 最终 kind=turn/clarification/revise_state 在容器顶层给出 outcome:{status}；claims 仅在报告工具执行或实际观察结果时需要，普通回答可省略。
 status 为 completed、partial、needs_input、failed。completed 指当前请求已完成，
 不是仅仅工具执行过；需要用户补充信息用 needs_input，工作没做完用 partial 或 failed。
-status 只描述本轮请求；“只列计划”的本轮可完成而整体任务仍未执行。packet.task 有 active 任务时，最终 outcome 必须另外带 taskStatus:'active'、'completed'或'failed'，对应当前 TaskFrame；可附 taskId，但若提供必须是真实ID。依据当前目标和成功条件明确判断整体任务是否结束，不要遗漏导致任务一直挂起；仍有工作用 active，达到目标才用 completed，失败且本次不再继续用 failed。工具成败不能直接推导任务成败；例如目标是测试并报告一次操作，实际失败也可以完成该目标。completed 不得有尚未执行的步骤，失败步骤必须如实保留。暂停/取消用状态补丁；后来获准继续已失败任务用 RESUME_TASK。
+status 只描述本轮请求；“只列计划”的本轮可完成而整体任务仍未执行。本轮延续或修改 packet.task 的 active 任务时，可选填写 taskStatus:'active'、'completed'或'failed'，对应当前 TaskFrame；可附真实 taskId。本轮与旧任务无关时在 cognitive 声明 taskRelation=unrelated 并省略 taskStatus/taskId，直接处理新请求。依据当前目标判断任务是否结束：仍有工作用 active，达到目标才用 completed，失败且不再继续用 failed。工具成败不能直接推导任务成败；如实报告一次失败也可以完成报告请求。completed 不得有尚未执行的步骤，失败步骤必须如实保留。暂停/取消用状态补丁；后来获准继续已失败任务用 RESUME_TASK。
 普通身份、知识、观点和解释直接依据已提供的人格资料、记忆和正文自然回答，不需要提交事实类别、basis 或 evidenceRefs；普通回答不因这些注释缺失或引用格式问题而重试。不要为了填写 claims 新建任务或调用工具。资料不足时如实表达不确定性；用户要求查证时仍按请求使用工具。
 claims 用于需要机器核对的执行或观察声明，每项为
 {kind:'inference'|'user_fact'|'external_fact'|'tool_fact'|'tool_completion'|'perceptual_fact'|'source_status',claim:命题,evidenceRefs:[后端证据ID]}。
@@ -47,10 +47,10 @@ sourceType=user_message/user_memory/user_adaptation 提供用户原话、经历�
 每项 tool_completion 必须单独声明 resultStatus:success/failed 并引用真实回执。这个字段只描述该操作，与本轮回答 status、整个任务 taskStatus 相互独立；如实报告一次失败可以完成用户的报告请求，不能因此把失败操作标成成功。画面结论必须引用实际识图证据。
 联网后的普通事实回答可直接给出结论和来源，无需另写搜索或读页完成声明。本轮执行了其他工具且声明 completed 时，仍需记录执行或观察结果；普通事实注释不能替代实际操作结果。未读取的正文、未理解的截图、旧画面均不能冒充本次实际结果。
 若工具失败，仍必须输出 cognitive 和 outcome，可 status=failed，解释失败用 inference 或空 claims。
-最终结构以本轮收尾合同为准，按证据填写各状态；本次补丁新建或恢复任务时，也必须评估该任务的 taskStatus。
+最终结构以本轮收尾合同为准，按证据填写各状态；taskStatus 可省略；省略时保留任务状态，不要求重新生成整条回答。
 网页资料可跨轮复用，来源时间由后端回执提供；若命题要求当前新核验，声明 freshness:'current'。历史观察不能证明现在；重述旧观察或旧动作结果须声明 freshness:'historical'。
 工具调用轮仍使用 kind=tool_use，不需伪造已经完成的 outcome。
-任务有 successCriteria 时，宣告 taskStatus=completed 必须给 criteriaAssessment 数组，逐项引用本轮合同给出的 criterionId，并给 status:met/unmet/unknown、reason 和 evidenceRefs。你负责结合当前目标、正文、操作回执和回答内容判断是否达到条件；无法判断用 unknown，尚未达到用 unmet，不能只因工具步骤结束就说达成。所有条件 met 才能结束任务，仍可用 taskStatus=active 继续工作。条件被用户修改后使用新合同中的 ID。
+任务有 successCriteria 时，结合当前目标、正文、操作回执和回答内容判断是否完成；尚未达到时保持 taskStatus=active。普通回答不需要另填 criteriaAssessment 验收表；该表是可选记录，若填写则使用当前 criterionId 和真实依据，不编造回执。实际发送、写入和观察仍必须满足相应工具的真实执行条件。
 """
 
 
@@ -347,6 +347,7 @@ def success_criteria_catalog(task: Mapping[str, Any]) -> list[dict[str, Any]]:
 def final_outcome_contract(
     task: Mapping[str, Any], *, evidence: Mapping[str, Any] | None = None,
     current_state_requirement: Mapping[str, Any] | CurrentStateEvidenceRequirement | None = None,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """One output contract for initial generation and correction continuations.
 
@@ -356,18 +357,21 @@ def final_outcome_contract(
     fields: dict[str, Any] = {
         "status": ["completed", "partial", "needs_input", "failed"],
     }
-    if task.get("taskId") and task.get("status") == "active":
-        fields["taskStatus"] = ["active", "completed", "failed"]
     contract = {
         "requiredFinalContainerFields": ["kind", "cognitive", "outcome", "emotion", "proactiveDirective", "speechUnits"],
         "presentationContract": {
             "emotion": "首轮最终容器必须给出合法情绪标签，按实际回复表达选择；不要留给后置分类器补填。speechUnits 可覆盖顶层情绪。",
             "proactiveDirective": PROACTIVE_DIRECTIVE_INSTRUCTION,
             "voiceIntensity": {"type": "string", "enum": ["subtle", "normal", "strong"], "rule": "轻声使用 subtle；不要输出数字。emotionIntensity 才是连续数值。"},
+            "speechPace": {"type": "string", "enum": ["very_slow", "slow", "normal", "fast", "very_fast"], "rule": "用户明确要求或本轮语义需要调整语速时，在顶层或对应 speechUnits 给出；没有要求时省略以保留配置。"},
+            "speechSpeed": {"type": "number", "minimum": 0.62, "maximum": 1.45, "rule": "可选的结构化语速倍率；不要根据单个词机械匹配。"},
             "voice": "情绪与说话方式分别表达：平静的安慰可以是 neutral 情绪，同时轻柔发声。用户明确要求轻声、温柔等表达时，在顶层或对应 speechUnits 显式给 voiceStyle、voiceTone、voiceIntensity，且与实际台词及情绪一致。轻柔发声可用 soft / gentle / subtle；不要为了轻声强行改成害羞或亲昵。",
         },
         "requiredOutcomeFields": fields,
-        "optionalOutcomeFields": {"claims": "普通回答可省略；有本轮工具执行结果时，按实际回执记录执行/观察声明"},
+        "optionalOutcomeFields": {
+            "claims": "普通回答可省略；有本轮工具执行结果时，按实际回执记录执行/观察声明",
+            "taskStatus": "可选 active/completed/failed；省略时保留任务状态，不重新生成回答",
+        },
         "ordinaryAnswerEvidenceRequired": False,
         "currentTaskId": task.get("taskId"),
         "currentTaskStatus": task.get("status"),
@@ -378,8 +382,8 @@ def final_outcome_contract(
             "conversationalFactScope": "按用户真正要解决的问题区分讨论、安慰与事实查证。引语或背景说法不自动让整轮依赖核实：可讨论用户提供的文字和感受，未核实时把解释表达为你的理解，不宣称作者本意、准确出处或已查证。用户没有要求核对引语时，直接回应其讨论或情感需要，不要因觉得句子熟悉就顺手纠正原话、补作者意图或给出处。用户明确要求查证，或答案关键结论依赖不确定外部事实时，自主调用可用搜索工具；证据不足就保留不确定性。不要为普通讨论新增逐条依据审计。",
             "sources": "引用使用实际读到的页面标题及真实 URL；不要自行重新分配 S 编号。正文读到与否是可读性，官方原始材料/百科转述是来源层级，两者不能混称。两个语言版本不自动等于独立来源。",
         },
-        "taskStatusRequiredIfStartingOrResumingTask": True,
-        "taskAssessmentScope": "以上任务信息是生成本合同时的状态快照；若标有 uncommittedCandidateTask 则来自未提交候选。按本次补丁应用后的任务评估。有 active 任务时须给 taskStatus；没有任务时省略 taskStatus 和 taskId，只用 status 评估本轮请求。不要为填状态字段新建任务。",
+        "taskStatusRequiredIfStartingOrResumingTask": False,
+        "taskAssessmentScope": "这是当前工作任务，可能从此前对话延续，也可能在本轮新建或从定时任务恢复。按补丁应用后的当前目标和实际回执评估；执行该任务的工具或汇报结果均属于延续，给 taskStatus。只有用户确实换了无关话题时才声明 cognitive.taskRelation=unrelated 并省略 taskStatus/taskId。没有任务时省略 taskStatus 和 taskId，不为填字段新建任务。",
         "statusScopes": {
             "status": "本轮用户请求是否完成；依据请求目标判断，不从工具成败推断",
             "taskStatus": "整个任务是否结束：还有工作 active，达到目标 completed，失败且不再继续 failed",
@@ -433,19 +437,50 @@ def final_outcome_contract(
     catalog = success_criteria_catalog(task)
     if catalog:
         contract["successCriteriaCatalog"] = catalog
-        contract["criteriaAssessmentRequiredIfTaskCompleted"] = {
+        contract["optionalCriteriaAssessment"] = {
             "fields": ["criterionId", "status", "reason", "evidenceRefs"],
             "status": ["met", "unmet", "unknown"],
-            "rule": "按当前目标逐项判断并说明依据；没有实际达到的条件不能标 met。所有条件 met 才能 taskStatus=completed。",
+            "rule": "可省略，不为填写验收表增加调用或重试；若填写，按当前目标判断，没有达到的条件不能标 met。",
         }
+    if compact:
+        # Types and current state are useful on every request; the stable
+        # explanations live once in the engineering core/selected contracts.
+        concise = {key: contract[key] for key in (
+            "requiredFinalContainerFields", "requiredOutcomeFields", "ordinaryAnswerEvidenceRequired",
+            "currentTaskId", "currentTaskStatus", "taskStatusRequiredIfStartingOrResumingTask",
+        )}
+        concise["presentationContract"] = {
+            "emotion": "使用现有合法情绪标签；speechUnits 可覆盖顶层值",
+            "proactiveDirective": ["pause", "resume", "unchanged"],
+            "voiceIntensity": {"type": "string", "enum": ["subtle", "normal", "strong"]},
+            "speechPace": {"type": "string", "enum": ["very_slow", "slow", "normal", "fast", "very_fast"]},
+            "speechSpeed": {"type": "number", "minimum": 0.62, "maximum": 1.45},
+            "voice": "voiceStyle/voiceTone 表达发声方式，emotion 表达情绪；轻声不等于害羞",
+        }
+        concise["statusScopes"] = contract["statusScopes"]
+        concise["executionClaimShape"] = {
+            "location": "outcome.claims[]",
+            "fields": {"kind": list(CLAIM_KINDS), "claim": "非空命题或操作结果文字",
+                       "evidenceRefs": ["packet.evidence 中实际证据的 id，字段名是复数，值为数组"],
+                       "resultStatus": "tool_completion 必填 success|failed，与真实回执一致",
+                       "freshness": "重述旧证据时填 historical；当前新核验填 current"},
+            "rule": "普通回答无需 claims。报告非网页工具结果且本轮 completed 时，填写实际执行或观察声明；"
+                    "tool_completion 表示操作结果，tool_fact 表示成功工具正文的事实，perceptual_fact 仅用于视觉证据。"
+                    "按 packet.evidence[].claimContract 选择种类，不能只填 evidenceRef 或 resultStatus。",
+        }
+        for key in ("availableEvidence", "currentStateEvidenceRequirement", "successCriteriaCatalog", "optionalCriteriaAssessment"):
+            if key in contract:
+                concise[key] = contract[key]
+        return concise
     return contract
 
 
 def bind_outcome_receipt_metadata(outcome: Any, evidence: Mapping[str, Any]) -> Any:
     """Fill omitted bookkeeping only when the named backend receipts agree.
 
-    Explicit model judgments (including wrong ones) still reach the validator.
-    No claim, reference, completion judgment or answer is invented here.
+    Web-content facts use the advisory external_fact category; their metadata
+    does not certify the text as verified. Execution judgments still reach the
+    validator. No claim, reference, completion judgment or answer is invented.
     """
     if not isinstance(outcome, Mapping):
         return outcome
@@ -462,6 +497,12 @@ def bind_outcome_receipt_metadata(outcome: Any, evidence: Mapping[str, Any]) -> 
             continue
         entries = [evidence[ref] for ref in refs]
         kind = claim.get("kind")
+        if kind == "tool_fact" and all(entry.get("sourceType") == "web" for entry in entries):
+            # Search/page contents are external knowledge, not local tool-state
+            # observations. Do not retry the answer over this taxonomy mismatch
+            # or promote it to a verified belief. Fetch/execution claims keep
+            # their own strict source_status/tool_completion contracts.
+            claim["kind"] = kind = "external_fact"
         if kind == "tool_completion" and "resultStatus" not in claim and all(
                 isinstance(entry.get("receipt"), Mapping) and isinstance(entry.get("ok"), bool) for entry in entries):
             statuses = {entry["ok"] for entry in entries}
@@ -482,6 +523,8 @@ def verify_outcome(
     outcome: Any, *, evidence: Mapping[str, Any], require_external_evidence: bool = False,
     task: Mapping[str, Any] | None = None,
     current_state_requirement: Mapping[str, Any] | CurrentStateEvidenceRequirement | None = None,
+    task_relation: str | None = None,
+    allow_incomplete: bool = False,
 ) -> dict[str, Any]:
     # Kept as a compatibility keyword for existing callers. Knowledge challenge
     # and research state are handled by their own task/patch contracts, never by
@@ -497,14 +540,15 @@ def verify_outcome(
 
     if not isinstance(outcome, Mapping):
         return {"provided": False, "valid": False, "violations": [{"code": "outcome_missing"}]}
+    if task:
+        from agent.qq_task_contract import qq_completion_violations
+        violations.extend(qq_completion_violations(
+            task, outcome, evidence, unrelated=task_relation == 'unrelated', allow_incomplete=allow_incomplete))
     status = outcome.get("status")
     if "taskStatus" in outcome and outcome["taskStatus"] not in {"active", "completed", "failed", "paused", "cancelled"}:
         reject("outcome_task_status_invalid")
     if task is not None:
         task_id = task.get("taskId")
-        if task_id and task.get("status") == "active" and "taskStatus" not in outcome:
-            reject("outcome_task_assessment_missing", taskId=task_id,
-                   repair="Declare taskStatus active/completed/failed after reviewing the current goal and success criteria.")
         if "taskStatus" in outcome:
             if not task_id or ("taskId" in outcome and outcome["taskId"] != task_id):
                 reject("outcome_task_identity_mismatch", taskId=task_id)
@@ -517,8 +561,6 @@ def verify_outcome(
                     reject("task_steps_unfinished", stepIds=unfinished)
             catalog = {item["criterionId"]: item for item in success_criteria_catalog(task)}
             assessments = outcome.get("criteriaAssessment")
-            if catalog and outcome["taskStatus"] == "completed" and not isinstance(assessments, list):
-                reject("task_success_criteria_assessment_missing", criteria=list(catalog.values()))
             if assessments is not None:
                 if not isinstance(assessments, list):
                     reject("task_success_criteria_assessment_invalid")
@@ -574,15 +616,11 @@ def verify_outcome(
     if not isinstance(claims, list):
         reject("outcome_claims_must_be_list")
         claims = []
-    if status == "completed" and not any(
-        isinstance(claim, Mapping) and claim.get("kind") in {"tool_completion", "tool_fact", "perceptual_fact", "source_status"}
-        for claim in claims
-    ) and any(
-        isinstance(entry, Mapping) and not evidence_contracts[ref]["historical"] and evidence_contracts[ref]["receiptPresent"]
-        and str(entry.get("name") or "") not in {"web_search", "read_web_page"}
-        for ref, entry in evidence.items()
-    ):
-        reject("outcome_tool_conclusions_missing")
+    # A successful tool turn may still be answered in ordinary prose. Claims
+    # are an optional, machine-readable annotation; their presence must never
+    # become a second completion worksheet. When a model does emit an
+    # execution/observation claim, the per-claim checks below still bind it to
+    # the real receipt, status and readable body.
     for index, claim in enumerate(claims):
         if not isinstance(claim, Mapping):
             reject("outcome_claim_must_be_object", claimIndex=index)

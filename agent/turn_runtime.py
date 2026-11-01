@@ -329,6 +329,7 @@ def _shortest_transition_path(start: TurnPhase, target: TurnPhase) -> list[TurnP
 
 
 _PROGRESS_PHASES: tuple[tuple[tuple[str, ...], TurnPhase], ...] = (
+    (("tool-escalation", "research-escalation"), TurnPhase.PARSING_MODEL_OUTPUT),
     (("permission",), TurnPhase.WAITING_PERMISSION),
     (("semantic-recovery", "protocol-recovery"), TurnPhase.RECOVERING_MODEL_OUTPUT),
     (("field-repair", "repairing-fields"), TurnPhase.REPAIRING_FIELDS),

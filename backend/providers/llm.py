@@ -23,6 +23,7 @@ from agent.upstream_response_reader import (
 from backend.providers import errors as provider_errors
 from backend.providers import protocol as llm_protocol
 from backend.providers.errors import UpstreamProtocolError
+from backend.context.prompts import validate_final_payload
 
 
 @dataclass(frozen=True)
@@ -64,8 +65,11 @@ def send_uncoordinated(
     safe_request_id = re.sub(r"[^A-Za-z0-9._:-]", "", str(request_id or ""))[:120]
     if safe_request_id:
         headers["X-Amadeus-Request-Id"] = safe_request_id
+    from backend.security.outbound import protect_model_payload
+    payload = protect_model_payload(payload, settings)
     active_payload, json_mode_state, json_mode_key = llm_protocol.prepare_upstream_json_mode(settings, payload)
     active_payload = llm_protocol.prepare_provider_payload(settings, active_payload)
+    validate_final_payload(settings, active_payload, request_id=request_id, purpose=purpose, write_log=io.log_event)
     request_body = json.dumps(active_payload, ensure_ascii=False).encode("utf-8")
     json_mode_active = bool(active_payload.get("response_format"))
     # DeepSeek documents that JSON Output can occasionally return HTTP 200
@@ -288,6 +292,8 @@ def send_uncoordinated(
                     json_mode_state[json_mode_key] = True
                 active_payload = llm_protocol.json_mode_fallback_payload(active_payload)
                 active_payload = llm_protocol.prepare_provider_payload(settings, active_payload)
+                validate_final_payload(settings, active_payload, request_id=request_id, purpose=purpose,
+                                       write_log=io.log_event)
                 request_body = json.dumps(active_payload, ensure_ascii=False).encode("utf-8")
                 json_mode_active = False
                 io.log_event(
@@ -333,9 +339,12 @@ def iter_uncoordinated(
     safe_request_id = re.sub(r"[^A-Za-z0-9._:-]", "", str(request_id or ""))[:120]
     if safe_request_id:
         headers["X-Amadeus-Request-Id"] = safe_request_id
+    from backend.security.outbound import protect_model_payload
+    payload = protect_model_payload(payload, settings)
     active_payload, json_mode_state, json_mode_key = llm_protocol.prepare_upstream_json_mode(settings, payload)
     active_payload = llm_protocol.prepare_provider_payload(settings, active_payload)
     active_payload["stream"] = True
+    validate_final_payload(settings, active_payload, request_id=request_id, purpose=purpose, write_log=io.log_event)
     request = urllib.request.Request(
         io.chat_endpoint(settings["apiEndpoint"]),
         data=json.dumps(active_payload, ensure_ascii=False).encode("utf-8"),

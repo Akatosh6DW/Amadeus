@@ -32,13 +32,25 @@ def native_web_enabled(settings: Mapping[str, Any], body: Mapping[str, Any], pur
 
 def prepare_native_web_payload(payload: Mapping[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
     active = dict(payload)
+    # The final provider adapter may continue through our existing JSON tools
+    # when thinking-mode history lacks the provider's reasoning metadata.
+    active['_amadeusJsonToolFallback'] = True
     definitions = [
-        ("web_search", "Search public web information; returns titles, URLs, dates and snippets.",
-         {"query": {"type": "string"}, "provider": {"type": "string", "enum": ["duckduckgo", "yahoo", "wikipedia", "brave"]},
+        ("web_search", "Search public web information; returns titles, URLs, date provenance, snippets and bounded page bodies when enabled. Read missing passages with read_web_page.",
+         {"query": {"type": "string"}, "provider": {"type": "string", "enum": ["deepseek", "duckduckgo", "bing", "yahoo", "wikipedia", "brave"]},
           "freshness": {"type": "string", "enum": ["pd", "pw", "pm", "py"]},
+          "researchDepth": {"type": "string", "enum": ["quick", "standard", "deep", "exhaustive"]},
+          "researchTopic": {"type": "string", "enum": ["general", "news", "academic"]},
+          "maxResults": {"type": "integer", "minimum": 1, "maximum": 20},
+          "domains": {"type": "array", "items": {"type": "string"}},
+          "offset": {"type": "integer", "minimum": 0},
           "locale": {"type": "string"}}, "query"),
         ("read_web_page", "Read a public webpage or linked document to answer the requested question.",
-         {"url": {"type": "string"}, "researchQuery": {"type": "string"}}, "url"),
+         {"url": {"type": "string"}, "researchQuery": {"type": "string"},
+          "researchDepth": {"type": "string", "enum": ["quick", "standard", "deep", "exhaustive"]},
+          "searchProvider": {"type": "string"},
+          "find": {"type": "string"}, "startChar": {"type": "integer", "minimum": 0},
+          "maxChars": {"type": "integer", "minimum": 1, "maximum": 14000}}, "url"),
     ]
     active["tools"] = [{"type": "function", "function": {
         "name": name, "description": description, "parameters": {
@@ -75,13 +87,17 @@ def bind_native_web_context(content: str, body: Mapping[str, Any]) -> str:
         value = json.loads(content)
     except (ValueError, TypeError):
         return content
-    if not isinstance(value, dict) or not value.pop("_nativeWebToolCalls", False):
+    if not isinstance(value, dict):
+        return content
+    native_calls = bool(value.pop("_nativeToolCalls", False))
+    native_web_calls = bool(value.pop("_nativeWebToolCalls", False))
+    if not (native_calls or native_web_calls):
         return content
     snapshot = body.get("_turnContextSnapshot") or {}
     message = snapshot.get("currentUserMessage") or {}
     request = str(message.get("text") or body.get("userMessage") or "")
     if not isinstance(value.get("cognitive"), dict):
         # Native function calls need no fabricated state edits. Bind the real
-        # request and let the existing executor register these read-only steps.
+        # request and let the existing executor apply normal permission and argument checks.
         value["cognitive"] = {"interactionAct": "CHAT", "understoodGoal": request, "patches": []}
     return json.dumps(value, ensure_ascii=False)

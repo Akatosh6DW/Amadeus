@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Amadeus · QQ 代管</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;max-width:960px;margin:32px auto;padding:0 20px;background:#111923;color:#e8edf4}
+h1{font-size:28px}section{padding:24px;background:#1c2836;border-radius:16px;margin:18px 0}
+label{display:block;margin:12px 0}input,textarea,select,button{font:inherit;border:1px solid #51647b;border-radius:6px;padding:9px;background:#111923;color:inherit;box-sizing:border-box}
+input,textarea{width:100%}input[type=checkbox]{width:auto;margin-right:8px}button{cursor:pointer;background:#305775;margin:8px 10px 0 0}
+a{color:#92c7ff}pre{white-space:pre-wrap;word-break:break-word}.muted{color:#b1c0d2}.message{border-top:1px solid #51647b;padding:16px 0}
+.error{color:#ffb3a9}.button-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}#notice{position:sticky;top:0;background:#23374d;padding:12px;white-space:pre-wrap}
+</style>
+<h1>QQ 代管</h1><p>选择 AstrBot 或 Amadeus 负责对话；本机网关控制她能回复谁，并记录操作说明与发送结果。</p>
+<div id="notice" role="status">正在加载…</div>
+<section><h2>账号与范围</h2>
+<label>本机管理密钥<input id="key" type="password" autocomplete="off"></label><button id="unlock" type="button">连接面板</button>
+<form id="settings"><label>登录的 QQ 号<input id="account" inputmode="numeric" required></label>
+<label>NapCat 正向 WebSocket 地址<input id="ws" value="ws://127.0.0.1:3001/"></label>
+<label>NapCat OneBot Token（留空保留）<input id="napcatToken" type="password" autocomplete="off"></label>
+<label>允许回复的好友 QQ 号（逗号或换行分隔）<textarea id="privateIds" rows="2"></textarea></label>
+<label>允许回复的群号（逗号或换行分隔）<textarea id="groupIds" rows="2"></textarea></label>
+<label>回复智能体 <select id="replyAgent"><option value="astrbot">AstrBot（独立智能体）</option><option value="amadeus">Amadeus（作为我的助手代管账号）</option></select></label>
+<p class="muted">Amadeus 为每位联系人维护独立对话，区分账号主人、联系人和助手。主对话可以委托她结合相应聊天记录与联系人交流。操作结果显示在下方，群聊只在被 @ 时自动回复。</p>
+<label>代管模式 <select id="mode"><option value="paused">暂停收发</option><option value="review">生成草稿，由我逐条确认发送</option><option value="auto">允许范围内自动回复</option></select></label>
+<label>对外身份 <select id="replyIdentity"><option value="assistant">以 Amadeus 本人身份交流</option><option value="owner">用我的口吻代回复</option></select></label>
+<label>两次发送至少间隔（秒）<input id="interval" type="number" min="1" max="3600" value="10"></label>
+<label>每小时最多发送（0 表示不限）<input id="quota" type="number" min="0" step="1" value="0"></label>
+<label><input id="background" type="checkbox">允许 QQ 后台接管；勾选后允许桌面关闭时继续后台运行</label>
+<p class="muted">后台运行需要明确勾选上面的授权；“退出 QQ 后台”会单独结束后台组件。</p>
+<div class="button-row"><button type="submit">保存并应用</button><button type="button" id="toggle" title="暂停 QQ 回复" aria-label="暂停 QQ 回复" aria-pressed="false">⏸</button><button type="button" id="stop">退出 QQ 后台</button></div>
+<p id="lifecycle" class="muted" aria-live="polite"></p>
+<div id="conversations" aria-live="polite"></div>
+</form>
+<p><a href="http://127.0.0.1:6185" target="_blank" rel="noopener">打开 AstrBot：配置模型、测试对话</a> · <a href="http://127.0.0.1:6099" target="_blank" rel="noopener">打开 NapCat：扫码登录</a></p>
+<p class="muted">NapCat 为非官方普通 QQ 接口，存在账号风控风险。登录与模型凭据只在本机配置。面板记录含会话内容，请妥善保管本机数据。</p></section>
+<section><h2>回复草稿与发送回执</h2><div id="sends"></div></section>
+<section><h2>代管说明与事件</h2><div id="events"></div></section>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const state = {bootstrapKey: "", current: null, loadedPolicy: null, loaded: false, dirty: false, conflict: false,
+    sessionReady: false, refreshing: false};
+  const hashKey = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (hashKey) {
+    state.bootstrapKey = hashKey;
+    $("key").value = hashKey;
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  const labels = {draft:"待确认", sending:"发送中", sent:"接口已确认发送", failed:"发送失败", unknown:"结果未知，请到 QQ 核对", cancelled:"已取消"};
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const samePolicy = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const ids = value => String(value || "").split(/[\s,，]+/).filter(Boolean);
+  function note(message, error = false) { $("notice").textContent = message; $("notice").className = error ? "error" : ""; }
+  function errorMessage(error) { return error?.message || String(error); }
+  function setToggle(button, paused) {
+    if (!button) return;
+    const label = paused ? "恢复 QQ 回复（保留已保存好友和群配置）" : "暂停 QQ 回复（保留已保存好友和群配置）";
+    button.textContent = paused ? "▶" : "⏸";
+    button.title = label;
+    button.setAttribute?.("aria-label", label);
+    button.setAttribute?.("aria-pressed", paused ? "true" : "false");
+  }
+  function responseError(response, data) {
+    const error = Error(data?.error || data?.message || `HTTP ${response.status}`);
+    error.status = response.status;
+    return error;
+  }
+  async function api(path, body, useBootstrapKey = false) {
+    const headers = {"Content-Type": "application/json"};
+    if (useBootstrapKey && state.bootstrapKey) headers.Authorization = "Bearer " + state.bootstrapKey;
+    const response = await fetch("/api/" + path, {method: body === undefined ? "GET" : "POST", headers,
+      credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body)});
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok || data.ok === false) throw responseError(response, data);
+    return data;
+  }
+  async function establishSession() {
+    if (!state.bootstrapKey) throw Error("请输入本机管理密钥。");
+    const data = await api("session", {}, true);
+    if (data.ok === false) throw Error(data.message || "会话建立失败");
+    state.bootstrapKey = "";
+    $("key").value = "";
+    state.sessionReady = true;
+    return data;
+  }
+  async function statusWithSession() {
+    try {
+      const data = await api("status");
+      state.sessionReady = true;
+      return data;
+    } catch (error) {
+      if (error.status === 401 && state.bootstrapKey) {
+        await establishSession();
+        const data = await api("status");
+        state.sessionReady = true;
+        return data;
+      }
+      state.sessionReady = false;
+      throw error;
+    }
+  }
+  function lifecycleText(data) {
+    const lifecycle = data.lifecycle || {};
+    if (lifecycle.active === true) return "QQ 后台正在运行。";
+    if (lifecycle.desktopOnline === false) return lifecycle.backgroundEnabled === true || data.policy?.background_enabled === true
+      ? "桌面已关闭，QQ 后台继续运行。" : "桌面已关闭，QQ 后台未获授权。";
+    if (lifecycle.backgroundEnabled === true || data.policy?.background_enabled === true) return "QQ 后台已获桌面关闭授权，等待连接启动。";
+    return "QQ 后台未启用。";
+  }
+  function fillForm(data, policy) {
+    $("account").value = policy.account_id || "";
+    $("privateIds").value = (policy.private_ids || []).join("\n");
+    $("groupIds").value = (policy.group_ids || []).join("\n");
+    $("mode").value = policy.mode || "review";
+    $("replyIdentity").value = policy.reply_identity || "assistant";
+    $("replyAgent").value = data.reply_agent || "astrbot";
+    $("interval").value = policy.minimum_interval_seconds ?? 10;
+    $("quota").value = policy.max_sends_per_hour ?? 0;
+    $("background").checked = policy.background_enabled === true;
+    $("ws").value = data.napcat_ws || "ws://127.0.0.1:3001/";
+    $("napcatToken").value = "";
+  }
+  function renderSends(sends) {
+    $("sends").replaceChildren();
+    for (const send of sends) {
+      const message = (Array.isArray(send.message) ? send.message : []).map(part => part?.data?.text || "").join("");
+      const entry = document.createElement("div");
+      entry.className = "message";
+      const name = send.targetRemark || send.targetName || "";
+      const nickname = send.targetRemark && send.targetName && send.targetRemark !== send.targetName ? `（昵称：${send.targetName}）` : "";
+      text(entry, "strong", `${labels[send.state] || send.state} · ${send.account} → ${send.kind === "group" ? "群" : "好友"} ${name}${nickname}${name ? " · " : ""}${send.target}`);
+      text(entry, "p", `${send.actor || "Amadeus"}：${send.reason || ""}`);
+      text(entry, "pre", (send.reply_format === "voice" ? "[语音内容] " : "") + message);
+      text(entry, "small", send.detail || (send.message_id ? "消息回执 " + send.message_id : ""));
+      if (send.state === "draft") {
+        const approve = text(entry, "button", "确认发送此内容");
+        approve.type = "button";
+        approve.onclick = async () => { approve.disabled = true; try { await api("approve", {id: send.id}); await refresh(); } catch (error) { note(errorMessage(error), true); } finally { approve.disabled = false; } };
+        const cancel = text(entry, "button", "取消");
+        cancel.type = "button";
+        cancel.onclick = async () => { try { await api("cancel", {id: send.id}); await refresh(); } catch (error) { note(errorMessage(error), true); } };
+      }
+      $("sends").append(entry);
+    }
+    if (!sends.length) text($("sends"), "p", "还没有回复草稿。");
+  }
+  function renderEvents(events) {
+    $("events").replaceChildren();
+    for (const event of events.slice(0, 30)) text($("events"), "pre", new Date(event.created * 1000).toLocaleString() + " " + event.kind + "\n" + JSON.stringify(event.payload, null, 2));
+  }
+  function renderConversations(data) {
+    const parent = $('conversations'); parent.replaceChildren();
+    const policy = data.policy || {};
+    text(parent, 'strong', '已保存会话');
+    for (const kind of ['private', 'group']) for (const id of policy[kind + '_ids'] || []) {
+      const row = document.createElement('div'); parent.append(row);
+      const contact = (data.contacts || []).find(item => item.kind === kind && item.id === id);
+      const nickname = contact?.remark && contact?.name && contact.remark !== contact.name ? `（昵称：${contact.name}）` : '';
+      const label = `${kind === 'group' ? '群' : '好友'}：${contact?.remark || contact?.name || ''}${nickname} · ${id}`;
+      text(row, 'span', label);
+      const effective = {...policy, ...(policy.conversation_overrides || {})[`${kind}:${id}`]};
+      text(row, 'small', ` · ${effective.reply_identity === 'owner' ? '用主人口吻' : 'Amadeus 本人身份'} · ${policy.mode === 'paused' ? '已全局暂停' : effective.mode === 'auto' ? '自动回复' : '先审核'}`);
+      const paused = (policy['muted_' + kind + '_ids'] || []).includes(id);
+      const button = text(row, 'button', paused ? '▶' : '⏸'); button.type = 'button';
+      button.title = `${paused ? '恢复' : '暂停'} ${label}`;
+      button.setAttribute('aria-label', button.title);
+      button.onclick = async () => {
+        button.disabled = true;
+        try {
+          await api('conversation', {action:paused ? 'unmute' : 'mute', targetType:kind, targetId:id,
+            expectedAccount:policy.account_id, reason:'主人切换此会话的回复开关'});
+          await refresh();
+        } catch (error) { note(errorMessage(error), true); }
+        finally { button.disabled = false; }
+      };
+    }
+  }
+  function text(parent, tag, value) { const child = document.createElement(tag); child.textContent = value; parent.append(child); return child; }
+  async function refresh() {
+    if (state.refreshing) return;
+    state.refreshing = true;
+    try {
+      const data = await statusWithSession();
+      const policy = data.policy || {};
+      state.current = policy;
+      setToggle($("toggle"), policy.mode === "paused");
+      const mode = {paused: "暂停", review: "草稿确认", auto: "自动回复"}[policy.mode] || policy.mode || "未知";
+      note(`${data.reply_agent === "amadeus" ? "Amadeus" : "AstrBot"}；${data.connected ? "QQ 已连接" : "连接未就绪：" + (data.error || "请检查配置")}；当前模式：${mode}；${lifecycleText(data)}`);
+      if (!state.loaded || !state.dirty) {
+        state.loadedPolicy = clone(policy);
+        fillForm(data, policy);
+        state.loaded = true;
+        state.dirty = false;
+        state.conflict = false;
+      } else if (!samePolicy(policy, state.loadedPolicy)) {
+        state.conflict = true;
+        note("QQ 配置已在对话或其他界面中改变。请点击“连接面板”重新读取，再编辑保存。", true);
+      }
+      $("lifecycle").textContent = lifecycleText(data);
+      renderConversations(data);
+      renderSends(Array.isArray(data.sends) ? data.sends : []);
+      renderEvents(Array.isArray(data.events) ? data.events : []);
+      return data;
+    } catch (error) {
+      if (error.status === 401) note("会话已过期，请输入本机管理密钥后重新连接。", true);
+      else note(errorMessage(error), true);
+      return null;
+    } finally { state.refreshing = false; }
+  }
+  function markDirty() { state.dirty = true; }
+  for (const id of ["account", "ws", "napcatToken", "privateIds", "groupIds", "replyAgent", "mode", "replyIdentity", "interval", "quota", "background"]) {
+    $(id).addEventListener("input", markDirty);
+    $(id).addEventListener("change", markDirty);
+  }
+  $("unlock").onclick = async () => {
+    state.bootstrapKey = $("key").value.trim();
+    state.loaded = false; state.loadedPolicy = null; state.dirty = false; state.conflict = false;
+    await refresh();
+  };
+  $("settings").onsubmit = async event => {
+    event.preventDefault();
+    try {
+      if (!state.loadedPolicy || !state.loaded) throw Error("请先连接面板");
+      if (state.conflict) throw Error("配置已变化，请点击“连接面板”重新读取后再保存");
+      const policy = {...state.loadedPolicy, account_id: $("account").value, private_ids: ids($("privateIds").value),
+        group_ids: ids($("groupIds").value), mode: $("mode").value, minimum_interval_seconds: Number($("interval").value),
+        max_sends_per_hour: Number($("quota").value), background_enabled: $("background").checked, reply_identity: $("replyIdentity").value};
+      await api("config", {reply_agent: $("replyAgent").value, napcat_ws: $("ws").value, napcat_token: $("napcatToken").value,
+        expected_policy: state.loadedPolicy, policy});
+      $("napcatToken").value = "";
+      state.loaded = false; state.loadedPolicy = null; state.dirty = false; state.conflict = false;
+      await refresh();
+    } catch (error) { note(errorMessage(error) + "；配置变化时请重新连接面板读取。", true); }
+  };
+  async function control(action, reason) {
+    try {
+      if (!state.current) throw Error("请先连接面板");
+      await api("control", {action, reason});
+      state.loaded = false; state.loadedPolicy = null; state.dirty = false; state.conflict = false;
+      await refresh();
+    } catch (error) { note(errorMessage(error), true); }
+  }
+  $("toggle").onclick = () => control(state.current?.mode === "paused" ? "resume" : "pause",
+    state.current?.mode === "paused" ? "主人在独立面板恢复 QQ 回复" : "主人在独立面板暂停 QQ 回复");
+  $("stop").onclick = () => control("stop", "主人在独立面板退出 QQ 后台");
+  if (state.bootstrapKey) refresh();
+  else note("请输入本机管理密钥；若此前已连接，浏览器会使用同源 HttpOnly 会话继续访问。");
+  setInterval(() => { if (state.sessionReady) refresh(); }, 5000);
+})();
+</script></html>

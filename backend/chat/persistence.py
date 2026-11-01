@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from agent.cognitive_commit import (
     CognitiveCommitError, build_memory_projection_payload,
@@ -83,6 +83,7 @@ class ReplyPersistence:
         interpretation: UtteranceInterpretation,
         chat_metrics: dict[str, Any],
         cold_shoulder_short_circuit: bool,
+        source_messages: Sequence[Mapping[str, Any]] | Mapping[str, Mapping[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
         """Persist a frozen answer without changing any user-visible speech.
 
@@ -91,6 +92,12 @@ class ReplyPersistence:
         """
 
         value = dict(result)
+        # ``chat_metrics`` is host-owned metadata passed separately by the
+        # finalizer. Keep a private copy so source rows can reach grounding
+        # without being written into the conversation metrics payload.
+        safe_chat_metrics = dict(chat_metrics) if isinstance(chat_metrics, dict) else {}
+        host_source_messages = safe_chat_metrics.pop("sourceMessages", None)
+        chat_metrics = safe_chat_metrics
         cognitive_overlay = value.get("_cognitiveOverlay")
         cognitive_envelope = has_cognitive_overlay(cognitive_overlay)
         cognitive_has_patch = has_revision_overlay(cognitive_overlay)
@@ -108,6 +115,39 @@ class ReplyPersistence:
 
         updates: list[dict[str, Any]] = []
         try:
+            # Source rows are host-owned.  A caller that already has the
+            # frozen history can pass them explicitly; the private fallback
+            # keeps old callers useful while never accepting a model-visible
+            # ``sourceMessages`` field as provenance.  A current user row is
+            # enough for legacy candidates without an explicit source ID, but
+            # no synthetic ID is made for sourceMessageId validation.
+            private_source_messages = value.pop("_memorySourceMessages", None)
+            metrics_source_messages = None
+            metrics = value.get("_chatMetrics")
+            if isinstance(metrics, dict):
+                metrics_source_messages = metrics.pop("sourceMessages", None)
+            if metrics_source_messages is None:
+                metrics_source_messages = host_source_messages
+            active_source_messages = source_messages
+            if active_source_messages is None:
+                active_source_messages = (
+                    private_source_messages
+                    if isinstance(private_source_messages, (Sequence, Mapping))
+                    and not isinstance(private_source_messages, (str, bytes))
+                    else metrics_source_messages
+                )
+            if active_source_messages is None:
+                current_user_id = ""
+                if isinstance(metrics, Mapping):
+                    current_user_id = str(metrics.get("userMessageId") or "").strip()
+                if not current_user_id:
+                    current_user_id = str(value.get("userMessageId") or "").strip()
+                if current_user_id:
+                    active_source_messages = [{
+                        "messageId": current_user_id,
+                        "role": "user",
+                        "content": str(user_message or ""),
+                    }]
             memory_update_types = value.pop("_memoryUpdateTypes", {})
             if not isinstance(memory_update_types, dict):
                 memory_update_types = {}
@@ -122,7 +162,12 @@ class ReplyPersistence:
             model_updates = (
                 []
                 if cognitive_envelope or cold_shoulder_short_circuit or not memory_updates_provided else
-                self.memory.grounded_memory_candidates(raw_model_candidates, user_message)
+                self.memory.grounded_memory_candidates(
+                    raw_model_candidates,
+                    user_message,
+                    source_messages=active_source_messages,
+                    source_type="chat_persistence",
+                )
             )
             memory_action_recovered = False
             if (
@@ -142,6 +187,8 @@ class ReplyPersistence:
                     model_updates = self.memory.grounded_memory_candidates(
                         raw_model_candidates,
                         user_message,
+                        source_messages=active_source_messages,
+                        source_type="memory_action_repair",
                     )
                     memory_action_recovered = bool(model_updates)
                 except Exception as error:

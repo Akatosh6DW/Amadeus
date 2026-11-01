@@ -33,7 +33,7 @@ def historical_image_catalog(sources: Any, body: dict[str, Any]) -> dict[str, di
     """
     cached = body.get("_historicalImageSources")
     if isinstance(cached, dict):
-        return cached
+        return _merge_channel_references(sources, body, cached)
     context = sources.frozen_context(body) or {}
     snapshot = body.get("_turnContextSnapshot") or {}
     cid = str(snapshot.get("conversationId") or "")
@@ -65,8 +65,21 @@ def historical_image_catalog(sources: Any, body: dict[str, Any]) -> dict[str, di
                 break
         if len(result) >= MAX_IMAGE_REFERENCES:
             break
-    body["_historicalImageSources"] = result
-    return result
+    return _merge_channel_references(sources, body, result)
+
+
+def _merge_channel_references(sources, body, catalog):
+    """A channel may expose scoped references; listing never downloads pixels."""
+    provider = getattr(sources, 'image_references', None)
+    external = provider(body) if provider else {}
+    # Keep newly discovered channel references visible after a history tool call.
+    merged = dict(list(external.items())[:MAX_IMAGE_REFERENCES])
+    for ident, item in catalog.items():
+        if len(merged) >= MAX_IMAGE_REFERENCES:
+            break
+        merged.setdefault(ident, item)
+    body['_historicalImageSources'] = merged
+    return merged
 
 
 def image_reference_rows(body: Mapping[str, Any], selected_ids: set[str]) -> list[dict[str, Any]]:

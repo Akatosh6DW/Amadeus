@@ -36,14 +36,104 @@ TODO_ACTIONS = frozenset({
 TODO_TARGET_STATUSES = frozenset({
     "", "active", "pending", "in_progress", "paused", "completed", "deleted", "all",
 })
+TODO_DELIVERY_CHANNELS = frozenset({"desktop", "qq"})
+TODO_DELIVERY_TARGET_TYPES = frozenset({"private", "group"})
+# ``manual`` is the safe model-facing default. ``delivery`` is an explicit
+# contract for a one-shot reminder whose obligation is the successful
+# notification itself. ``legacy`` is storage-only and is used when an old
+# database row predates this field.
+TODO_COMPLETION_MODES = frozenset({"manual", "delivery", "legacy"})
 TODO_NOOP_TARGET_FIELDS = (
     "title", "details", "status", "priority", "dueAt", "dueDate", "allDay",
-    "timezone", "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
+    "timezone", "deliveryTarget", "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
 )
 TODO_NOOP_REQUESTABLE_FIELDS = (
     "title", "details", "onDue", "status", "priority", "dueAt", "dueDate", "timezone",
-    "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
+    "deliveryTarget", "remindBeforeMinutes", "recurrenceRule", "snoozedUntil",
 )
+
+
+def normalize_completion_mode(value: Any, *, default: str = "manual") -> str:
+    """Normalize the structured post-delivery completion contract.
+
+    ``legacy`` is retained only as a storage compatibility value.  Missing or
+    malformed values always fall back to the safe ``manual`` default; new
+    model commands use ``manual`` unless they explicitly select ``delivery``.
+    """
+
+    text = str(value or default).strip().lower().replace("-", "_")
+    if text in {"after_delivery", "delivery_ack", "acknowledged"}:
+        text = "delivery"
+    if text not in TODO_COMPLETION_MODES:
+        raise ValueError("todo_invalid_completion_mode")
+    return text
+
+
+def _ascii_digits(value: Any) -> str:
+    if isinstance(value, bool) or value is None:
+        return ""
+    text = str(value).strip()
+    return text if text and all("0" <= char <= "9" for char in text) else ""
+
+
+def normalize_delivery_target(value: Any, *, allow_owner_reference: bool = False) -> dict[str, str]:
+    """Normalize an explicit Todo delivery target without inferring a channel.
+
+    An omitted or empty target preserves the legacy desktop reminder behavior.
+    QQ targets are intentionally structural: the caller must provide numeric
+    account and recipient IDs, and prose in ``details`` never selects QQ.
+    """
+
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("todo_invalid_delivery_target")
+    if not value:
+        return {}
+    allowed = {"channel", "accountId", "targetType", "targetId", "recipient"}
+    if set(value) - allowed:
+        raise ValueError("todo_invalid_delivery_target")
+    channel = str(value.get("channel") or "").strip().lower()
+    if not channel:
+        raise ValueError("todo_invalid_delivery_target")
+    if channel == "desktop":
+        # Explicit desktop is useful for a round-trip update, but never carries
+        # a partially specified QQ destination.
+        if any(str(value.get(key) or "").strip() for key in ("accountId", "targetType", "targetId", "recipient")):
+            raise ValueError("todo_invalid_delivery_target")
+        return {"channel": "desktop"}
+    if channel != "qq":
+        raise ValueError("todo_invalid_delivery_target")
+    if (allow_owner_reference and value.get('recipient', 'owner') == 'owner'
+            and value.get('targetType', 'private') == 'private'
+            and not value.get('accountId') and not value.get('targetId')):
+        return {'channel': 'qq', 'recipient': 'owner'}
+    if 'recipient' in value:
+        raise ValueError('todo_invalid_delivery_target')
+    account_id = _ascii_digits(value.get("accountId"))
+    target_id = _ascii_digits(value.get("targetId"))
+    target_type = str(value.get("targetType") or "").strip().lower()
+    if (
+        not account_id or len(account_id) > 64
+        or not target_id or len(target_id) > 64
+        or target_type not in TODO_DELIVERY_TARGET_TYPES
+    ):
+        raise ValueError("todo_invalid_delivery_target")
+    return {
+        "channel": "qq",
+        "accountId": account_id,
+        "targetType": target_type,
+        "targetId": target_id,
+    }
+
+
+def is_qq_delivery_target(value: Any) -> bool:
+    """Return whether a persisted target explicitly selects QQ."""
+
+    try:
+        return normalize_delivery_target(value).get("channel") == "qq"
+    except ValueError:
+        return False
 
 _TODO_NOUN = re.compile(r"待办|任务|todo(?:\s*list)?|日程|提醒|计划事项", re.I)
 _TODO_MUTATION = re.compile(
@@ -274,7 +364,8 @@ def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any
     database readback.
     """
 
-    if (not isinstance(value, Mapping) or not set(TODO_NOOP_TARGET_FIELDS).issubset(value)
+    required_fields = set(TODO_NOOP_TARGET_FIELDS) - {"deliveryTarget"}
+    if (not isinstance(value, Mapping) or not required_fields.issubset(value)
             or set(value) - {*TODO_NOOP_TARGET_FIELDS, "onDue"}
             or not isinstance(value.get("onDue", ""), str)):
         return None
@@ -312,6 +403,10 @@ def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any
     snoozed_until = normalized_due_at(snoozed_until_input)
     if snoozed_until_input and not snoozed_until:
         return None
+    try:
+        delivery_target = normalize_delivery_target(value.get("deliveryTarget", {}))
+    except ValueError:
+        return None
     if (
         status not in TODO_STATUSES
         or priority not in TODO_PRIORITIES
@@ -330,6 +425,7 @@ def normalize_todo_noop_target(value: Mapping[str, Any] | None) -> dict[str, Any
         "dueDate": due_date,
         "allDay": value["allDay"],
         "timezone": value["timezone"].strip(),
+        "deliveryTarget": delivery_target,
         "remindBeforeMinutes": value["remindBeforeMinutes"],
         "recurrenceRule": recurrence_rule,
         "snoozedUntil": snoozed_until,
@@ -348,7 +444,7 @@ def todo_noop_target_matches(
             for key in (*TODO_NOOP_TARGET_FIELDS, "onDue")
         }
         if isinstance(candidate, Mapping)
-        and all(key in candidate for key in TODO_NOOP_TARGET_FIELDS)
+        and all(key in candidate for key in TODO_NOOP_TARGET_FIELDS if key != "deliveryTarget")
         else None
     )
     wanted = normalize_todo_noop_target(target)
@@ -456,6 +552,8 @@ class TodoCommand:
     due_at: str = ""
     due_date: str = ""
     timezone_name: str = ""
+    delivery_target: dict[str, str] = field(default_factory=dict)
+    completion_mode: str = "manual"
     remind_before_minutes: int = 0
     priority: str = "normal"
     recurrence_rule: str = ""
@@ -470,6 +568,21 @@ class TodoCommand:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "TodoCommand":
+        # Normalize explicit wire aliases before identity calculation and
+        # storage. Never derive delivery from prose or silently lose a channel.
+        value = dict(value)
+        if "dueAt" not in value and "due_at" not in value and "remindAt" in value:
+            value["dueAt"] = value["remindAt"]
+        if "deliveryTarget" not in value and "delivery_target" not in value:
+            channel = value.get("deliveryChannel")
+            if channel in {"qq", "qq_private"}:
+                if value.get("targetId") or value.get("accountId"):
+                    value["deliveryTarget"] = {"channel": "qq", "accountId": value.get("accountId"),
+                        "targetType": value.get("targetType", "private"), "targetId": value.get("targetId")}
+                else:
+                    value["deliveryTarget"] = {"channel": "qq", "recipient": value.get("recipient", "owner")}
+            elif channel == "desktop":
+                value["deliveryTarget"] = {"channel": "desktop"}
         action = str(value.get("action") or "list").strip().lower()
         if action not in TODO_ACTIONS:
             raise ValueError("invalid_todo_action")
@@ -502,6 +615,18 @@ class TodoCommand:
         due_at = normalized_due_at(due_input)
         if due_input not in (None, "") and not due_at:
             raise ValueError("todo_invalid_due_at")
+        delivery_input = (
+            value.get("deliveryTarget")
+            if "deliveryTarget" in value else value.get("delivery_target")
+        )
+        delivery_target = normalize_delivery_target(delivery_input, allow_owner_reference=True)
+        completion_input = (
+            value.get("completionMode")
+            if "completionMode" in value else value.get("completion_mode")
+        )
+        completion_mode = normalize_completion_mode(completion_input, default="manual")
+        if completion_mode == "legacy":
+            raise ValueError("todo_invalid_completion_mode")
         due_date = str(value.get("dueDate", value.get("due_date", "")) or "").strip()
         if due_date:
             try:
@@ -539,6 +664,8 @@ class TodoCommand:
             "dueDate": ("dueDate", "due_date"),
             "timeSpec": ("timeSpec",),
             "timezone": ("timezone", "timezoneName"),
+            "deliveryTarget": ("deliveryTarget", "delivery_target"),
+            "completionMode": ("completionMode", "completion_mode"),
             "remindBeforeMinutes": (
                 "remindBeforeMinutes", "remind_before_minutes",
             ),
@@ -557,13 +684,15 @@ class TodoCommand:
             action=action,  # type: ignore[arg-type]
             task_id=task_id,
             title=title,
-            details=str(value.get("details") or "").strip()[:4000],
-            on_due=str(value.get("onDue") or "").strip()[:4000],
+            details=str(value.get("details") or "").strip(),
+            on_due=str(value.get("onDue") or "").strip(),
             due_at=due_at,
             due_date=due_date,
             timezone_name=str(
                 value.get("timezone") or value.get("timezoneName") or ""
             ).strip()[:80],
+            delivery_target=delivery_target,
+            completion_mode=completion_mode,
             remind_before_minutes=clamp_remind_before_minutes(
                 value.get("remindBeforeMinutes", value.get("remind_before_minutes", 0))
             ),
@@ -594,6 +723,8 @@ class TodoCommand:
             "dueAt": self.due_at,
             "dueDate": self.due_date,
             "timezone": self.timezone_name,
+            "deliveryTarget": dict(self.delivery_target),
+            "completionMode": self.completion_mode,
             "remindBeforeMinutes": self.remind_before_minutes,
             "priority": self.priority,
             "recurrenceRule": self.recurrence_rule,
@@ -604,9 +735,18 @@ class TodoCommand:
         }
         if self.action == "create":
             result.update(values)
+            if "deliveryTarget" not in self.provided_fields and not self.delivery_target:
+                # Preserve omission through schedule/plan canonicalization so
+                # the authenticated transport can supply its reply destination.
+                result.pop("deliveryTarget", None)
             if not self.on_due:
                 # Keep ordinary reminders' pre-existing executable identity.
                 result.pop("onDue", None)
+            if "completionMode" not in self.provided_fields:
+                # Keep the wire shape compatible with older model/tool
+                # callers; the validated command still carries the safe
+                # ``manual`` default into the storage service.
+                result.pop("completionMode", None)
         else:
             result.update({key: values[key] for key in self.provided_fields})
         if not self.time_spec:

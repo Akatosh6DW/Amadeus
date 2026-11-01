@@ -646,6 +646,75 @@ body.full-layout::after {
   font-size: 11px;
 }
 
+/* Request activity is separate from the actual proactive waiting state. */
+#modelState {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#modelState::before {
+  content: "";
+  display: none;
+  min-width: 10px;
+  color: rgba(213, 232, 224, 0.68);
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+}
+
+#modelState[data-delivery-state="thinking"]::before {
+  display: inline-block;
+  content: "⋯";
+  color: var(--amber);
+  animation: amadeusDeliveryMarkerPulse 1.15s ease-in-out infinite;
+}
+
+#modelState[data-delivery-state="error"]::before {
+  display: inline-block;
+  content: "!";
+  color: #ff9b8f;
+  text-shadow: 0 0 7px rgba(255, 91, 78, 0.52);
+}
+
+.proactive-waiting-indicator {
+  position: fixed;
+  top: 22px;
+  right: 22px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid rgba(223, 185, 111, 0.35);
+  border-radius: 17px 17px 4px 17px;
+  color: #ead7ae;
+  background: rgba(35, 29, 25, 0.68);
+  box-shadow: 0 2px 9px rgba(0, 0, 0, 0.12);
+  user-select: none;
+}
+
+.proactive-waiting-indicator[hidden] { display: none; }
+.proactive-waiting-indicator svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+
+@keyframes amadeusDeliveryMarkerPulse {
+  0%, 100% { opacity: 0.46; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #modelState[data-delivery-state="thinking"]::before {
+    animation: none;
+    opacity: 0.82;
+  }
+}
+
 button,
 input,
 select,
@@ -847,6 +916,42 @@ button:hover {
   background: rgba(255, 208, 135, 0.9);
   box-shadow: 0 0 12px rgba(236, 146, 45, 0.3);
 }
+
+.qq-activity {
+  position: relative;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+}
+.qq-activity[hidden] { display: none; }
+.qq-activity summary { cursor: pointer; color: var(--amber); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qq-activity-body {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 4px);
+  left: -1px;
+  right: -1px;
+  max-height: min(240px, 35vh);
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+}
+.qq-activity article { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.qq-activity p { margin: 4px 0; color: var(--muted); }
+.qq-activity pre { margin: 4px 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.qq-activity small { color: var(--muted); }
+.qq-activity a { color: var(--amber); }
+.qq-activity .button-row { margin-top: 8px; }
+.qq-setup-login { text-align: center; padding: 12px; }
+.qq-setup-login[hidden], .qq-setup-login img[hidden] { display: none; }
+.qq-setup-login img { display: block; margin: 0 auto; max-width: 100%; height: auto; background: white; padding: 8px; }
+.qq-setup-account { color: var(--cyan); overflow-wrap: anywhere; }
+#qqSetup [data-qq="status"] { white-space: normal; text-align: left; }
+#qqSetup [data-qq="result"]:empty { display: none; }
+#qqSetup textarea { min-height: 56px; height: 64px; resize: vertical; }
 
 .chat-log {
   min-height: 0;
@@ -1527,6 +1632,45 @@ button:hover {
   font-size: 22px;
   line-height: 1;
 }
+
+.tool-picker-menu {
+  position: fixed;
+  z-index: 12000;
+  width: min(286px, calc(100vw - 24px));
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: rgba(20, 23, 24, 0.98);
+  color: var(--text);
+  box-shadow: 0 12px 35px #0008;
+}
+.tool-picker-menu[hidden], .composer-tools[hidden] { display: none; }
+.tool-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+}
+.tool-picker-item:hover, .tool-picker-item:focus-visible { background: #ec922d20; outline: none; }
+.tool-picker-item[aria-checked="true"] { color: var(--amber); }
+.tool-picker-icon { width: 20px; text-align: center; font-size: 17px; }
+.tool-picker-check { margin-left: auto; }
+.tool-picker-item small { color: var(--muted); font-size: 10px; }
+.tool-picker-heading { margin: 5px 3px; padding: 9px 7px 3px; border-top: 1px solid #ffffff18; color: var(--muted); font-size: 11px; }
+.composer-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.composer-tool-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid #ec922d55; border-radius: 16px; color: var(--amber); font-size: 11px; background: #151412c9; }
+.composer-tool-chip button { padding: 0 3px; min-width: 20px; min-height: 22px; border: 0; background: transparent; color: inherit; font: inherit; }
 
 .send-message-btn {
   min-height: 38px;
@@ -3716,3 +3860,86 @@ body.glitch #stage {
 @media (max-width: 520px) {
   .todo-drawer { top: 46px; bottom: 46px; }
 }
+/* QQ has one runtime control; settings remain a separate, explicit save. */
+#qqSetup { font-size: 13px; align-content: start; grid-auto-rows: max-content; }
+#qqSetup .model-box { gap: 12px; padding: 14px; border-radius: 8px; }
+#qqSetup .model-box-head strong { font-size: 14px; }
+#qqSetup button { padding: 6px 12px; border-radius: 5px; font-size: 12px; line-height: 1.4; }
+#qqSetup button:disabled { opacity: .45; cursor: default; }
+#qqSetup button:focus-visible, #qqSetup summary:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+#qqSetup [hidden] { display: none !important; }
+#qqSetup p { margin: 0; }
+#qqSetup .qq-note { color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+#qqSetup .qq-run-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+#qqSetup .qq-run-copy { min-width: 0; display: grid; gap: 8px; }
+#qqSetup .qq-title { font-size: 17px; color: var(--text); }
+#qqSetup .qq-state { display: flex; align-items: center; gap: 7px; color: var(--amber); font-size: 13px; }
+#qqSetup .qq-state::before { content: ''; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: #8c8b87; }
+#qqSetup .qq-state[data-tone="on"]::before { background: #87c5a5; }
+#qqSetup .qq-state[data-tone="waiting"]::before { background: #efb65e; }
+#qqSetup .qq-main-toggle { width: 52px; height: 52px; flex: 0 0 52px; padding: 0; border-radius: 50%; font: 22px Arial, sans-serif; }
+#qqSetup .qq-main-toggle[data-action="refresh_qr"] { width: auto; min-width: 84px; flex-basis: auto; padding: 0 12px; border-radius: 26px; font-size: 13px; font-family: inherit; }
+#qqSetup .qq-main-toggle[aria-pressed="true"] { border-color: #87c5a5; color: #a9d9bd; background: rgba(110, 190, 145, .1); }
+#qqSetup .qq-setup-account { border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; line-height: 1.6; }
+#qqSetup .qq-account-settings > summary, #qqSetup .qq-owner-settings > summary { color: var(--text); font-size: 13px; }
+#qqSetup .qq-account-switcher { display: grid; gap: 10px; border-top: 0; padding-top: 0; }
+#qqSetup .qq-account-switch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; }
+#qqSetup .qq-account-switch-row > button { white-space: nowrap; }
+#qqSetup .qq-account-switcher .field { min-width: 0; }
+#qqSetup .qq-account-switcher input, #qqSetup .qq-account-switcher select { width: 100%; }
+#qqSetup .qq-owner-settings { display: block; }
+#qqSetup .qq-owner-settings-body { display: grid; gap: 10px; }
+#qqSetup .qq-qzone-settings { display: block; }
+#qqSetup .qq-qzone-settings > summary { color: var(--text); font-size: 14px; }
+#qqSetup .qq-qzone-settings[open] > :not(summary) { margin-top: 12px; }
+#qqSetup .qq-qzone-fields { grid-template-columns: minmax(0, 1fr); margin-top: 0 !important; }
+#qqSetup .qq-login-details > summary { color: var(--muted); }
+#qqSetup .qq-login-details[open] .qq-setup-login { margin-top: 10px; }
+#qqSetup .qq-details { min-width: 0; border-top: 1px solid var(--line); padding-top: 10px; }
+#qqSetup .qq-details > summary { color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1.6; }
+#qqSetup .qq-details[open] > :not(summary) { margin-top: 12px; }
+#qqSetup .qq-details > summary:hover { color: var(--text); }
+#qqSetup .qq-management-row { display: grid; gap: 14px; }
+#qqSetup .qq-management-row > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 12px; }
+#qqSetup .qq-management-row small { color: var(--muted); line-height: 1.6; }
+#qqSetup .qq-exit { border-color: rgba(220, 140, 120, .5); color: #e8b9aa; }
+#qqSetup .qq-contact-picker { display: grid; gap: 10px; }
+#qqSetup .qq-inline-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+#qqSetup .qq-subtle-button { border-color: transparent; background: transparent; color: var(--muted); }
+#qqSetup .qq-media-items { display: grid; gap: 6px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+#qqSetup .qq-media-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+#qqSetup .qq-media-item:last-child { border-bottom: 0; }
+#qqSetup .qq-media-item > span { overflow-wrap: anywhere; color: var(--text); }
+#qqSetup .qq-conversations { color: var(--muted); font-size: 12px; line-height: 1.6; }
+#qqSetup .qq-muted-row { display: grid; grid-template-columns: minmax(0, 1fr) auto 34px auto auto; align-items: center; gap: 8px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+#qqSetup .qq-muted-row .qq-subtle-button { padding: 4px 2px; }
+#qqSetup .qq-muted-row:last-child { border-bottom: 0; }
+#qqSetup .qq-muted-row > span { overflow-wrap: anywhere; color: var(--text); }
+#qqSetup .qq-muted-row > small { font-size: 11px; white-space: nowrap; color: var(--muted); }
+#qqSetup .qq-contact-toggle { width: 34px; height: 32px; padding: 0; font: 15px Arial, sans-serif; }
+#qqSetup .qq-two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+#qqSetup .qq-feedback { padding: 10px 12px; border-left: 2px solid var(--amber); background: rgba(236, 146, 45, .08); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+#qqSetup .qq-save-bar { position: sticky; bottom: -12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; background: #0e1414; border-top: 1px solid var(--line); z-index: 1; }
+#qqSetup .qq-save-bar > span { flex: 1 1 120px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+#qqSetup .qq-save-bar .qq-feedback { flex: 1 0 100%; }
+#qqSetup [data-qq="save"] { color: var(--text); border-color: var(--amber); }
+#qqSetup [hidden] { display: none !important; }
+#qqSetup .qq-page { display: grid; gap: 14px; min-width: 0; }
+#qqSetup .qq-conversation-summary { grid-column: 1 / -1; white-space: normal; line-height: 1.7; }
+#qqSetup .qq-recipient-settings { color: var(--amber); border-color: var(--line-strong); padding: 6px 12px; white-space: nowrap; }
+#qqSetup .qq-recipient-header { display: grid; gap: 10px; }
+#qqSetup .qq-recipient-header h3 { margin: 0; overflow-wrap: anywhere; font-size: 18px; }
+#qqSetup .qq-back { justify-self: start; }
+#qqSetup .qq-recipient-state { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
+#qqSetup .qq-context-clear { display: grid; gap: 4px; }
+#qqSetup .qq-context-clear .qq-subtle-button { justify-self: start; color: #e8b9aa; }
+#qqSetup .qq-context-clear-confirmation { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid rgba(220, 140, 120, .45); background: rgba(220, 140, 120, .06); }
+#qqSetup .qq-context-clear-confirmation .qq-inline-actions { margin-top: 0; }
+#qqSetup [data-qq="conversation-form"] { display: grid; gap: 16px; }
+#qqSetup [data-qq="conversation-form"] input, #qqSetup [data-qq="conversation-form"] select, #qqSetup [data-qq="conversation-form"] textarea { width: 100%; }
+#qqSetup .qq-default-settings { display: block; }
+#qqSetup .qq-default-settings > summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+#qqSetup .qq-default-settings[open] > :not(summary) { margin-top: 14px; }
+#qqSetup .qq-trigger-options { display: grid; gap: 12px; }
+#qqSetup .qq-trigger-choice { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; }
+#qqSetup [data-qq="conversation-form"] .qq-trigger-choice input { width: 16px; height: 16px; margin: 0; flex-shrink: 0; accent-color: var(--amber); }

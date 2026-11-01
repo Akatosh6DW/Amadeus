@@ -1,21 +1,18 @@
-"""视觉回答的独立审计、一次修复与最终回执更新。
+"""视觉回答的独立审计与最终回执更新。
 
 这里只消费已经采集的视觉证据；不读取人格、长期记忆或重新采集画面。
-运行时端口由入口注入，模型参数和失败处理保持迁移前的行为。
+运行时端口由入口注入；审计结果只作为当前回答的诊断回执。
 """
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 import re
-import time
 from typing import Any, Callable, Mapping, Sequence
 
 from agent.visual_grounding import build_visual_evidence_packet
 from agent.visual_grounding import has_current_visual_evidence as has_typed_visual_evidence
 from backend.chat.completion import visual_grounding_text_fingerprint
 from backend.chat.parsing import parse_json_object
-from backend.chat.presentation import normalize_speech_language
 from backend.providers.errors import UpstreamProtocolError
 
 def normalize_visual_grounding_audit(
@@ -229,37 +226,9 @@ def current_visual_grounding_verified(
         and candidate.get("visualGroundingTextFingerprint")
         == visual_grounding_text_fingerprint(candidate)
         and (
-            (isinstance(audit, dict) and audit.get("passes"))
-            or candidate.get("visualGroundingTerminalBoundary")
+            isinstance(audit, dict) and audit.get("passes")
         )
     )
-
-
-def terminal_visual_grounding_boundary_reply(candidate: dict[str, Any]) -> dict[str, Any]:
-    """Stop a visual turn from releasing claims that contradict captured evidence."""
-
-    safe = dict(candidate)
-    safe.update({
-        "reply": "图片已经读到了，但这次没能可靠地回答你的问题。",
-        "spokenTextJa": "画像は読み取れたけれど、今回はあなたの質問に確かな答えを返せなかったわ。",
-        "emotion": "concerned",
-        "gesture": "idle",
-        "memoryUpdates": [],
-        "turnComplete": True,
-        "standalone": True,
-        "visualGroundingTerminalBoundary": True,
-    })
-    safe.pop("toolGroundingUnverified", None)
-    safe["speechText"] = safe["reply"] if normalize_speech_language(safe.get("speechLanguage")) == "zh-CN" else safe["spokenTextJa"]
-    for key in (
-        "_memoryCandidates",
-        "_memoryUpdateTypes",
-        "_modelSpeechUnits",
-        "speechUnits",
-        "speechUnitContract",
-    ):
-        safe.pop(key, None)
-    return safe
 
 
 class VisualGroundingService:
@@ -268,12 +237,11 @@ class VisualGroundingService:
     def __init__(self, *, model_call: Callable[..., str],
                  normalize_reply: Callable[..., dict[str, Any]],
                  log: Callable[..., None], progress: Callable[..., None],
-                 deterministic_violation: Callable[..., Any], reply_rule: str) -> None:
+                 reply_rule: str) -> None:
         self._model_call = model_call
         self._normalize_reply = normalize_reply
         self._log = log
         self._progress = progress
-        self._deterministic_violation = deterministic_violation
         self._reply_rule = reply_rule
 
     def refresh_visual_grounding_for_current_text(self,
@@ -312,25 +280,17 @@ class VisualGroundingService:
         if audit.get("passes"):
             renewed.pop("visualGroundingTerminalBoundary", None)
             renewed["visualGroundingVerification"] = f"{phase}_independent_semantic_audit"
-        elif not audit.get("errorType") and not candidate.get("visualGroundingRepairAttempted"):
-            # Translation/late normalization can expose a new problem after the
-            # first audit. Use the same one-shot repair as the initial path, with
-            # the already obtained audit and the same saved observation: no reread.
-            repaired, _, _ = self.enforce_visual_semantic_grounding(
-                settings, user_message, candidate, results, {},
-                request_id=request_id, initial_audit=audit,
-                task_dialogue=task_dialogue,
-            )
-            renewed = {**candidate, **repaired}
-            for key in ("_modelSpeechUnits", "speechUnits", "speechUnitContract"):
-                if key not in repaired:
-                    renewed.pop(key, None)
-            return renewed
         else:
-            # This typed, system-owned outcome is not an unverified visual assertion.
-            # Do not send it through the generic fact rewriter, which lacks the image.
-            renewed = terminal_visual_grounding_boundary_reply(renewed)
-            renewed["visualGroundingVerification"] = f"{phase}_fail_closed_terminal_boundary"
+            # A changed visual answer can no longer reuse the previous receipt.
+            # Keep the audit as a diagnostic and let the normal response path
+            # decide how to answer; this service must not author a fixed reply
+            # or silently rewrite the candidate.
+            renewed["visualGroundingVerification"] = (
+                f"{phase}_semantic_audit_unavailable"
+                if audit.get("errorType")
+                else f"{phase}_semantic_audit_rejected"
+            )
+            renewed["visualGroundingDiagnosticOnly"] = True
         renewed["visualGroundingAudit"] = audit
         renewed["visualGroundingTextFingerprint"] = visual_grounding_text_fingerprint(renewed)
         return renewed
@@ -418,246 +378,3 @@ class VisualGroundingService:
             purpose="visual_grounding_audit",
         )
         return normalize_visual_grounding_audit(content, packet)
-
-    def repair_visual_grounded_reply(self,
-        settings: dict[str, Any],
-        user_message: str,
-        results: list[dict[str, Any]],
-        audit: dict[str, Any],
-        relationship_state: dict[str, Any],
-        *,
-        request_id: str,
-        task_dialogue: Sequence[Mapping[str, Any]] = (),
-    ) -> dict[str, Any]:
-        """Regenerate from evidence, without anchoring on the invalid prose."""
-
-        packet = build_visual_evidence_packet(results, user_question=user_message)
-        primary_evidence_ids = {
-            str(evidence.get("evidenceId") or "")
-            for observation in packet.get("observations", [])
-            if isinstance(observation, dict)
-            for evidence in observation.get("sceneEvidence", [])
-            if isinstance(evidence, dict)
-        }
-        # A rejected scene claim must not let OCR/window metadata invent a physical
-        # action.  Desktop screenshots are different from camera scenes, however:
-        # their visible text and foreground-window metadata are often the strongest
-        # evidence of what page or application is actually on screen.  Preserve the
-        # typed evidence and narrow its authority in the repair contract instead of
-        # deleting the only useful desktop signal.
-        scene_authority_violation = any(
-            isinstance(claim, dict)
-            and str(claim.get("kind") or "") in {
-                "visual_fact", "current_activity", "application_identity",
-            }
-            and (
-                str(claim.get("status") or "").upper() in {"UNSUPPORTED", "CONTRADICTED"}
-                or not any(
-                    str(ref) in primary_evidence_ids
-                    for ref in (
-                        claim.get("evidenceIds")
-                        if isinstance(claim.get("evidenceIds"), list) else []
-                    )
-                )
-            )
-            for claim in (audit.get("claims") if isinstance(audit.get("claims"), list) else [])
-        )
-        repair_packet = deepcopy(packet)
-        if scene_authority_violation:
-            repair_packet["repairEvidenceMode"] = "scoped_scene_text_context"
-            repair_packet["rejectedClaimKinds"] = [
-                str(claim.get("kind") or "")
-                for claim in (audit.get("claims") if isinstance(audit.get("claims"), list) else [])
-                if isinstance(claim, dict)
-                and str(claim.get("status") or "").upper() in {"UNSUPPORTED", "CONTRADICTED"}
-            ]
-        payload: dict[str, Any] = {
-            "model": settings["apiModel"],
-            "temperature": 0.0,
-            "max_tokens": 700,
-            "messages": [
-                {"role": "system", "content": self._reply_rule},
-                {"role": "system", "content": (
-                    "重新生成当前视觉问题的完整回答。当前画面事实只能来自 visualEvidencePacket："
-                    "sceneEvidence 决定可见人物、物体、动作和物理场景；textEvidence 只能证明对应文字"
-                    "确实可见；contextEvidence 只能辅助识别窗口或应用。人格、记忆、旧对话和一般常识"
-                    "都不能补出画面事实。对于桌面截图，窗口标题和与画面一致的 OCR 可以共同证明用户"
-                    "正在查看哪个应用、页面或文档内容，但不能证明画面外的手部动作、心理、目的或持续行为；"
-                    "对于摄像头和普通照片，OCR/窗口元数据不能替代人物、物体和动作的 sceneEvidence。"
-                    "若全局 caption 与局部 tile 冲突，只陈述双方都支持的更窄事实，不能任选一方写成确定结论。"
-                    "先按 currentUserRequest 的完整语义区分画面描述、文字读取、应用识别、当前活动判断和进一步分析。"
-                    "用户明确询问自己正在做什么、进行什么活动，或强调要分析而非复述时，第一句必须给出最具体且有证据的当前活动判断；"
-                    "仅罗列文字、框、按钮或应用名称仍是不完整回答。桌面 sceneEvidence 已确认应用或页面场景后，可以联合一致的"
-                    "textEvidence/contextEvidence 判断用户正在查看、讨论、编辑、调试或操作什么；间接推断要明确降低确定性。"
-                    "用户只要求描述画面、读取文字或识别应用时则不要强行增加活动判断。任何情况下都不得猜测长期目的、心理或画面外动作。"
-                    "用户要解释寓意或讽刺对象时，应直接回答所问的含义，再区分可见元素与解释性推断；不要退回纯画面描述。"
-                    "recentTaskDialogue 保留了用户的背景说明和纠正；它帮助理解题目，不是新的任务，也不是独立视觉事实。"
-                    "不要重新采纳其中已经被用户否定的助手猜测。"
-                    "服饰、道具或艺术造型不等于现实身份、职业或年代；不能用外观否定用户提供的当前材料背景。"
-                    "无法可靠辨认所问细节时，明确说出具体的不确定项，保留用户背景的归属；不要编造确定答案或要求重发已有图片。"
-                    "先用最窄、直接的结论回答用户，再指出一两个主视觉依据；证据只够推测时必须明确降低确定性。"
-                    "不要提及证据包、审计、evidenceId、OCR 或修复过程。第一句自然地直接回应用户，"
-                    "总共控制在一至三句；emotion 不得为 neutral，gesture 不得为 idle/none。"
-                    "语气不能添加新的视觉事实，也不得补充当前时间、地点、用户偏好或用户心理。"
-                    "中日文必须表达同一个核心结论。"
-                )},
-                {"role": "user", "content": json.dumps({
-                    "currentUserRequest": user_message,
-                    "recentTaskDialogue": list(task_dialogue),
-                    "visualEvidencePacket": repair_packet,
-                    "rejectedClaimSummary": {
-                        "unsupportedClaimCount": len(audit.get("unsupportedClaims") or []),
-                        "contradictedClaimCount": len(audit.get("contradictedClaims") or []),
-                        "reasons": audit.get("reasons") or [],
-                    },
-                }, ensure_ascii=False)},
-            ],
-        }
-        if settings.get("useResponseFormat"):
-            payload["response_format"] = {"type": "json_object"}
-        if "deepseek.com" in settings["apiEndpoint"]:
-            payload["thinking"] = {"type": "disabled"}
-        content = self._model_call(
-            settings,
-            payload,
-            timeout=75,
-            request_id=request_id,
-            purpose="visual_grounding_rewrite",
-        )
-        return self._normalize_reply(content, settings=settings)
-
-    def enforce_visual_semantic_grounding(self,
-        settings: dict[str, Any],
-        user_message: str,
-        candidate: dict[str, Any],
-        results: list[dict[str, Any]],
-        relationship_state: dict[str, Any],
-        *,
-        request_id: str,
-        initial_audit: Mapping[str, Any] | None = None,
-        task_dialogue: Sequence[Mapping[str, Any]] = (),
-    ) -> tuple[dict[str, Any], int, int]:
-        """Audit, repair once, and fail closed before a visual reply is released."""
-
-        if not has_typed_visual_evidence(results) or native_visual_input_delivered(candidate, results):
-            return candidate, 0, 0
-        if candidate.get("visualGroundingTerminalBoundary"):
-            terminal = dict(candidate)
-            terminal.setdefault("visualGroundingVerification", "deterministic_fail_closed_terminal_boundary")
-            terminal["visualGroundingTextFingerprint"] = visual_grounding_text_fingerprint(terminal)
-            return terminal, 0, 0
-        audit_ms = 0
-        rewrite_ms = 0
-        audit: dict[str, Any]
-        try:
-            started = time.perf_counter()
-            audit = dict(initial_audit) if initial_audit is not None else self.audit_visual_grounding_with_model(
-                settings,
-                user_message,
-                candidate,
-                results,
-                request_id=request_id,
-                task_dialogue=task_dialogue,
-            )
-            audit_ms += round((time.perf_counter() - started) * 1000)
-        except Exception as error:
-            audit = {
-                "passes": False,
-                "claims": [],
-                "unsupportedClaims": [],
-                "contradictedClaims": [],
-                "reasons": ["visual_semantic_audit_unavailable"],
-                "errorType": type(error).__name__,
-            }
-        self._log(
-            "visual_semantic_grounding_audit",
-            requestId=request_id,
-            phase="initial",
-            decision=audit,
-        )
-        if audit.get("passes"):
-            accepted = dict(candidate)
-            accepted["visualGroundingAudit"] = audit
-            accepted["visualGroundingVerification"] = "independent_semantic_audit"
-            accepted["visualGroundingTextFingerprint"] = visual_grounding_text_fingerprint(accepted)
-            return accepted, audit_ms, rewrite_ms
-
-        self._progress(
-            request_id,
-            "repairing-visual-grounding",
-            "画面描述中有缺少视觉依据的内容，正在重新按当前画面生成",
-        )
-        try:
-            started = time.perf_counter()
-            repaired = self.repair_visual_grounded_reply(
-                settings,
-                user_message,
-                results,
-                audit,
-                relationship_state,
-                request_id=request_id,
-                task_dialogue=task_dialogue,
-            )
-            repaired["visualGroundingRepairAttempted"] = True
-            rewrite_ms += round((time.perf_counter() - started) * 1000)
-            started = time.perf_counter()
-            repaired_audit = self.audit_visual_grounding_with_model(
-                settings,
-                user_message,
-                repaired,
-                results,
-                request_id=request_id,
-                task_dialogue=task_dialogue,
-            )
-            audit_ms += round((time.perf_counter() - started) * 1000)
-            deterministic_violation = self._deterministic_violation(
-                repaired,
-                results,
-                user_message,
-                relationship_state,
-            )
-            self._log(
-                "visual_semantic_grounding_audit",
-                requestId=request_id,
-                phase="rewrite",
-                decision=repaired_audit,
-                deterministicViolation=deterministic_violation,
-            )
-            if repaired_audit.get("passes"):
-                if deterministic_violation:
-                    repaired["visualDialogueStyleUnverified"] = True
-                repaired["visualGroundingAudit"] = repaired_audit
-                repaired["visualGroundingVerification"] = "model_rewrite_and_independent_semantic_audit"
-                repaired["visualGroundingRewrittenByModel"] = True
-                repaired["visualGroundingTextFingerprint"] = visual_grounding_text_fingerprint(repaired)
-                return repaired, audit_ms, rewrite_ms
-            audit = repaired_audit
-            if deterministic_violation:
-                audit = dict(audit)
-                audit["reasons"] = list(dict.fromkeys([
-                    *[str(item) for item in audit.get("reasons", [])],
-                    "deterministic_visual_contract_violation",
-                ]))
-        except Exception as error:
-            audit = dict(audit)
-            audit["reasons"] = list(dict.fromkeys([
-                *[str(item) for item in audit.get("reasons", [])],
-                "visual_grounding_rewrite_or_reaudit_failed",
-            ]))
-            audit["errorType"] = type(error).__name__
-
-        blocked = terminal_visual_grounding_boundary_reply(candidate)
-        blocked["visualGroundingRepairAttempted"] = True
-        blocked["visualGroundingAudit"] = audit
-        blocked["visualGroundingVerification"] = "fail_closed_terminal_boundary"
-        blocked["toolGroundingDiagnostics"] = list(dict.fromkeys([
-            "visual_semantic_audit_rejected",
-            *[str(item) for item in audit.get("reasons", [])],
-        ]))
-        blocked["visualGroundingTextFingerprint"] = visual_grounding_text_fingerprint(blocked)
-        self._log(
-            "visual_semantic_grounding_terminal_boundary",
-            requestId=request_id,
-            decision=audit,
-        )
-        return blocked, audit_ms, rewrite_ms
