@@ -4807,7 +4807,11 @@ function openFirstRunApiSetupIfNeeded() {
   openSettings();
   activateSettingsTab("api");
   modelProfileController?.refresh().then(() => {
-    if (!modelProfileController.beginEdit(false)) modelProfileController.beginEdit(true);
+    if (!modelProfileController.beginEdit(false)) modelProfileController.beginEdit(true, {
+      name: "默认配置",
+      apiEndpoint: settings.apiEndpoint,
+      apiModel: settings.apiModel,
+    });
     dom.apiKeyInput?.focus();
   }).catch(() => {});
   toast("请填写模型配置，点击“保存并使用”完成设置");

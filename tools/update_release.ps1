@@ -385,6 +385,7 @@ $staging = $null
 $parent = $null
 $backup = $null
 $newExecutable = $null
+$stagingCleanupAllowed = $false
 $movedOld = $false
 $movedNew = $false
 $ownedProcesses = @()
@@ -393,6 +394,9 @@ try {
     $install = FullPath $InstallDirectory
     $staged = FullPath $StagedRelease
     $staging = FullPath $StagingDirectory
+    # Keep the parent available for rollback and cleanup, but do not permit
+    # staging deletion until all ownership and scope checks below succeed.
+    $parent = Split-Path -Parent $install
     $explicitProcessIds = @(
         ($ProcessIds -split ",") | ForEach-Object {
             $text = ([string]$_).Trim()
@@ -406,6 +410,7 @@ try {
     }
     Assert-NotDriveRoot $install "install directory"
     Assert-NotDriveRoot $staging "staging directory"
+    Assert-Inside $parent $staging "staging directory"
     if (-not (Test-Path -LiteralPath $staging -PathType Container)) { throw "staging directory does not exist" }
     if ((Get-Item -LiteralPath $staging -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
         throw "staging directory may not be a reparse point"
@@ -420,9 +425,12 @@ try {
     Assert-NoReparsePoint $staged
     $newExecutable = Join-Path $staged $ExecutableName
     Assert-Inside $staged $newExecutable "staged executable"
+    # At this point both directories and their relationship have been
+    # validated, so a later content/ownership failure may clean this staging
+    # directory.  Keep the flag false for every earlier scope failure.
+    $stagingCleanupAllowed = $true
     if (-not (Test-Path -LiteralPath $newExecutable -PathType Leaf)) { throw "staged AMADEUS.exe is missing" }
 
-    $parent = Split-Path -Parent $install
     $backup = Join-Path $parent (".amadeus-update-backup-" + [Guid]::NewGuid().ToString("N"))
     $ownedProcesses = @(Get-OwnProcessSnapshot $install $ParentPid $explicitProcessIds)
     if ($ParentPid -gt 0 -and -not $ownedProcesses) {
@@ -511,7 +519,7 @@ try {
     if ($rollbackSucceeded) { Start-RolledBackInstallation $install $ExecutableName }
     throw
 } finally {
-    if ($staging -and $parent -and (Test-Path -LiteralPath $staging)) {
+    if ($stagingCleanupAllowed -and $staging -and $parent -and (Test-Path -LiteralPath $staging)) {
         try { Remove-SafeDirectory $staging $parent } catch { Write-UpdateLog "staging cleanup deferred: $($_.Exception.Message)" }
     }
 }

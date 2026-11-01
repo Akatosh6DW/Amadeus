@@ -85,9 +85,9 @@
         throw error;
       }
     }
-    function beginEdit(isNew = false) {
+    function beginEdit(isNew = false, initialDraft = {}) {
       if (busy || editing) return false;
-      const p = isNew ? {} : selected();
+      const p = isNew ? { ...initialDraft, id: null, apiKeySet: false } : selected();
       if (!p) return false;
       editing = true; editingId = p.id || null; dirty = false; clearKey = false;
       el.title.textContent = isNew ? "新增配置" : `编辑配置：${p.name}`;
