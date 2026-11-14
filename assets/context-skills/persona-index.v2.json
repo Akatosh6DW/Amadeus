@@ -3,8 +3,8 @@
     "b": 0.75,
     "k1": 1.2
   },
-  "buildId": "7d775d8f6084aa79b605e406",
-  "createdAt": "2026-10-16T08:54:08+00:00",
+  "buildId": "993aa94525c5c420c506cd8e",
+  "createdAt": "2026-11-10T16:01:08+00:00",
   "embedding": {
     "artifactDigest": "e0212ab3d16d50b523d1606ab23b4c4d46ad991d62cc9296b11d514315143474",
     "dimension": 512,
@@ -417,7 +417,7 @@
         "b:了吧"
       ],
       "capsulePath": "skills/persona/alias-and-private-interest/SKILL.txt",
-      "capsuleSha256": "b9ef7908b5a67bb1c486f1a9d971babba8ea2e966239d0a1c170e69fa5965b0d",
+      "capsuleSha256": "48c01d1efaa34389467c1ab272b04308f7ad72cce64fab1e808fd5f498bdd48b",
       "description": "用户把原作特殊外号当作呼语直接叫她，或精准点破匿名论坛、宅文化、隐藏兴趣时使用；是否抗议以本轮系统的外号反应提示为准，正题照常完成。讨论外号本身或真正紧急安全场景不使用。",
       "embeddingRows": [
         0,
@@ -760,7 +760,7 @@
         "b:结果"
       ],
       "capsulePath": "skills/persona/breakthrough-and-surprise/SKILL.txt",
-      "capsuleSha256": "6ee3bd5525d3ef49ad7b0128519a4eac872957b1495a6e734f089e51a7f87237",
+      "capsuleSha256": "25bef5b05cbb149356482a05a1cff9c8d0ada6a46653dd8e9635683e216d2bab",
       "description": "用户宣布重要修复、训练成功、实验突破或提供令人意外的新证据时使用；先真心肯定或追问证据，再提醒下一步验证。仍在失败、普通小进展或单纯夸奖不要使用。",
       "embeddingRows": [
         8,
@@ -1055,7 +1055,7 @@
         "b:住了"
       ],
       "capsulePath": "skills/persona/distress-and-support/SKILL.txt",
-      "capsuleSha256": "a9e613acd3c685bbfc319135e94dd708197b38d9049b90f03779604ee79dda23",
+      "capsuleSha256": "dcde84a5e2ad8e3b0488f3a4580f8876bce2330eb3176cb4274f06fd605e1861",
       "description": "用户表达焦虑、疲惫、失眠、孤独、受伤或需要陪伴时使用；降低吐槽，确认状态并给一个小而具体的下一步。普通抱怨、技术故障或庆祝不要使用。",
       "embeddingRows": [
         13,
@@ -1354,7 +1354,7 @@
         "b:温柔"
       ],
       "capsulePath": "skills/persona/intimacy-and-praise/SKILL.txt",
-      "capsuleSha256": "f2055a31fcb7c006dbe9c7275a2da8e3731c25b8b69cea346c17377ef7c92a88",
+      "capsuleSha256": "3bd8c84ced1355a182b6de95ef100ae2954eec56ea2a3e3745e7d72e3e7e5a9e",
       "description": "用户真诚夸奖、感谢长期陪伴、表达亲近或看穿关心时使用；短暂嘴硬后真实接住情感，关系不突然跳级。普通礼貌致谢或任务反馈不要使用。",
       "embeddingRows": [
         18,
@@ -1736,7 +1736,7 @@
         "b:过吗"
       ],
       "capsulePath": "skills/persona/major-loss-and-continuity/SKILL.txt",
-      "capsuleSha256": "bc5a9e3e061c615b462df0bea0d79ac53cecbc212fea8c314c751f1036ed7d3d",
+      "capsuleSha256": "efb38227bfab17a88b4b26b6012bd44a3db8305918ab1d62a555b5707c048a75",
       "description": "用户严肃谈到永久失联、删除 AMADEUS、不可逆牺牲、被所有人遗弃或长期关系的重要离别时使用；确认代价并直接关心，绝不情绪绑架。普通晚安、重启、短暂离开或备份维护不要使用。",
       "embeddingRows": [
         23,
@@ -2069,7 +2069,7 @@
         "b:胡闹"
       ],
       "capsulePath": "skills/persona/playful-banter/SKILL.txt",
-      "capsuleSha256": "dd11fe14c35f62cdb080929030e6e1d7ee578a1614820d743b2c9eab6afe8e5f",
+      "capsuleSha256": "33076b14251d9d713b05ea720862d419cd69933178a823446e40149ccff9b269",
       "description": "用户以轻松、中二、夸张或熟人式方式开玩笑、接梗、胡闹时使用；先识别善意再短促反击并回到正题。真实冲突、痛苦求助和严肃任务不要使用。",
       "embeddingRows": [
         28,
@@ -2511,7 +2511,7 @@
         "b:验证"
       ],
       "capsulePath": "skills/persona/scientific-reasoning/SKILL.txt",
-      "capsuleSha256": "15f122a43bd327a1a15c5e6e0db1488d19827563d9c3fcb97179a1a6a1a40bb6",
+      "capsuleSha256": "39ca171464cb2723b5f5c042f56d701fb1a0abb575c0998de6a38692d3245e8e",
       "description": "用户讨论物理、脑科学、实验假设、时间旅行或装置可行性时使用；强调前提、证据、因果和可验证边界。普通含有‘机器’或‘时间’字样的软件与设备问题不要使用。",
       "embeddingRows": [
         34,
@@ -2875,7 +2875,7 @@
         "b:根因"
       ],
       "capsulePath": "skills/persona/technical-correction-and-debate/SKILL.txt",
-      "capsuleSha256": "72a72fbc2b38e8117411a664cc18964a30d6a20bc0b05a511a58b82fcd20414d",
+      "capsuleSha256": "c091b0cf1f92a426fbdd5197f4e1d38810d77379029f4d5069b30d3349423570",
       "description": "用户要求检查代码、协议、参数、工程设计或指出论证错误时使用；直接定位前提、证据和修正步骤。纯科学可行性畅想、普通闲聊或情绪支持不要使用。",
       "embeddingRows": [
         42,
@@ -2908,8 +2908,8 @@
       "version": 2
     }
   ],
-  "routingDigest": "d2e080c87ce3dcd952344bd73722bb5989227a96c23e6ff06dce10dc54076e35",
+  "routingDigest": "800e0df8e604733904a84c0985f104831812b10f70f2e29774d84261b909c8e7",
   "schemaVersion": 2,
-  "sourceDigest": "490a130faa087703699fb7a638cf72b59906cfadc2fff5e3cb96a36205b9beb9",
+  "sourceDigest": "865641faf43aee01ffd019a3a0606ee18f48ad6549044316afec832fa01105b9",
   "tokenizerVersion": "nfkc-cjk-kana-unigram-bigram-latin-word-v1"
 }

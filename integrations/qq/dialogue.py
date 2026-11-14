@@ -320,6 +320,8 @@ def build_task(payload: dict, *, media_notes: list | None = None) -> DialogueTas
         "历史 assistant 为已确认的助手发言；speakerRole=owner 仅在 senderId 属于 owner_ids 时表示 OWNER，"
         "speakerRole=account 或 QQ_ACCOUNT 只表示代管账号发言，不能仅据此称主人；contact 为外部联系人。"
         "本地模型先前生成的回复不等于已在 QQ 发出；实际发生的交谈以 conversationContext 和已确认发送回执为准。"
+        "发送回执中的 galleryMedia 是已确认送达图片的编号与名称；近期用过的图降低选择权重，连续重复降低更多，"
+        "但重复完全可选，语境更贴切或对方点名时仍可再次使用。失败、取消或未知结果不算成功发送。"
         "旧回复可能有人称错误或属于另一种回复身份，不能作为当前人物关系的事实。"
         "认知记录 referenceFrames、understoodGoal 使用上述明确身份，区分谁对谁说、谁委托谁。"
     )
@@ -331,6 +333,12 @@ def build_task(payload: dict, *, media_notes: list | None = None) -> DialogueTas
         "当当前事实明确 CONTACT 与 OWNER 是同一人时，USER 与 OWNER 可以指同一人，不能凭空拆成两个人。"
         "引语按原说话者解释，保留原文；直接写自然的我/你/他也必须遵循同一对象。"
         "原样展示标记时用双 ⟦ 转义，不在引用里插入标记。"
+        "\n[QQ 自然会话分条]\n"
+        "speechUnits 的每一项都是一条可以独立阅读、意思完整的自然会话意群；"
+        "按解释、原因、指代和同一动作的连贯性组织，不要按固定字数或标点机械切碎。"
+        "短回复可以只有一项，较长回复只按自然语义分成少量项，不强制固定条数。"
+        "不要把闲聊写成工程报告或步骤清单；一条短句可以和紧接的解释放在同一项。"
+        "URL、数字、代码、引用和原文保持完整；QQ 宿主会把可靠 speechUnits 投影为 replyParts。"
     )
     context = {"conversationContext": payload.get("conversation_context", {}),
                "deliveries": payload.get("delivery_history", [])[:5],

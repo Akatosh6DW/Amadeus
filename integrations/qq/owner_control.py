@@ -7,6 +7,9 @@ owner event to that process over its loopback HTTP endpoint.
 
 from __future__ import annotations
 
+from .media_library import ASSET_ID_RE, MAX_REPLY_IMAGES
+from .citation_display import safe_citation_sources
+
 import json
 import hashlib
 import sqlite3
@@ -17,6 +20,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import aiohttp
+
+from backend.life.owner_receipts import read_owner_delivery_state
 
 
 class OwnerControlError(RuntimeError):
@@ -136,6 +141,8 @@ def _safe_id(value: Any, *, limit: int = 180) -> str:
 
 
 OWNER_RECEIPT_STATES = frozenset({"accepted", "sent", "unknown", "failed"})
+OWNER_GALLERY_DELIVERY_STATES = frozenset({"sent", "failed", "unknown"})
+_OWNER_CHAT_FIELD_UNSET = object()
 
 
 def owner_receipt_key(account: str, sender: str, kind: str, target: str,
@@ -180,6 +187,28 @@ class OwnerReceiptStore:
     )
     """
 
+    # Owner replies are sent directly by the QQ gateway and therefore do not
+    # create normal Ledger ``sends`` rows.  Keep the image delivery history
+    # beside the durable owner receipt, but in a separate table so ordinary
+    # delivery/review state is not changed.  Failed/unknown rows are retained
+    # only for audit; ``gallery_history`` filters them out.
+    _GALLERY_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS owner_gallery_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target TEXT NOT NULL,
+        receipt_key TEXT NOT NULL DEFAULT '',
+        request_id TEXT NOT NULL DEFAULT '',
+        asset_id TEXT NOT NULL,
+        message_id TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        created REAL NOT NULL,
+        updated REAL NOT NULL
+    )
+    """
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +222,11 @@ class OwnerReceiptStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute(self._SCHEMA)
+        self.db.execute(self._GALLERY_SCHEMA)
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_owner_gallery_scope "
+            "ON owner_gallery_deliveries(account, kind, target, state, updated)"
+        )
 
     @staticmethod
     def key(account: str, sender: str, kind: str, target: str,
@@ -277,6 +311,85 @@ class OwnerReceiptStore:
             request_id=request_id, reply=reply,
             send_message_id=send_message_id,
         )
+
+    def record_gallery_delivery(self, account: str, kind: str, target: str,
+                                asset_id: str, message_id: str = "", *,
+                                state: str = "sent", receipt_key: str = "",
+                                request_id: str = "", detail: str = "") -> bool:
+        """Record one owner gallery send attempt without changing the receipt.
+
+        ``sent`` is written only after OneBot returns a successful response
+        with a message id.  The other two states are optional audit rows and
+        are deliberately excluded by :meth:`gallery_history`.
+        """
+
+        state = str(state or "").strip().lower()
+        if state not in OWNER_GALLERY_DELIVERY_STATES:
+            raise ValueError("invalid owner gallery delivery state")
+        asset_id = str(asset_id or "").strip()
+        asset_id = asset_id.lower()
+        if not ASSET_ID_RE.fullmatch(asset_id):
+            raise ValueError("invalid owner gallery asset id")
+        values = {
+            "account": str(account),
+            "kind": str(kind),
+            "target": str(target),
+            "receipt_key": _safe_id(receipt_key),
+            "request_id": _safe_id(request_id),
+            "asset_id": asset_id,
+            "message_id": _safe_id(message_id),
+            "state": state,
+            "detail": _safe_id(detail, limit=240),
+        }
+        now = time.time()
+        with self._lock:
+            cursor = self.db.execute(
+                """INSERT INTO owner_gallery_deliveries
+                   (account, kind, target, receipt_key, request_id, asset_id,
+                    message_id, state, detail, created, updated)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (values["account"], values["kind"], values["target"],
+                 values["receipt_key"], values["request_id"], values["asset_id"],
+                 values["message_id"], values["state"], values["detail"],
+                 now, now),
+            )
+        return cursor.rowcount == 1
+
+    def gallery_history(self, account: str, kind: str, target: str,
+                        *, limit: int = 64) -> list[dict[str, Any]]:
+        """Return confirmed owner image deliveries for one QQ conversation.
+
+        The returned shape matches the QQ worker's bounded
+        ``delivery_history`` contract.  It intentionally contains no file
+        path, bytes, or owner text: only the verified asset id and transport
+        message id are needed for recent-image rotation.
+        """
+
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 64
+        limit = max(1, min(128, limit))
+        with self._lock:
+            rows = self.db.execute(
+                """SELECT account, asset_id, message_id, state
+                   FROM owner_gallery_deliveries
+                   WHERE account=? AND kind=? AND target=?
+                     AND state='sent' AND message_id<>''
+                   ORDER BY updated DESC, id DESC LIMIT ?""",
+                (str(account), str(kind), str(target), limit),
+            ).fetchall()
+        return [
+            {
+                "state": "sent",
+                "message_id": str(row["message_id"]),
+                "galleryMedia": [{
+                    "id": str(row["asset_id"]),
+                    "account": str(row["account"]),
+                }],
+            }
+            for row in rows
+        ]
 
     def close(self) -> None:
         with self._lock:
@@ -426,12 +539,57 @@ class OwnerControlClient:
             "ok": payload.get("ok") is True,
             "reply": reply if isinstance(reply, str) else "",
             "requestId": _safe_request_id(request_id),
-            "route": route if route in {"group_chat", "group_control", "owner_task"} else "",
+            # Full owner results use one explicit route.  The old
+            # ``group_chat`` route is intentionally not accepted here: older
+            # desktop versions returned only a routing hint and no complete
+            # tool result, so treating it as a reply would silently lose work.
+            "route": route if route in {"owner_reply", "group_control", "owner_task"} else "",
         }
+        if route == "owner_reply":
+            # Audience is a bounded model decision.  Missing or malformed
+            # values deliberately mean source: a private result must be
+            # explicitly selected by the final owner model, while the target
+            # itself is always derived from the authenticated event below.
+            audience = payload.get("replyAudience")
+            result["replyAudience"] = audience if audience in {"source", "private"} else "source"
+        raw_sources = payload.get("sources")
+        if not isinstance(raw_sources, list):
+            raw_sources = payload.get("citationSources")
+        if not isinstance(raw_sources, list):
+            raw_sources = payload.get("sourceBatch")
+        safe_sources = safe_citation_sources(raw_sources)
+        if safe_sources:
+            result["sources"] = safe_sources
+        # The desktop worker projects reliable speech units to this bounded
+        # string array.  Preserve that semantic delivery plan for the QQ
+        # gateway; arbitrary model payload fields remain private.  The gateway
+        # validates coverage against ``reply`` before using the array.
+        raw_reply_parts = payload.get("replyParts")
+        if isinstance(raw_reply_parts, list) and 1 <= len(raw_reply_parts) <= 32:
+            safe_reply_parts: list[str] = []
+            valid = True
+            for item in raw_reply_parts:
+                if isinstance(item, str):
+                    value = item
+                elif isinstance(item, Mapping):
+                    value = next(
+                        (item.get(key) for key in ("textZh", "zh", "reply", "text")
+                         if isinstance(item.get(key), str) and item.get(key).strip()),
+                        "",
+                    )
+                else:
+                    valid = False
+                    break
+                if not isinstance(value, str) or not value.strip():
+                    valid = False
+                    break
+                safe_reply_parts.append(value)
+            if valid and sum(len(value) for value in safe_reply_parts) <= 6000:
+                result["replyParts"] = safe_reply_parts
         ids = payload.get('imageIds')
         account = str(payload.get('galleryAccount') or '')
-        if (route not in {'group_chat', 'group_control'} and isinstance(ids, list)
-                and 1 <= len(ids) <= 2 and re.fullmatch(r'[0-9]{5,20}', account)
+        if (route not in {'group_control'} and isinstance(ids, list)
+                and 1 <= len(ids) <= MAX_REPLY_IMAGES and re.fullmatch(r'[0-9]{5,20}', account)
                 and all(isinstance(item, str) and re.fullmatch(r'[a-f0-9]{64}', item) for item in ids)):
             result.update(imageIds=list(ids), galleryAccount=account)
         if route == 'group_control':
@@ -501,6 +659,8 @@ class OwnerControlClient:
         message_context: dict | None = None,
         images: list[dict] | None = None,
         media_notes: list[str] | None = None,
+        sticker_preferences: dict | None | object = _OWNER_CHAT_FIELD_UNSET,
+        delivery_history: list[dict] | None = None,
     ) -> dict[str, Any]:
         """Perform one GET-session plus one non-retried owner POST.
 
@@ -530,6 +690,14 @@ class OwnerControlClient:
             body['images'] = images
         if media_notes is not None:
             body['mediaNotes'] = media_notes
+        # ``None`` is meaningful here: it is an explicit per-session
+        # preference that disables inherited weights.  The sentinel keeps
+        # older direct callers compatible while the gateway can always pass
+        # the effective QQ-session value.
+        if sticker_preferences is not _OWNER_CHAT_FIELD_UNSET:
+            body['stickerPreferences'] = sticker_preferences
+        if delivery_history is not None:
+            body['deliveryHistory'] = delivery_history[:64] if isinstance(delivery_history, list) else []
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         post_started = False
         try:

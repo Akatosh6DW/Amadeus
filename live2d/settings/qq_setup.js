@@ -174,7 +174,7 @@
     setInterval: setTimer = setInterval, clearInterval: clearTimer = clearInterval}) {
     const ui = Object.fromEntries(["status", "message", "start", "refresh", "login", "qr", "refresh-qr", "account", "permission",
       "lifecycle", "background", "mode", "reply-style", "reply-format", "bubble-chars", "voice-percent", "speech-language", "identity", "friends", "groups", "owner-ids", "owner-control-enabled", "owner-control-in-groups", "owner-developer-mode", "instructions", "delay", "delay-mode", "quota", "history", "compact", "contact",
-      "load-contacts", "add-contact", "mute-contact", "contacts-status", "corpus-status", "muted", "save", "toggle", "pause", "resume", "stop", "result",
+      "load-contacts", "add-contact", "mute-contact", "contacts-status", "corpus-status", "sticker-preferences", "muted", "save", "toggle", "pause", "resume", "stop", "result",
       "connection", "save-state", "discard", "scope-count", "main-page", "conversation-page", "conversation-back", "switch-account", "use-account", "account-change", "account-change-note", "account-profiles", "new-account", "select-account", "account-profile-note",
       "account-role", "component-setup", "component-note", "client-picker", "client-path", "setup", "login-details", "login-note",
       "conversation-title", "conversation-summary", "conversation-state", "conversation-toggle", "conversation-form", "conversation-reset", "conversation-clear-context", "conversation-clear-confirmation", "conversation-clear-prompt", "conversation-clear-confirm", "conversation-clear-cancel", "names-status",
@@ -190,6 +190,10 @@
     let draftOverrides = {}, conversationFields = [], conversationSync = [], conversationKey = "";
     let rawDrafts = {}, editRevision = 0, saving = false;
     const composing = new Set();
+    let stickerSeries = [], stickerDraft = null;
+    const stickerEditor = globalThis.AmadeusStickerPreferences?.create({element:ui['sticker-preferences'],
+      onChange:value => { stickerDraft=value; markDirty(false); }});
+
     let selectedConversation = null;
     let contextClearConfirmation = "";
     const buttons = [ui.start, ui.refresh, ui["refresh-qr"], ui["load-contacts"], ui["add-contact"], ui["mute-contact"], ui["media-import"], ui["media-search"],
@@ -242,6 +246,8 @@
       conflict = false;
       savedPolicy = null;
       currentPolicy = null;
+      stickerDraft = null; stickerSeries = [];
+      stickerEditor?.render({series:[], value:null});
       savedReplyMode = "review";
       editRevision += 1;
       draftOverrides = {};
@@ -586,10 +592,10 @@
       const delay = override.reply_delay_seconds ?? Number(ui.delay.value || 0);
       const bubbleChars = override.reply_bubble_chars ?? Number(ui["bubble-chars"]?.value ?? 60);
       const triggers = target.kind === "group" ? ` · ${triggerSummary(override.group_triggers ?? currentPolicy?.group_triggers ?? ["mention"])}` : "";
-      const waitMode=override.reply_delay_mode ?? ui["delay-mode"]?.value ?? "fixed";
+      const waitMode=override.reply_delay_mode ?? ui["delay-mode"]?.value ?? "length";
       const configuredStyle = override.reply_style ?? ui["reply-style"]?.value ?? currentPolicy?.reply_style ?? "auto";
       const style = {game:"红莉栖人格",tieba:"贴吧人格 · 孙吧语料",kangba:"最强攻击性语料",acg:"贴吧人格 · 孙吧语料"}[configuredStyle === "auto" ? (target.kind === "group" ? "tieba" : "game") : configuredStyle] || "红莉栖人格";
-      return `${replyIdentityLabel(identity)} · ${style} · ${mode === "auto" ? "自动发送" : "先审核"} · ${replyFormatLabel(format)}${format === "voice" ? `（${percent}% · ${speechLanguageLabel(language)}）` : ""} · ${bubbleChars === 0 ? "不拆分" : `每条≤${bubbleChars}字`} · ${waitMode === "length" ? "按字数等待" : `停顿 ${delay} 秒`}${triggers}${Object.keys(override).length ? " · 单独设置" : " · 使用默认"}`;
+      return `${replyIdentityLabel(identity)} · ${style} · ${mode === "auto" ? "自动发送" : "先审核"} · ${replyFormatLabel(format)}${format === "voice" ? `（${percent}% · ${speechLanguageLabel(language)}）` : ""} · ${bubbleChars === 0 ? "不拆分" : "按意思分条"} · ${waitMode === "length" ? "按字数等待" : `停顿 ${delay} 秒`}${triggers}${override.reply_on_login ? " · 登录后补回" : ""}${Object.keys(override).length ? " · 单独设置" : " · 使用默认"}`;
     }
 
     function triggerSummary(modes) {
@@ -716,7 +722,7 @@
           rememberRaw(key, field, input);
           const value = input.value.trim(), override = {...(draftOverrides[key] || {})};
           if (!value) delete override[field];
-          else override[field] = numeric ? Number(value) : field === "compact_reply" ? value === "true" : value;
+          else override[field] = numeric || field === "reply_bubble_chars" ? Number(value) : ["compact_reply", "reply_on_login"].includes(field) ? value === "true" : value;
           if (Object.keys(override).length) draftOverrides[key]=override; else delete draftOverrides[key];
           markDirty(false);
         });
@@ -726,7 +732,8 @@
             if (input.options[index].textContent !== label) input.options[index].textContent=label;
           });
           if (numeric) input.placeholder=`使用默认：${resolve(numeric[3])}`;
-          syncValue(input, rawDrafts[key]?.[field] ?? (draftOverrides[key] || {})[field] ?? "");
+          const savedValue = rawDrafts[key]?.[field] ?? (draftOverrides[key] || {})[field] ?? "";
+          syncValue(input, field === "reply_on_login" ? (savedValue === true || savedValue === "true" ? "true" : "") : field === "reply_bubble_chars" && savedValue !== "" ? (Number(savedValue) === 0 ? "0" : "60") : savedValue);
         });
         conversationFields.push(input); label.append(input); form.append(label);
       };
@@ -734,8 +741,12 @@
       add("对外说话方式", "reply_identity", [["",()=>`使用默认：${replyIdentityLabel(ui.identity?.value)}`],["assistant","以 Amadeus 自己的身份说话"],["owner","代我用第一人称回复"]]);
       add("人格模式", "reply_style", [["",()=>`使用默认：${{game:"红莉栖人格",tieba:"贴吧人格 · 孙吧语料",kangba:"最强攻击性语料"}[ui["reply-style"]?.value] || (target.kind === "group" ? "贴吧人格 · 孙吧语料" : "红莉栖人格")}`],["game","红莉栖人格"],["tieba","贴吧人格 · 孙吧语料"],["kangba","最强攻击性语料"]]);
       add("回复如何发送", "mode", [["",()=>`使用默认：${ui.mode.value === "auto" ? "自动发送" : "先审核"}`],["review","生成草稿，我确认后发送"],["auto","自动发送"]]);
+      add("登录后补回遗漏消息", "reply_on_login", [["","关闭（默认）"],["true","开启：补看最近消息，集中回复一次"]]);
+      const loginHint = doc.createElement("p"); loginHint.className = "hint";
+      loginHint.textContent = "从开启时开始记录；下次登录或重新连接后，最多补看最近 90 条，集中回复。仍遵守暂停、审核和群触发设置。";
+      form.append(loginHint);
       add("回复形式", "reply_format", [["",()=>`使用默认：${replyFormatLabel(ui["reply-format"]?.value)}`],["text","文字回复"],["voice","语音回复"]]);
-      add("每条 QQ 气泡字数上限（0 不拆分）", "reply_bubble_chars", null, [0,240,1,()=>ui["bubble-chars"]?.value ?? 60]);
+      add("文字分条方式", "reply_bubble_chars", [["",()=>`使用默认：${Number(ui["bubble-chars"]?.value) === 0 ? "合并为一条" : "按完整意思分条"}`],["60","按完整意思分条"],["0","合并为一条发送"]]);
       add("语音回复频率（%，仅语音模式生效）", "voice_reply_percent", null, [0,100,1,()=>ui["voice-percent"]?.value ?? 100]);
       add("语音语言", "speech_language", [["",()=>`使用默认：${speechLanguageLabel(ui["speech-language"]?.value)}`],["inherit","跟随桌面语音语言"],["zh-CN","中文"],["ja-JP","日文"]]);
       add("回复等待方式", "reply_delay_mode", [["",()=>`使用默认：${ui["delay-mode"]?.value === "length" ? "随字数增加" : "固定停顿"}`],["fixed","固定停顿"],["length","随字数增加等待时间"]]);
@@ -743,6 +754,19 @@
       add("两次回复最短间隔（秒）", "minimum_interval_seconds", null, [1,3600,1,()=>currentPolicy?.minimum_interval_seconds ?? 10]);
       add("自动读取最近几条消息", "history_messages", null, [0,30,1,()=>ui.history?.value ?? 10]);
       add("回复排版", "compact_reply", [["","使用默认排版"],["true","单行回复，不在句末加句号"],["false","保留模型原来的换行和标点"]]);
+      const stickerBox = doc.createElement('fieldset');
+      const stickerTitle = doc.createElement('legend'); stickerTitle.textContent='表情包系列与比例';
+      stickerBox.append(stickerTitle); form.append(stickerBox);
+      const targetStickers = globalThis.AmadeusStickerPreferences?.create({element:stickerBox,
+        defaultLabel:'使用 QQ 默认表情设置；勾选后只调整当前好友或群。',
+        onChange:value => {
+          const patch = {...(draftOverrides[key] || {})};
+          if (value === null) delete patch.sticker_preferences; else patch.sticker_preferences=value;
+          if (Object.keys(patch).length) draftOverrides[key]=patch; else delete draftOverrides[key];
+          markDirty(false);
+        }});
+      conversationSync.push(() => targetStickers?.render({series:stickerSeries,
+        value:(draftOverrides[key] || {}).sticker_preferences ?? null, disabled:(busy && !saving) || !loaded}));
       add("只对这个对象的回复要求", "reply_instructions");
       const note = doc.createElement("p"); note.className="qq-note";
       note.textContent="语音模式由主人开启；频率 0% 只发文字，100% 每条语音，中间值按每条回复的概率选择。文字模式始终只发文字，QQ 来信不能切换。语音复用桌面音色与合成设置，语言可单独选择；已生成草稿保持生成时的语言。按字数等待 = 基础停顿 + 字数 ÷ 6 秒，小幅随机浮动，最长 30 秒（生成回复的耗时另计）。最短间隔限制连续发送频率。群聊历史条数为 0 时仍会在触发后读取最近 10 条。";
@@ -1002,15 +1026,18 @@
       ui.qr.hidden = !image;
       if (image) ui.qr.src = image;
       else ui.qr.removeAttribute("src");
+      stickerSeries = data.stickerSeries || [];
       if (!dirty && !binding && data.policy) {
         const policy = data.policy;
+        stickerDraft = policy.sticker_preferences ?? null;
         if (ui.background) ui.background.checked = policy.background_enabled === true;
         savedReplyMode = replyMode(data);
         ui.mode.value = savedReplyMode;
         if (ui["reply-style"]) ui["reply-style"].value = policy.reply_style === "acg" ? "tieba" : policy.reply_style || "auto";
         if (ui["reply-format"]) ui["reply-format"].value = replyFormat(policy.reply_format);
-        if (ui["bubble-chars"]) ui["bubble-chars"].value = Number.isSafeInteger(policy.reply_bubble_chars) ? policy.reply_bubble_chars : 60;
+        if (ui["bubble-chars"]) ui["bubble-chars"].value = policy.reply_bubble_chars === 0 ? "0" : "60";
         if (ui["voice-percent"]) ui["voice-percent"].value = policy.voice_reply_percent ?? 100;
+        stickerEditor?.render({series:stickerSeries, value:stickerDraft, disabled:busy});
         if (ui["speech-language"]) ui["speech-language"].value = policy.speech_language || "inherit";
         if (ui.identity) ui.identity.value = policy.reply_identity || "assistant";
         if (ui["account-role"]) ui["account-role"].value = policy.account_role || "assistant";
@@ -1029,7 +1056,7 @@
         if (ui["qzone-interval"]) ui["qzone-interval"].value = clampQzoneInterval(policy.qzone_interval_minutes);
         if (ui["qzone-instructions"]) ui["qzone-instructions"].value = policy.qzone_instructions || "";
         ui.delay.value = policy.reply_delay_seconds ?? 3;
-        if (ui["delay-mode"]) ui["delay-mode"].value = policy.reply_delay_mode || "fixed";
+        if (ui["delay-mode"]) ui["delay-mode"].value = policy.reply_delay_mode || "length";
         if (ui.quota) ui.quota.value = policy.max_sends_per_hour ?? 0;
         if (ui.history) ui.history.value = clampHistory(policy.history_messages);
         if (ui.compact) ui.compact.checked = policy.compact_reply !== false;
@@ -1184,7 +1211,7 @@
           const percent = Number(ui["voice-percent"]?.value ?? savedPolicy?.voice_reply_percent ?? 100);
           if (!Number.isInteger(percent) || percent < 0 || percent > 100 || ui["voice-percent"]?.value === "") throw new Error("语音回复频率请输入 0–100 的整数百分比。");
           const bubbleChars = Number(ui["bubble-chars"]?.value ?? savedPolicy?.reply_bubble_chars ?? 60);
-          if (!Number.isSafeInteger(bubbleChars) || bubbleChars < 0 || bubbleChars > 240 || ui["bubble-chars"]?.value === "") throw new Error("QQ 气泡字数请输入 0–240 的整数。");
+          if (!Number.isSafeInteger(bubbleChars) || bubbleChars < 0 || bubbleChars > 240 || ui["bubble-chars"]?.value === "") throw new Error("请选择文字分条方式。");
           const language = ui["speech-language"]?.value || "inherit";
           if (!["inherit","zh-CN","ja-JP"].includes(language)) throw new Error("请选择有效的语音语言。");
           const qzoneInterval = clampQzoneInterval(ui["qzone-interval"]?.value ?? savedPolicy?.qzone_interval_minutes ?? 60);
@@ -1195,13 +1222,13 @@
           const qzoneWrite = Boolean(ui["qzone-allow-write"]?.checked) && qzoneEnabled;
           const accountRole = ui["account-role"]?.value || "assistant";
           if (!["assistant", "owner"].includes(accountRole)) throw new Error("请选择有效的账号用途。");
-          body = {...body, voice_reply_percent: percent, reply_bubble_chars: bubbleChars, speech_language: language, replyMode: ui.mode.value, reply_format: replyFormat(ui["reply-format"]?.value), private_ids: parseIds(ui.friends.value), group_ids: parseIds(ui.groups.value), owner_ids: parseIds(ui["owner-ids"]?.value || ""), owner_control_enabled: Boolean(ui["owner-control-enabled"]?.checked), owner_control_in_groups: Boolean(ui["owner-control-in-groups"]?.checked), owner_developer_mode: Boolean(ui["owner-developer-mode"]?.checked),
+          body = {...body, sticker_preferences: stickerEditor?.getValue() ?? stickerDraft, voice_reply_percent: percent, reply_bubble_chars: bubbleChars, speech_language: language, replyMode: ui.mode.value, reply_format: replyFormat(ui["reply-format"]?.value), private_ids: parseIds(ui.friends.value), group_ids: parseIds(ui.groups.value), owner_ids: parseIds(ui["owner-ids"]?.value || ""), owner_control_enabled: Boolean(ui["owner-control-enabled"]?.checked), owner_control_in_groups: Boolean(ui["owner-control-in-groups"]?.checked), owner_developer_mode: Boolean(ui["owner-developer-mode"]?.checked),
             qzone_enabled: qzoneEnabled, qzone_allow_write: qzoneWrite,
             qzone_allow_publish: Boolean(ui["qzone-allow-publish"]?.checked) && qzoneWrite,
             qzone_autonomous: Boolean(ui["qzone-autonomous"]?.checked) && qzoneEnabled,
             qzone_interval_minutes: qzoneInterval, qzone_instructions: qzoneInstructions,
             reply_instructions: ui.instructions.value, reply_delay_seconds: Number(ui.delay.value),
-            reply_delay_mode: ui["delay-mode"]?.value || "fixed",
+            reply_delay_mode: ui["delay-mode"]?.value || "length",
             max_sends_per_hour: Number(ui.quota?.value ?? savedPolicy?.max_sends_per_hour ?? 0),
             background_enabled: Boolean(ui.background?.checked), history_messages: history,
             compact_reply: ui.compact ? ui.compact.checked : true,
@@ -1222,7 +1249,7 @@
           if (!Number.isSafeInteger(body.max_sends_per_hour) || body.max_sends_per_hour < 0) throw new Error("每小时发送上限请输入非负整数，0 表示不限。");
           for (const [key, patch] of Object.entries(body.conversation_overrides)) {
             if (patch.voice_reply_percent != null && (!Number.isInteger(patch.voice_reply_percent) || patch.voice_reply_percent < 0 || patch.voice_reply_percent > 100)) throw new Error("会话语音回复频率请输入 0–100 的整数百分比。");
-            if (patch.reply_bubble_chars != null && (!Number.isSafeInteger(patch.reply_bubble_chars) || patch.reply_bubble_chars < 0 || patch.reply_bubble_chars > 240)) throw new Error("会话 QQ 气泡字数请输入 0–240 的整数。");
+            if (patch.reply_bubble_chars != null && (!Number.isSafeInteger(patch.reply_bubble_chars) || patch.reply_bubble_chars < 0 || patch.reply_bubble_chars > 240)) throw new Error("会话 请选择文字分条方式。");
             if (!key.startsWith("group:")) continue;
             const modes=patch.group_triggers ?? currentPolicy?.group_triggers ?? ["mention"];
             const words=patch.group_keywords ?? currentPolicy?.group_keywords ?? [];

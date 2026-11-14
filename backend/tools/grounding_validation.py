@@ -74,7 +74,7 @@ class ToolGroundingValidationService:
         web_sources = [
             source
             for item in results
-            if item.get("ok") and item.get("name") in {"web_search", "read_web_page"}
+            if item.get("ok") and item.get("name") in {"web_search", "read_web_page", "public_read"}
             for source in (item.get("sources") if isinstance(item.get("sources"), list) else [])
             if isinstance(source, dict)
         ]
@@ -91,7 +91,7 @@ class ToolGroundingValidationService:
             item.get("evidenceStatus")
             for item in results
             if item.get("ok")
-            and item.get("name") in {"web_search", "read_web_page"}
+            and item.get("name") in {"web_search", "read_web_page", "public_read"}
             and isinstance(item.get("evidenceStatus"), dict)
         ]
         citations_required = bool(

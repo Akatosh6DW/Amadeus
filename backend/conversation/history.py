@@ -6,6 +6,8 @@ SQLite turn index 与主动联系状态仍由各自服务持有。所有入口�
 """
 from __future__ import annotations
 
+from integrations.qq.media_library import MAX_REPLY_IMAGES
+
 from dataclasses import dataclass
 import re
 import unicodedata
@@ -296,7 +298,7 @@ class ConversationHistoryService:
                     ),
                 }
                 if isinstance(turn.get('galleryMedia'), list):
-                    assistant_meta['galleryMedia'] = turn['galleryMedia'][:2]
+                    assistant_meta['galleryMedia'] = turn['galleryMedia'][:MAX_REPLY_IMAGES]
                 if isinstance(turn.get("dialoguePolicy"), dict):
                     assistant_meta["dialoguePolicy"] = dict(turn["dialoguePolicy"])
                 if isinstance(turn.get("dialogueValidation"), dict):

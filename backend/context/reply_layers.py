@@ -1,6 +1,7 @@
 """Render the frozen reply layers identically on fast and tool-capable paths."""
 from agent.reply_prompt_layers import EXPRESSION_EMOTION_RULE
 from backend.context.prompt_assembly import system_message
+from agent.dialogue_architecture import policy_prompt
 
 
 def reply_layer_messages(snapshot, natural_style: str, emotion_rule: str, *, visual: bool = False):
@@ -24,3 +25,9 @@ def reply_layer_messages(snapshot, natural_style: str, emotion_rule: str, *, vis
 
 def independent_persona(snapshot) -> bool:
     return bool(snapshot is not None and snapshot.reply_layers and snapshot.reply_layers.independent)
+
+
+def reply_policy_prompt(policy, snapshot) -> str:
+    """Use the frozen delivery surface without reducing tasks or tool access."""
+    layers = getattr(snapshot, 'reply_layers', None)
+    return policy_prompt(policy, surface=getattr(layers, 'surface', ''))

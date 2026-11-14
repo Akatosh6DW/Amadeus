@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -23,6 +25,7 @@ import warnings
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_BATCH_ITEMS = 20
+MAX_REPLY_IMAGES = 10
 MAX_PIXELS = 20_000_000
 MAX_NAME_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 500
@@ -397,12 +400,68 @@ class MediaLibrary:
             rows.sort(key=lambda item: (item["name"].casefold(), item["id"]))
             return {"ok": True, "account": self.account, "items": rows[:limit]}
 
-    def catalog(self, limit: int = 64) -> list[dict[str, Any]]:
-        """Small reusable catalogue for model selection, never forwarded uploads."""
+    def series(self) -> list[str]:
+        with self._lock:
+            names = set()
+            for item in self._manifest_assets().values():
+                if item['reusable'] and item['kind'] == 'meme':
+                    explicit = [tag[3:] for tag in item['tags'] if tag.startswith('系列:') and tag[3:]]
+                    names.update(explicit or ([item['name'].split('_', 1)[0]] if '_' in item['name'] else []))
+            return sorted(names)
+
+    def catalog(self, limit: int = 64, *, preferred_series: str = '',
+                recent_ids: Iterable[str] | None = None,
+                request_id: str = '') -> list[dict[str, Any]]:
+        """Small reusable catalogue for model selection, never forwarded uploads.
+
+        ``recent_ids`` is ordered newest first and is only a presentation hint:
+        recent assets stay in the catalogue so the model can still choose one.
+        Repeated occurrences lower a positive selection weight; an occurrence
+        at the front of the history and a consecutive run lower it further.
+        With a request ID the weighted order is a deterministic random
+        permutation, so retries of one request do not re-draw while later
+        requests can vary.  Without one, the same weights use a stable order.
+        """
         with self._lock:
             rows = [self._public_metadata(item) for item in self._manifest_assets().values()
                     if item['reusable']]
-            return sorted(rows, key=lambda item: (item['name'].casefold(), item['id']))[:max(1, min(64, limit))]
+            history: list[str] = []
+            if recent_ids is not None:
+                values = (recent_ids,) if isinstance(recent_ids, str) else recent_ids
+                for value in values:
+                    if not isinstance(value, str) or not value:
+                        continue
+                    history.append(value)
+            recent_counts = Counter(history)
+            recent_age: dict[str, int] = {}
+            for index, value in enumerate(history):
+                recent_age.setdefault(value, index)
+            recent_streak_id = history[0] if history else ''
+            recent_streak = 0
+            for value in history:
+                if value != recent_streak_id:
+                    break
+                recent_streak += 1
+            request_seed = str(request_id or '')
+
+            def order(item):
+                preferred = bool(preferred_series and (preferred_series in item['tags']
+                    or '系列:' + preferred_series in item['tags'] or item['name'].startswith(preferred_series + '_')))
+                count = recent_counts.get(item['id'], 0)
+                age = recent_age.get(item['id'], len(history))
+                streak = recent_streak if item['id'] == recent_streak_id else 0
+                penalty = (1.5 * count + 2.0 / (age + 1)
+                           + 2.0 * max(0, streak - 1)) if count else 0.0
+                weight = 1.0 / (1.0 + penalty)
+                if request_seed:
+                    digest = hashlib.sha256(
+                        ('qq-gallery:' + request_seed + ':' + item['id']).encode('utf-8')
+                    ).digest()
+                    uniform = (int.from_bytes(digest[:8], 'big') + 1) / (2**64 + 1)
+                    weighted_key = -math.log(uniform) / weight
+                    return (not preferred, weighted_key, item['name'].casefold(), item['id'])
+                return (not preferred, -weight, age, item['name'].casefold(), item['id'])
+            return sorted(rows, key=order)[:max(1, min(64, limit))]
 
     def get(self, asset_ids: list[str], *, reusable_only: bool = False) -> dict[str, Any]:
         if not isinstance(reusable_only, bool):

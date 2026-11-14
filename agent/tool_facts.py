@@ -1,6 +1,8 @@
 """Public structured capability state retained across tool evidence projections."""
 from __future__ import annotations
 
+from integrations.qq.media_library import MAX_REPLY_IMAGES
+
 from copy import deepcopy
 import json
 from typing import Any, Mapping
@@ -57,7 +59,7 @@ def _safe_memories(raw: Any, *, limit: int = 8) -> list[dict[str, Any]]:
 def _safe_image_ids(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
-    return [value.strip()[:80] for value in raw[:2]
+    return [value.strip()[:80] for value in raw[:MAX_REPLY_IMAGES]
             if isinstance(value, str) and value.strip() and "/" not in value and "\\" not in value
             and all(32 <= ord(char) < 127 for char in value)]
 
@@ -68,6 +70,85 @@ def public_tool_facts(result: Mapping[str, Any]) -> dict[str, Any]:
     Consumers must not slice policy arrays: a partial snapshot could accidentally
     remove authorized contacts when the model asks to change another setting.
     """
+    if result.get("name") == "public_read":
+        # Public provider receipts have two useful representations: ``items``
+        # is the adapter's domain result and ``sources`` is the evidence
+        # projection.  Keep both bounded so the compact/overflow prompt still
+        # carries the actual post/abstract/entry body instead of only an
+        # ``itemsRead`` count or endpoint.
+        facts: dict[str, Any] = {
+            key: deepcopy(result[key])
+            for key in ("source", "operation", "query", "endpoint", "nextCursor")
+            if key in result
+        }
+        item_fields = (
+            "id", "title", "url", "author", "authors", "text", "summary", "body",
+            "createdAt", "publishedAt", "updatedAt", "categories", "type", "date",
+            "platform", "score", "likeCount", "replyCount", "repostCount",
+        )
+        items: list[dict[str, Any]] = []
+        for raw in result.get("items", [])[:12] if isinstance(result.get("items"), list) else []:
+            if not isinstance(raw, Mapping):
+                continue
+            item: dict[str, Any] = {}
+            for key in item_fields:
+                if key not in raw:
+                    continue
+                value = raw[key]
+                if key in {"body", "text", "summary"}:
+                    item[key] = str(value or "")[:5000]
+                elif key in {"authors", "categories"} and isinstance(value, list):
+                    item[key] = [str(entry)[:180] for entry in value[:20]]
+                elif isinstance(value, (str, int, float, bool)) or value is None:
+                    item[key] = deepcopy(value)
+            if item:
+                items.append(item)
+        facts["items"] = items
+        sources: list[dict[str, Any]] = []
+        source_fields = (
+            "id", "sourceUid", "title", "url", "snippet", "body", "fetchStatus",
+            "sourceOrigin", "sourceType", "accessedAt",
+        )
+        for raw in result.get("sources", [])[:12] if isinstance(result.get("sources"), list) else []:
+            if not isinstance(raw, Mapping):
+                continue
+            source: dict[str, Any] = {}
+            for key in source_fields:
+                if key not in raw:
+                    continue
+                value = raw[key]
+                if key in {"body", "snippet"}:
+                    source[key] = str(value or "")[:5000 if key == "body" else 1800]
+                elif isinstance(value, (str, int, float, bool)) or value is None:
+                    source[key] = deepcopy(value)
+            if source:
+                sources.append(source)
+        facts["sources"] = sources
+        return facts
+    if result.get("name") == "life_journal" and result.get("ok"):
+        facts = {"note": str(result.get("note") or "")[:3000], "activities": [], "drafts": []}
+        for row in result.get("activities", [])[:4]:
+            if not isinstance(row, Mapping):
+                continue
+            entry = {key: str(row[key])[:1500 if key == "summary" else 80]
+                     for key in ("id", "startedAt", "finishedAt", "status", "summary") if key in row}
+            entry["steps"] = [{"action": str(step.get("action") or "")[:60], "ok": step.get("ok") is True,
+                               "source": str(step.get("source") or "")[:512], "summary": str(step.get("summary") or "")[:240]}
+                              for step in row.get("steps", [])[:6] if isinstance(step, Mapping)]
+            facts["activities"].append(entry)
+        for row in result.get("drafts", [])[:3]:
+            if isinstance(row, Mapping):
+                facts["drafts"].append({key: str(row[key])[:2000 if key == "content" else 80]
+                                        for key in ("id", "content", "state", "createdAt") if key in row})
+        facts["chats"] = [{"messages": [str(part)[:1500] for part in row.get("messages", [])[:8]],
+                            "state": str(row.get("state") or "")[:40], "createdAt": str(row.get("createdAt") or "")[:80]}
+                           for row in result.get("chats", [])[:3] if isinstance(row, Mapping)]
+        # Already bounded to public observations and actual receipts by the life bridge.
+        facts["qzoneEvents"] = deepcopy(result.get("qzoneEvents", [])[:3])
+        continuity = result.get("continuity") or {}
+        facts["continuity"] = {"experiences": deepcopy(continuity.get("experiences", [])[:8]),
+                               "thoughts": deepcopy(continuity.get("thoughts", [])[:12])}
+        return facts
     if result.get("name") == "qq_media" and result.get("ok"):
         facts = {key: deepcopy(result[key]) for key in (
             "account", "pendingFinalReply", "message", "sent",
@@ -312,9 +393,17 @@ def historical_operation_summary(result: Mapping[str, Any]) -> dict[str, Any]:
     messages = result.get('messages')
     if isinstance(messages, list):
         summary['messagesRead'] = len(messages)
-    if result.get('name') in {'web_search', 'read_web_page'}:
+    if result.get('name') in {'web_search', 'read_web_page', 'public_read'}:
         if result.get('query'):
             summary['query'] = brief(result['query'], 'query')
+        if result.get('source'):
+            summary['source'] = brief(result['source'], 'source', 80)
+        if result.get('operation'):
+            summary['operation'] = brief(result['operation'], 'operation', 80)
+        if result.get('endpoint'):
+            summary['endpoint'] = brief(result['endpoint'], 'endpoint', 500)
+        if isinstance(result.get('items'), list):
+            summary['itemsRead'] = len(result['items'])
         if isinstance(result.get('sources'), list):
             summary['sourcesRead'] = len(result['sources'])
     if shortened:

@@ -41,6 +41,16 @@
     return selectValue;
   }
 
+  function deliverySummary(item, includeAccount = false) {
+    const target = item?.deliveryTarget || {};
+    if (target.channel !== "qq") return "当前桌面";
+    const channel = target.targetType === "group" ? "QQ 群聊" : "QQ 私聊";
+    const destination = `${channel} · ${String(target.targetId || "")}`;
+    return includeAccount
+      ? `${destination}\n发送账号：${String(target.accountId || "")}`
+      : destination;
+  }
+
   function createTodoController(options = {}) {
     const elements = options.elements || {};
     const storage = options.storage || {};
@@ -143,7 +153,8 @@
         activeCount = Math.max(0, numberOrZero(data.activeCount));
         latestRevision = Math.max(0, numberOrZero(data.revision));
         unseenCount = Math.max(0, numberOrZero(data.unseenCount));
-        if (markSeenOnLoad || isDrawerOpen()) markSeen(latestRevision);
+        // A request to view the list can finish after the user has closed it.
+        if (isDrawerOpen()) markSeen(latestRevision);
         render();
         return snapshot();
       } catch (error) {
@@ -345,5 +356,6 @@
     RECURRENCE_CUSTOM_VALUE,
     normalizeRecurrenceEditorValue,
     recurrenceRuleFromEditor,
+    deliverySummary,
   });
 }));

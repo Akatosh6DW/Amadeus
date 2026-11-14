@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 import json
 from agent.persona_context import PersonaContextSnapshot
+from agent.tool_architecture import WEB_TOOL_NAMES
 
 @dataclass(frozen=True)
 class EvidenceSynthesisPorts:
@@ -40,7 +41,7 @@ class EvidenceSynthesis:
         errors: list[dict[str, str]] = []
         research_plans: list[dict[str, Any]] = []
         for item in results:
-            if not isinstance(item, dict) or item.get("name") not in {"web_search", "read_web_page"}:
+            if not isinstance(item, dict) or item.get("name") not in WEB_TOOL_NAMES:
                 continue
             item_status = item.get("evidenceStatus") if isinstance(item.get("evidenceStatus"), dict) else {}
             if item_status:
@@ -146,7 +147,7 @@ class EvidenceSynthesis:
         sources: list[dict[str, Any]] = []
         statuses: list[dict[str, Any]] = []
         for item in results:
-            if not isinstance(item, dict) or item.get("name") not in {"web_search", "read_web_page"}:
+            if not isinstance(item, dict) or item.get("name") not in WEB_TOOL_NAMES:
                 continue
             status = item.get("evidenceStatus") if isinstance(item.get("evidenceStatus"), dict) else {}
             if status:

@@ -14,9 +14,10 @@ from typing import Any, Callable, Mapping, Sequence
 from agent.check_policy import Action, RepairBudget, record, soft_findings
 from backend.security.outbound import DEFAULT_GUARD, PrivateContentGuard
 from backend.providers.errors import UpstreamProtocolError
+from backend.providers.reply_protocol import merge_qq_reply_audiences, normalize_qq_reply_audience
 
 
-ENVELOPE_FIELDS = frozenset({"reply", "spokenTextJa", "emotion", "gesture", "speechUnits", "voiceStyle", "speechPace", "speechSpeed", "kind", "cognitive", "outcome"})
+ENVELOPE_FIELDS = frozenset({"reply", "spokenTextJa", "emotion", "gesture", "speechUnits", "voiceStyle", "speechPace", "speechSpeed", "kind", "cognitive", "outcome", "qqReplyAudience"})
 _QQ_QUERY_TOOLS = frozenset({"qq_status", "qq_activity", "qq_history", "qq_identity"})
 _QQ_SEND_ACTIONS = frozenset({"send", "delegate", "approve"})
 _QQ_PREFLIGHT_ERRORS = frozenset({
@@ -356,6 +357,11 @@ def _project_successful_qq_send_silence(result: dict[str, Any]) -> None:
 def unwrap_reply(candidate: Mapping[str, Any]) -> dict[str, Any]:
     """Unwrap only a complete envelope in the entire reply, never JSON examples."""
     result = deepcopy(dict(candidate))
+    audience = normalize_qq_reply_audience(result.get("qqReplyAudience"))
+    if audience:
+        result["qqReplyAudience"] = audience
+    elif "qqReplyAudience" in result:
+        result.pop("qqReplyAudience", None)
     for depth in range(4):
         reply = result.get("reply")
         if not isinstance(reply, str):
@@ -374,6 +380,11 @@ def unwrap_reply(candidate: Mapping[str, Any]) -> dict[str, Any]:
         ):
             if key in inner:
                 result[key] = inner[key]
+        audience = merge_qq_reply_audiences(result.get("qqReplyAudience"), inner.get("qqReplyAudience"))
+        if audience:
+            result["qqReplyAudience"] = audience
+        elif "qqReplyAudience" in inner:
+            result.pop("qqReplyAudience", None)
         result["protocolUnwrappedLayers"] = depth + 1
     return result
 

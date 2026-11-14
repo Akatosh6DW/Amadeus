@@ -20,7 +20,6 @@ from agent.dialogue_architecture import (
     UtteranceInterpretation,
     build_turn_contract,
     choose_turn_policy,
-    policy_prompt,
     turn_contract_prompt,
 )
 from agent.persona_context import PersonaContextSnapshot
@@ -224,13 +223,13 @@ def build_fast_stream_messages(
     )
     explicit_context_control = services.prompts.body_context_control_prompt(body)
     from agent.engineering_contracts import PRELOADED_TOOL_KEY
-    from backend.context.reply_layers import reply_layer_messages, independent_persona
+    from backend.context.reply_layers import reply_layer_messages, independent_persona, reply_policy_prompt
     independent = independent_persona(active_persona_snapshot)
     body[PRELOADED_TOOL_KEY] = list(active_capability.initially_loaded_tool_ids)
     result: list[dict[str, str]] = [
         *reply_layer_messages(active_persona_snapshot, policy.natural_dialogue_style, policy.emotion_selection_rule),
-        system_message('backend/chat/fast_messages.py:227', turn_persona_context["factsPrompt"], source='backend/chat/fast_messages.py', category='unclassified'),
-        system_message('backend/chat/fast_messages.py:228', policy_prompt(active_policy), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('persona.facts', turn_persona_context["factsPrompt"], source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('backend/chat/fast_messages.py:228', reply_policy_prompt(active_policy, active_persona_snapshot), source='backend/chat/fast_messages.py', category='unclassified'),
         system_message('dialogue.speaker', policy.speaker_attribution_rule, source='backend/chat/fast_messages.py', category='engineering'),
         system_message('engineering.accuracy', policy.technical_accuracy_rule, source='backend/chat/fast_messages.py', category='engineering'),
         *([system_message('tools.legacy', policy.amadeus_tool_rule, source='backend/chat/fast_messages.py', category='engineering')]
@@ -249,8 +248,8 @@ def build_fast_stream_messages(
             and (not services.context.cognitive_turn_state(body))
             else []
         ),
-        system_message('backend/chat/fast_messages.py:253', '' if independent else services.prompts.relationship_context_prompt(relationship_state), source='backend/chat/fast_messages.py', category='unclassified'),
-        system_message('backend/chat/fast_messages.py:257', '' if independent else services.prompts.dignity_boundary_context_prompt(
+        system_message('relationship.context', '' if independent else services.prompts.relationship_context_prompt(relationship_state), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('dignity.boundary', '' if independent else services.prompts.dignity_boundary_context_prompt(
                 relationship_state,
                 (
                     body.get("_dignityAssessment")
@@ -258,8 +257,8 @@ def build_fast_stream_messages(
                     else None
                 ),
             ), source='backend/chat/fast_messages.py', category='unclassified'),
-        system_message('backend/chat/fast_messages.py:268', '' if independent else services.prompts.transition_style_prompt(messages), source='backend/chat/fast_messages.py', category='unclassified'),
-        system_message('backend/chat/fast_messages.py:269', services.prompts.permission_context_prompt(settings, body=body), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('turn.style', '' if independent else services.prompts.transition_style_prompt(messages), source='backend/chat/fast_messages.py', category='unclassified'),
+        system_message('permission.context', services.prompts.permission_context_prompt(settings, body=body), source='backend/chat/fast_messages.py', category='unclassified'),
         system_message('memory.retrieved', retrieved_memory_prompt(
                 memories,
                 memory_records,
@@ -274,16 +273,16 @@ def build_fast_stream_messages(
                 context_state=services.context.frozen_turn_context_state(body),
                 cognitive_state=services.context.cognitive_turn_state(body),
             ), source='backend/chat/fast_messages.py', category='mixed'),
-        system_message('backend/chat/fast_messages.py:293', services.prompts.session_temporal_context_prompt(
+        system_message('session.time_base', services.prompts.session_temporal_context_prompt(
                 user_message, settings=settings
             ), source='backend/chat/fast_messages.py', category='unclassified'),
     ]
     if explicit_context_control:
-        result.append(system_message('backend/chat/fast_messages.py:301', explicit_context_control, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('context.control', explicit_context_control, source='backend/chat/fast_messages.py', category='unclassified'))
     if explicit_reply_context:
-        result.append(system_message('backend/chat/fast_messages.py:303', explicit_reply_context, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('context.reply', explicit_reply_context, source='backend/chat/fast_messages.py', category='unclassified'))
     if attribution:
-        result.append(system_message('backend/chat/fast_messages.py:305', attribution, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('dialogue.attribution', attribution, source='backend/chat/fast_messages.py', category='unclassified'))
     adjacent_messages = (
         messages
         if services.context.cognitive_turn_state(body)
@@ -297,18 +296,18 @@ def build_fast_stream_messages(
         )
     )
     if identity_context and not independent:
-        result.append(system_message('backend/chat/fast_messages.py:319', identity_context, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('identity.grounding', identity_context, source='backend/chat/fast_messages.py', category='unclassified'))
     # 混合人格上下文也必须保留原始昵称反应的精确单元合同。
     nickname_prompt = '' if independent else services.prompts.nickname_reaction_prompt(user_message, request_id)
     if nickname_prompt:
-        result.append(system_message('backend/chat/fast_messages.py:323', nickname_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('persona.nickname', nickname_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
     motif_prompt = (
         ""
         if active_persona_snapshot.uses_hybrid_provider_context
         else services.prompts.canon_style_motif_prompt(user_message)
     )
     if motif_prompt:
-        result.append(system_message('backend/chat/fast_messages.py:330', motif_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('persona.motif', motif_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
     result.append(
         system_message('conversation.immediate', services.prompts.immediate_context_prompt(
                 messages,
@@ -319,14 +318,14 @@ def build_fast_stream_messages(
             ), source='backend/chat/fast_messages.py', category='mixed')
     )
     if pending_question:
-        result.append(system_message('backend/chat/fast_messages.py:344', pending_question, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('dialogue.pending_question', pending_question, source='backend/chat/fast_messages.py', category='unclassified'))
     if todo_pending:
         result.append(system_message('backend/chat/fast_messages.py:346', todo_pending, source='backend/chat/fast_messages.py', category='unclassified'))
     if schedule_state:
         result.append(system_message('backend/chat/fast_messages.py:348', schedule_state, source='backend/chat/fast_messages.py', category='unclassified'))
     contextual_prompt = contextual_reference_prompt(context_resolution)
     if contextual_prompt:
-        result.append(system_message('backend/chat/fast_messages.py:351', contextual_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
+        result.append(system_message('context.reference', contextual_prompt, source='backend/chat/fast_messages.py', category='unclassified'))
     result.append(
         system_message('backend/chat/fast_messages.py:353', turn_contract_prompt(active_interpretation, active_contract), source='backend/chat/fast_messages.py', category='unclassified')
     )
@@ -359,7 +358,7 @@ def build_fast_stream_messages(
     # 线协议紧邻用户消息。上下文块较多时，服务商通常更重视靠后的 system
     # 消息；放在这里可以减少模型退化为普通文本、破坏流协议的概率。
     result.append(
-        system_message('backend/chat/fast_messages.py:382', policy.cognitive_dialogue_reply_rule
+        system_message('wire.reply_rule', policy.cognitive_dialogue_reply_rule
                 if services.context.cognitive_turn_state(body)
                 else policy.utterance_stream_reply_rule, source='backend/chat/fast_messages.py', category='unclassified')
     )

@@ -9,6 +9,8 @@
   const eventNames = {amadeus_thinking: "正在替你处理来信", amadeus_error: "本条处理失败，未确认发送", amadeus_busy: "当前繁忙，这条来信未处理",
     qzone_visit: "QQ 空间自主检查结果", qzone_action: "QQ 空间操作回执", owner_control_result: "主人 QQ 指令处理记录",
     voice_preparing: "正在合成 QQ 语音", voice_failed: "语音合成失败，未发送",
+    voice_transcribing: "正在听 QQ 语音", voice_transcribed: "QQ 语音已转成文字",
+    voice_transcription_failed: "这条 QQ 语音没听清",
     policy_changed: "QQ 配置已更新", amadeus_control: "QQ 代管状态已调整"};
   function mutedCount(policy) {
     return (Array.isArray(policy?.muted_private_ids) ? policy.muted_private_ids.length : 0)

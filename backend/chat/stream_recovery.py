@@ -20,6 +20,7 @@ from backend.chat.presentation import ALLOWED_EMOTIONS, speech_language_profile
 from backend.chat.reply_fields import normalize_proactive_directive
 from backend.chat import stream_utterances
 from backend.providers.errors import UpstreamProtocolError
+from backend.providers.reply_protocol import merge_qq_reply_audiences
 from backend.tts import delivery as speech_delivery
 from backend.tts.contract import (
     normalize_speech_plan_units,
@@ -452,6 +453,10 @@ def recover_fast_stream_continuation(
             )
             return []
         accepted_compact = re.sub("\\s+", "", accepted_zh).casefold()
+        continuation_audience = merge_qq_reply_audiences(
+            parsed.get("qqReplyAudience"),
+            *(item.get("qqReplyAudience") for item in accepted_utterances),
+        )
         recovered: list[dict[str, Any]] = []
         for raw_item in raw_items[:3]:
             if not isinstance(raw_item, dict):
@@ -464,9 +469,15 @@ def recover_fast_stream_continuation(
                 or accepted_compact.endswith(candidate_compact)
             ):
                 continue
+            normalized_item = dict(raw_item)
+            audience = merge_qq_reply_audiences(continuation_audience, normalized_item.get("qqReplyAudience"))
+            if audience:
+                # Continuation is a repair of an already visible turn; it
+                # cannot replace the original QQ delivery decision.
+                normalized_item["qqReplyAudience"] = audience
             normalized = stream_utterances.normalize_streaming_utterance(
                 services.utterances,
-                raw_item,
+                normalized_item,
                 settings,
                 sequence=starting_sequence + len(recovered),
                 user_message=user_message,

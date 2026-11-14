@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from backend.context.reply_layers import reply_policy_prompt
+
 from dataclasses import dataclass, replace
 import json
 import re
@@ -17,7 +19,6 @@ from agent.cognitive_runtime import collect_evidence
 from agent.cognitive_tools import project_tool_plan_receipts, tool_step_binding
 from agent.dialogue_architecture import (
     bind_current_visual_observation_contract,
-    policy_prompt,
 )
 from agent.epistemic_architecture import knowledge_confidence_gate_decision
 from agent.research_architecture import EpistemicPlan, capability_envelope
@@ -25,7 +26,7 @@ from agent.research_budget import (
     select_tool_budget, sync_tool_usage, record_tool_attempts,
     tool_budget_exhausted, tool_budget_prompt,
 )
-from agent.tool_architecture import bind_required_capabilities, DEFAULT_TOOL_REGISTRY
+from agent.tool_architecture import bind_required_capabilities, DEFAULT_TOOL_REGISTRY, WEB_TOOL_NAMES
 from agent.visual_grounding import (
     has_current_visual_evidence as has_typed_visual_evidence,
     visual_evidence_prompt,
@@ -1130,7 +1131,7 @@ def run_model_tool_loop(
             model_web_research_requested(parsed, user_message)
             or atomic_confidence_gate.status == "RESEARCH_ESCALATION"
         )
-        and not any(item.get("name") in {"web_search", "read_web_page"} for item in model_tool_requests)
+        and not any(item.get("name") in WEB_TOOL_NAMES for item in model_tool_requests)
     ):
         model_tool_requests.append({"name": "web_search", "args": {}})
         uncertainty_triggered_web = True
@@ -1146,7 +1147,7 @@ def run_model_tool_loop(
         requested_tools = [
             item
             for item in requested_tools
-            if item.get("name") not in {"web_search", "read_web_page"}
+            if item.get("name") not in WEB_TOOL_NAMES
         ]
     _record_filtered_calls(body, model_tool_requests, requested_tools)
     todo_already_executed = any(
@@ -1521,7 +1522,7 @@ def run_model_tool_loop(
         requested_tools = []
     if requested_tools:
         requested_web_capability = any(
-            item.get("name") in {"web_search", "read_web_page"}
+            item.get("name") in WEB_TOOL_NAMES
             for item in requested_tools
         )
         model_selected_plan = finalize_turn_execution_plan(
@@ -1625,7 +1626,7 @@ def run_model_tool_loop(
                 "progressKind": (
                     "research_bridge"
                     if any(
-                        item.get("name") in {"web_search", "read_web_page"}
+                        item.get("name") in WEB_TOOL_NAMES
                         for item in requested_tools
                     )
                     else "tool_progress"
@@ -1647,12 +1648,12 @@ def run_model_tool_loop(
         requested_web_tools = [
             item
             for item in requested_tools
-            if item.get("name") in {"web_search", "read_web_page"}
+            if item.get("name") in WEB_TOOL_NAMES
         ]
         requested_non_web_tools = [
             item
             for item in requested_tools
-            if item.get("name") not in {"web_search", "read_web_page"}
+            if item.get("name") not in WEB_TOOL_NAMES
         ]
         requested_has_visual_tool = any(
             item.get("name") in {"capture_screen", "capture_camera"}
@@ -1689,6 +1690,21 @@ def run_model_tool_loop(
         if requested_read_tools:
             tool_results.extend(execute_agent_tools(
                 requested_read_tools,
+                settings,
+                user_message,
+                preflight=tool_preflight,
+                request_id=request_id,
+                cognitive_state=cognitive_execution_state(body),
+                schedule_decision=body.get("_scheduleDecision"),
+                time_context=turn_time_context(body, settings),
+                evidence_context=body,
+            ))
+        requested_public_reads = [
+            item for item in requested_web_tools if item.get("name") == "public_read"
+        ]
+        if requested_public_reads:
+            tool_results.extend(execute_agent_tools(
+                requested_public_reads,
                 settings,
                 user_message,
                 preflight=tool_preflight,
@@ -1894,7 +1910,7 @@ def run_model_tool_loop(
                     "工具失败或权限不足时要如实说明；只有完成当前操作确实依赖用户处理权限时，"
                     "才提出一个必要动作。联网取证失败不应变成长篇流程说明、让用户自行搜索或询问是否继续。"
                 )},
-                {"role": "system", "content": policy_prompt(turn_policy)},
+                {"role": "system", "content": reply_policy_prompt(turn_policy, context.persona_snapshot)},
                 {"role": "system", "content": core_dialogue_turn_contract_prompt(
                     utterance_interpretation,
                     turn_contract,
@@ -1974,7 +1990,7 @@ def run_model_tool_loop(
                 proposed_followup_requests = [
                     item
                     for item in proposed_followup_requests
-                    if item.get("name") not in {"web_search", "read_web_page"}
+                    if item.get("name") not in WEB_TOOL_NAMES
                 ]
             proposed_followup_requests, rejected_followup_sensors = (
                 constrain_attachment_sensor_requests(

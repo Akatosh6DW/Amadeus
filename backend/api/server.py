@@ -35,6 +35,7 @@ class HttpRoutes:
     memory: Any
     actions: Any
     speech: Any
+    life: Any = None
 
 @dataclass(frozen=True)
 class HttpRuntime:
@@ -164,6 +165,8 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
             return
         if self.services.routes.settings.get(self, parsed_path):
             return
+        if self.services.routes.life is not None and self.services.routes.life.get(self, parsed_path):
+            return
         if self.services.routes.cache.get(self, parsed_path):
             return
         if self.services.routes.conversation.get(self, parsed_path, request_url.query):
@@ -215,6 +218,8 @@ class AmadeusHandler(http_transport.LocalHttpHandler):
             if self.services.routes.model_profiles.post(self, parsed_path, body):
                 return
             if self.services.routes.settings.post(self, parsed_path, body):
+                return
+            if self.services.routes.life is not None and self.services.routes.life.post(self, parsed_path, body):
                 return
             if self.services.routes.cache.post(self, parsed_path, body):
                 return

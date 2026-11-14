@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from agent.cognitive_brain import normalize_brain_container
 from agent.participant_realization import realize_participant_speech
 from agent.tool_architecture import normalize_capability_query
+from backend.providers.reply_protocol import merge_qq_reply_audiences, normalize_qq_reply_audience
 
 
 class ModelSemanticStreamParser:
@@ -48,8 +49,20 @@ class ModelSemanticStreamParser:
         self._completed_acts: list[str] = []
         self._schedule_intent: dict[str, Any] = {}
         self._cognitive: dict[str, Any] = {}
+        self._qq_reply_audience = ""
         self._fatal_protocol_error = False
         self.protocol_version = "semantic-v3"
+
+    def _capture_qq_reply_audience(self, value: Mapping[str, Any] | None) -> None:
+        if not isinstance(value, Mapping):
+            return
+        candidate = normalize_qq_reply_audience(value.get("qqReplyAudience"))
+        if not candidate and isinstance(value.get("payload"), Mapping):
+            candidate = normalize_qq_reply_audience(
+                value["payload"].get("qqReplyAudience")
+            )
+        if candidate:
+            self._qq_reply_audience = merge_qq_reply_audiences(self._qq_reply_audience, candidate)
 
     def _emit(self, event_type: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         event = {
@@ -120,9 +133,15 @@ class ModelSemanticStreamParser:
             if boundary in {"continue", "micro_pause", "phrase_pause", "turn_pause"}
             else "continue"
         )
+        audience = normalize_qq_reply_audience(payload.get("qqReplyAudience"))
+        if audience:
+            normalized["qqReplyAudience"] = audience
+        else:
+            normalized.pop("qqReplyAudience", None)
         return realize_participant_speech(normalized)
 
     def _emit_utterance(self, value: Mapping[str, Any]) -> list[dict[str, Any]]:
+        self._capture_qq_reply_audience(value)
         if isinstance(value.get("scheduleIntent"), Mapping):
             self._schedule_intent = dict(value["scheduleIntent"])
         if self._utterance_count >= self.maximum_semantic_units:
@@ -136,6 +155,8 @@ class ModelSemanticStreamParser:
             self.rejected_event_count += 1
             self._fatal_protocol_error = True
             return []
+        if self._qq_reply_audience and not payload.get("qqReplyAudience"):
+            payload["qqReplyAudience"] = self._qq_reply_audience
         events = self._ensure_header(payload)
         events.append(self._emit("utterance", payload))
         self._utterance_count += 1
@@ -146,6 +167,7 @@ class ModelSemanticStreamParser:
         if self._trailer_emitted or not self._utterance_count or self._fatal_protocol_error:
             return []
         data = dict(value or {})
+        self._capture_qq_reply_audience(data)
         raw_knowledge_confidence = str(
             data.get("knowledgeConfidence")
             or data.get("knowledge_confidence")
@@ -204,6 +226,8 @@ class ModelSemanticStreamParser:
                 else dict(self._schedule_intent)
             ),
         }
+        if self._qq_reply_audience:
+            payload["qqReplyAudience"] = self._qq_reply_audience
         if self._cognitive:
             payload["cognitive"] = dict(self._cognitive)
         self._trailer_emitted = True
@@ -241,6 +265,7 @@ class ModelSemanticStreamParser:
             self.rejected_event_count += 1
             return []
         value = normalize_brain_container(value)
+        self._capture_qq_reply_audience(value)
         if isinstance(value.get("cognitive"), Mapping):
             self._cognitive = dict(value["cognitive"])
         if value.get("type"):
@@ -337,6 +362,7 @@ class ModelSemanticStreamParser:
                 else []
             )
             last_index = len(utterances) - 1
+            turn_audience = self._qq_reply_audience
             turn_defaults = {
                 key: value.get(key)
                 for key in (
@@ -363,6 +389,8 @@ class ModelSemanticStreamParser:
                     # mixed-emotion turn. Missing boundaries are transport
                     # defaults, not another authoring task for the provider.
                     normalized_item = {**turn_defaults, **dict(item)}
+                    if turn_audience:
+                        normalized_item["qqReplyAudience"] = turn_audience
                     normalized_item.setdefault(
                         "boundaryAfter",
                         "turn_pause" if index == last_index else "phrase_pause",

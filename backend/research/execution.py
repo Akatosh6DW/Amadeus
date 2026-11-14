@@ -32,6 +32,7 @@ class ResearchExecutionPorts:
     rounds: Callable[[], Any]
     store: Callable[[], Any]
     checks: Callable[[], Any]
+    public_read: Callable[..., dict[str, Any]] | None = None
 
 class ResearchExecution:
     def __init__(self, ports: ResearchExecutionPorts) -> None:
@@ -57,7 +58,17 @@ class ResearchExecution:
     ) -> dict[str, Any]:
         """Keep each research operation's identity separate from merged web evidence."""
         state = self.ports.state(cognitive_body or {})
-        target_key = "query" if name == "web_search" else "url"
+        if name == "web_search":
+            target_key = "query"
+        elif name == "read_web_page":
+            target_key = "url"
+        elif name == "public_read":
+            target_key = next(
+                (key for key in ("query", "actor", "uri", "id", "url") if args.get(key)),
+                "query",
+            )
+        else:
+            target_key = "query"
         def target_identity(value: Any) -> str:
             target = str(value or "").strip()
             try:
@@ -68,11 +79,12 @@ class ResearchExecution:
         # A research plan adds ranking/provenance hints to the concrete model call.
         # Retain that original call (including explicit freshness/provider options)
         # when its target is unique; extra research queries remain unbound.
+        request = {"name": name, "args": deepcopy(args) if name == "public_read" else {target_key: args[target_key]}}
         candidates = [step for step in (state.get("task") or {}).get("plan", [])
                       if step.get("name") == name
                       and target_identity((step.get("args") or {}).get(target_key)) == target_identity(args.get(target_key))
+                      and (name != "public_read" or tool_request_signature(step) == tool_request_signature(request))
                       and step.get("status") not in {"cancelled", "invalidated"}]
-        request = {"name": name, "args": {target_key: args[target_key]}}
         if len(candidates) == 1:
             request.update(args=deepcopy(candidates[0]["args"]), stepId=candidates[0]["stepId"])
         signature = tool_request_signature(request)
@@ -88,7 +100,16 @@ class ResearchExecution:
                         self.ports.turn_state(cognitive_body)["task"] = deepcopy(state["task"])
                     return {key: deepcopy(value) for key, value in receipt.items()
                             if not key.startswith("_cognitive") and key != "toolCallId"}
-        executor = self.ports.web_search if name == "web_search" else self.ports.read_page
+        if name == "web_search":
+            executor = self.ports.web_search
+        elif name == "read_web_page":
+            executor = self.ports.read_page
+        elif name == "public_read":
+            executor = self.ports.public_read
+        else:
+            executor = None
+        if executor is None:
+            return {"name": name, "ok": False, "error": "unsupported_research_tool", "attempted": False}
         try:
             result = executor(settings, {**args, **request["args"], "requestId": request_id})
         except Exception as error:
@@ -145,7 +166,7 @@ class ResearchExecution:
             "verificationTargets": decision.verification_targets,
             "taskId": task.get("taskId"), "planRevision": task.get("planRevision"),
             "toolRequests": [tool_request_signature(step) for step in task.get("plan", [])
-                             if step.get("name") in {"web_search", "read_web_page"}],
+                             if step.get("name") in {"web_search", "read_web_page", "public_read"}],
         }, ensure_ascii=False, sort_keys=True).encode("utf-8"), length=64)
         answer_scope = self.bounded_research_answer_scope(initial_plan, cognitive_body)
         return research_loop.run_research_query_loop(

@@ -493,6 +493,7 @@ class QzoneService:
         result: dict[str, Any] = {
             "ok": sent,
             "sent": sent,
+            "attempted": True,
             "account": record.get("account", ""),
             "action": record.get("action", ""),
             "requestKey": record.get("requestKey", ""),
@@ -603,6 +604,8 @@ class QzoneService:
             return self._receipt_result(existing, duplicate=True)
         self._begin_receipt(auth.account, action, request_key, fingerprint, post_ref)
 
+        write_error = None
+        platform_id = ""
         try:
             if action == "publish":
                 visibility = _VISIBILITY[args.get("visibility", "friends")]
@@ -621,21 +624,24 @@ class QzoneService:
                 else:
                     response = await self._sdk_call(auth, call, 'comment', observation["author"], observation["fid"], args["content"])
                 success, platform_id = self._sdk_success(response), ""
-        except _QzoneError:
-            self._finish_receipt(auth.account, request_key, state_name="failed")
-            raise
+        except _QzoneError as exc:
+            state_name = "failed"
+            write_error = {"error": exc.code, "message": exc.message}
         except Exception:
-            self._finish_receipt(auth.account, request_key, state_name="unknown")
-            return {"ok": False, "sent": False, "error": "qzone_write_failed",
-                    "deliveryState": "unknown", "message": "QQ 空间写入结果未知，请核对空间，不能自动重发。", "account": auth.account,
+            state_name = "unknown"
+            write_error = {"error": "qzone_write_failed", "deliveryState": "unknown",
+                           "message": "QQ 空间写入结果未知，请核对空间，不能自动重发。"}
+        else:
+            state_name = "sent" if success else "failed"
+        try:
+            record = self._finish_receipt(auth.account, request_key, state_name=state_name, platform_id=platform_id)
+        except _QzoneError:
+            # Storage can fail after the platform accepted a write. Never label
+            # that as a pre-dispatch rejection which a caller may safely retry.
+            return {"ok": False, "sent": False, "attempted": True, "deliveryState": "unknown",
+                    "error": "qzone_storage_unavailable", "message": "发布后的回执保存失败，请核对空间，不要自动重发。", "account": auth.account,
                     "action": action, "requestKey": request_key}
-        if not success:
-            self._finish_receipt(auth.account, request_key, state_name="failed")
-            return {"ok": False, "sent": False, "error": "qzone_write_failed",
-                    "message": "QQ 空间写入未收到成功回执，未报告为已发送。", "account": auth.account,
-                    "action": action, "requestKey": request_key}
-        record = self._finish_receipt(auth.account, request_key, state_name="sent", platform_id=platform_id)
-        return self._receipt_result(record)
+        return {**self._receipt_result(record), **(write_error or {})}
 
     # ---- public entry point -----------------------------------------
     async def execute(self, args: dict, policy: dict, call: OneBotCall) -> dict:
@@ -676,7 +682,9 @@ class QzoneService:
                 return await self._read_posts(auth, args, state, call)
             return await self._write(auth, action, args, policy, state, call)
         except _QzoneError as exc:
-            return {"ok": False, "error": exc.code, "message": exc.message, "sent": False}
+            # All errors after dispatch are handled by _write with a receipt.
+            return {"ok": False, "error": exc.code, "message": exc.message,
+                    "sent": False, "attempted": False}
         except Exception:
             # Never reflect SDK/OneBot exception text: it can include cookies.
             return {"ok": False, "error": "qzone_failed", "message": "QQ 空间操作未完成。", "sent": False}

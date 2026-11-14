@@ -6,11 +6,13 @@ an allowlisted projection; transport credentials never cross this boundary.
 from __future__ import annotations
 
 import base64
+from contextlib import closing
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -110,6 +112,128 @@ class QqSetupService:
         if not 1 <= port <= 65535:
             raise ValueError("invalid port")
         return port
+
+    def configured_account(self) -> str:
+        """Read the selected proxy account locally; never query or start QQ."""
+        try:
+            config = self._read_json(self.runtime / "gateway.json")
+        except (OSError, ValueError):
+            return ""
+        policy = config.get("policy")
+        if not isinstance(policy, dict):
+            return ""
+        account = str(policy.get("account_id") or "").strip()
+        return account if account.isascii() and account.isdigit() and 5 <= len(account) <= 20 else ""
+
+    def configured_owners(self, account: str) -> list[str]:
+        """Return the selected account's saved owners without opening QQ."""
+        try:
+            config = self._read_json(self.runtime / "gateway.json")
+        except (OSError, ValueError):
+            return []
+        policy = config.get("policy", {})
+        if not isinstance(policy, dict) or str(policy.get("account_id") or "") != account:
+            return []
+        owners = policy.get("owner_ids", [])
+        if not isinstance(owners, list):
+            return []
+        return list(dict.fromkeys(value for item in owners
+                                  if (value := str(item).strip()) != account
+                                  and value.isascii() and value.isdigit() and 5 <= len(value) <= 20))
+
+    def chat_receipts(self, account: str, owner: str, draft_ids: list[str]) -> list[dict]:
+        """Read only the already-known life drafts from the gateway's local ledger."""
+        path = self.runtime / "ledger.sqlite3"
+        if not path.is_file() or not draft_ids:
+            return []
+        result = []
+        try:
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+                for draft_id in draft_ids[:30]:
+                    row = db.execute("SELECT state,message_id FROM sends WHERE id=? AND account=? AND kind='private' AND target=?",
+                                     (draft_id, account, owner)).fetchone()
+                    if row:
+                        state, message_id = row
+                        result.append({"draftId": draft_id, "deliveryState": state,
+                                       "sent": state == "sent" and bool(message_id), "messageId": message_id or "",
+                                       "requiresApproval": state == "draft"})
+        except sqlite3.Error:
+            return []
+        return result
+
+    def chat_receipts_for_requests(self, account: str, owner: str,
+                                   request_ids: list[str]) -> list[dict]:
+        """Read life-chat sends by their host-owned creation request IDs.
+
+        A request ID is the only locator available when an HTTP timeout loses
+        the draft ID.  The ledger row is still matched to the exact account,
+        private kind, and owner target.  This path is read-only and treats
+        duplicate rows for one request as an uncertain outcome rather than
+        selecting one row and claiming a send succeeded.
+        """
+
+        path = self.runtime / "ledger.sqlite3"
+        if not path.is_file() or not isinstance(request_ids, list):
+            return []
+        account = str(account)
+        owner = str(owner)
+        request_values = []
+        for value in request_ids[:30]:
+            request_id = str(value).strip()
+            if request_id and request_id not in request_values:
+                request_values.append(request_id)
+        if not request_values:
+            return []
+        try:
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro",
+                                         uri=True, timeout=1)) as db:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(sends)")}
+                required = {"id", "creation_request_id", "account", "kind",
+                            "target", "state", "message_id"}
+                if not required <= columns:
+                    return []
+                placeholders = ",".join("?" for _ in request_values)
+                rows = db.execute(
+                    f"""SELECT id, creation_request_id, state, message_id
+                          FROM sends
+                         WHERE creation_request_id IN ({placeholders})
+                           AND account=? AND kind='private' AND target=?
+                         ORDER BY creation_request_id, updated DESC, id""",
+                    (*request_values, account, owner),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+
+        grouped: dict[str, list[tuple[str, str, str | None]]] = {}
+        for draft_id, request_id, state, message_id in rows:
+            grouped.setdefault(str(request_id), []).append(
+                (str(draft_id), str(state), message_id)
+            )
+        result = []
+        for request_id in request_values:
+            matches = grouped.get(request_id, [])
+            if len(matches) != 1:
+                if len(matches) > 1:
+                    result.append({
+                        "requestId": request_id,
+                        "draftId": "",
+                        "deliveryState": "unknown",
+                        "sent": False,
+                        "messageId": "",
+                        "requiresApproval": False,
+                    })
+                continue
+            draft_id, state, message_id = matches[0]
+            message_id = str(message_id or "")
+            result.append({
+                "requestId": request_id,
+                "draftId": draft_id,
+                "deliveryState": state,
+                "sent": state == "sent" and bool(message_id),
+                "messageId": message_id,
+                "requiresApproval": state == "draft",
+            })
+        return result
 
     def _gateway_config(self) -> dict:
         try:
@@ -321,6 +445,14 @@ class QqSetupService:
             assets / "qqnt" / "Files" / "QQ.exe", assets / "napcat-shell" / "NapCatWinBootMain.exe",
             assets / "napcat-shell" / "napcat.mjs", self.runtime / "paths.json", self.runtime / "gateway.json"))
 
+    def _sticker_series(self) -> list[str]:
+        from backend.chat.gallery import active_library
+        library = active_library(self.runtime / 'gateway.json')
+        try:
+            return library.series() if library else []
+        except (OSError, ValueError):
+            return []
+
     def status(self) -> dict:
         config, gateway, errors = {}, {}, {}
         policy = dict(DEFAULT_POLICY)
@@ -379,6 +511,7 @@ class QqSetupService:
         return {"ok": True, "installed": installed, "connected": connected, "gatewayRunning": bool(gateway),
                 "accountProfiles": gateway.get("accountProfiles", account_summaries(config)),
                 "corpusStatus": forum_corpus_status(self.runtime.parent),
+                "stickerSeries": self._sticker_series(),
                 "replyMode": reply_mode if reply_mode in {"auto", "review"} else "review",
                 "replyAgent": reply_agent if reply_agent in {"amadeus", "astrbot"} else "astrbot",
                 "modelConfigured": model_configured, "policy": policy, "login": login,
@@ -445,7 +578,7 @@ class QqSetupService:
             # Saving preferences must never turn paused replies on.
             if policy["mode"] != "paused":
                 policy["mode"] = reply_mode
-        for key in ("mode", "account_role", "owner_ids", "private_ids", "group_ids", "reply_format", "reply_bubble_chars", "voice_reply_percent", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "max_sends_per_hour",
+        for key in ("mode", "account_role", "owner_ids", "private_ids", "group_ids", "reply_format", "reply_bubble_chars", "voice_reply_percent", "sticker_preferences", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "max_sends_per_hour",
                     "muted_private_ids", "muted_group_ids", "background_enabled", "history_messages", "compact_reply", "reply_identity", "reply_style", "conversation_overrides", "owner_control_enabled", "owner_control_in_groups", "owner_developer_mode", "qzone_enabled", "qzone_allow_write", "qzone_allow_publish", "qzone_autonomous", "qzone_interval_minutes", "qzone_instructions"):
             if key in body:
                 policy[key] = body[key]
@@ -693,7 +826,7 @@ class QqSetupService:
         action = body.get("action")
         allowed = {"start": {"action"}, "setup": {"action", "clientPath"}, "switch_account": {"action"},
                    "use_account": {"action", "accountId", "expectedPolicy"},
-                   "select_account": {"action", "accountId", "expectedAccount"}, "save": {"action", "mode", "private_ids", "group_ids", "reply_format", "reply_bubble_chars", "voice_reply_percent", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "max_sends_per_hour", "expectedPolicy",
+                   "select_account": {"action", "accountId", "expectedAccount"}, "save": {"action", "mode", "private_ids", "group_ids", "reply_format", "reply_bubble_chars", "voice_reply_percent", "sticker_preferences", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "max_sends_per_hour", "expectedPolicy",
                    "muted_private_ids", "muted_group_ids", "background_enabled", "history_messages", "compact_reply", "reply_identity", "reply_style", "conversation_overrides", "replyMode", "expectedReplyMode", "account_role", "owner_ids", "owner_control_enabled", "owner_control_in_groups", "owner_developer_mode", "qzone_enabled", "qzone_allow_write", "qzone_allow_publish", "qzone_autonomous", "qzone_interval_minutes", "qzone_instructions"},
                    "pause": {"action"}, "resume": {"action"}, "stop": {"action"}, "contacts": {"action"}, "refresh_qr": {"action"},
                    "media": {"action", "mediaAction", "expectedAccount", "query", "q", "limit", "imageIds", "assetIds", "items"},

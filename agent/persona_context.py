@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import json
+import os
 from pathlib import Path
 import re
 import unicodedata
@@ -218,23 +219,80 @@ def build_retrieval_query(
     return "\n".join(parts)
 
 
+_RETRIEVAL_ONLY_SECTIONS = frozenset({"适用例", "不适用例"})
+
+
+def skill_guidance(body: str) -> str:
+    """Project a capsule to the guidance the model should act on.
+
+    A capsule also carries its title and applicable/non-applicable examples.
+    Those exist for retrieval and human review; sent to the model they read as
+    sample lines to imitate. The split is by Markdown heading, so the capsule
+    file, its hash and the calibrated index stay untouched.
+    """
+
+    kept: list[str] = []
+    skipping = False
+    for line in str(body or "").splitlines():
+        heading = line.strip()
+        if heading.startswith("## "):
+            skipping = heading[3:].strip() in _RETRIEVAL_ONLY_SECTIONS
+            continue
+        if heading.startswith("# "):
+            continue
+        if not skipping:
+            kept.append(line)
+    # regex-purpose: format — collapse blank lines after Markdown section projection.
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
 def _hybrid_prompt(selected: Sequence[LoadedSkill]) -> str:
-    if not selected:
-        return (
-            "[Persona Context Skills]\n"
-            "本轮没有通过高置信本地检索门槛的人格 Skill；只依据 Persona Kernel、"
-            "当前对话、关系上下文与任务合同回答。"
-        )
-    parts = ["[Persona Context Skill: frozen for this turn]"]
-    if len(selected) > 1:
-        parts.append(
-            "以下场景指引可以共同使用，各自只作用于本轮符合其适用条件的部分。"
-            "结合当前诉求自然组织成一次回复，不逐份表演或重复反应。"
-            "若指引之间有张力，依据当前情境与用户明确要求决定表达轻重，"
-            "并始终保持基础人格、身份事实和关系边界。"
-        )
-    parts.extend(item.body.strip() for item in selected)
+    # No selected scene means nothing to add: the Kernel already stands alone,
+    # and a notice about retrieval thresholds is host vocabulary the persona
+    # would only echo.
+    guidance = [text for text in (skill_guidance(item.body) for item in selected) if text]
+    if not guidance:
+        return ""
+    parts = ["[此刻的情境]"]
+    if len(guidance) > 1:
+        parts.append("下面几种情境同时成立，合成一次自然的回应，各自只管对得上的那部分。")
+    parts.extend(guidance)
     return "\n\n".join(parts)
+
+
+SCENE_BLOCK_HEADER = (
+    "[不同情境下的你]\n"
+    "下面是几种情境里你的反应方式，每段以适用的时机开头。每轮只取和眼前这句话真正对得上的，"
+    "对不上的当它不存在；多数日常对话一条都用不上，那时照平常的你说话。"
+    "他真的难受或面对永久的失去时，外号和玩笑的反应让位。"
+)
+
+
+def scene_block(bodies: Sequence[str]) -> str:
+    """All scene guidance as one fixed block for the conversation model to apply.
+
+    Choosing a scene needs the meaning of the sentence, which the model that
+    writes the reply already has; a local similarity score against a handful
+    of example sentences missed most colloquial turns. The block is identical
+    every turn, so it costs no extra model call and stays a stable prefix.
+    """
+
+    guidance = [text for text in (skill_guidance(body) for body in bodies) if text]
+    if not guidance:
+        return ""
+    return "\n\n".join([SCENE_BLOCK_HEADER, *guidance])
+
+
+def read_scene_bodies(skills_root: Path) -> tuple[str, ...]:
+    """Read every capsule in stable order; needs no index or embedding asset."""
+
+    bodies: list[str] = []
+    for path in sorted(skills_root.glob("*/SKILL.txt"), key=lambda item: item.parent.name):
+        try:
+            bodies.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            continue
+    return tuple(bodies)
 
 
 def _snapshot_id(
@@ -336,6 +394,7 @@ class PersonaContextRuntime:
         policy: RetrievalPolicy | None = None,
         embedder: Embedder | None = None,
         asset_failure: str | None = None,
+        scene_bodies: Sequence[str] = (),
     ) -> None:
         body = str(kernel_body or "").strip()
         if not body:
@@ -346,6 +405,9 @@ class PersonaContextRuntime:
         self._policy = policy
         self._retriever = HybridSkillRetriever(embedder)
         self._asset_failure = str(asset_failure or "") or None
+        # Empty means "inject only what retrieval selects" (the earlier
+        # behaviour, kept for AMADEUS_PERSONA_SCENES=retrieved and for tests).
+        self._scene_block = scene_block(tuple(scene_bodies))
 
     @property
     def kernel_fingerprint(self) -> str:
@@ -419,6 +481,8 @@ class PersonaContextRuntime:
             policy=policy,
             embedder=embedder,
             asset_failure=failure,
+            scene_bodies=() if os.environ.get("AMADEUS_PERSONA_SCENES", "").strip().lower() == "retrieved"
+            else read_scene_bodies(root / "skills" / "persona"),
         )
         runtime.asset_stamp = persona_asset_stamp(root)
         return runtime
@@ -451,7 +515,9 @@ class PersonaContextRuntime:
             system_prompt = self._kernel_body
             if system_prompt_suffix.strip():
                 system_prompt += "\n\n" + system_prompt_suffix.strip()
-            prompt_text = hybrid_prompt
+            # Retrieval still runs and is recorded for diagnostics; it no
+            # longer decides what the model sees when the scene block is on.
+            prompt_text = self._scene_block or hybrid_prompt
         else:
             # Shadow is provider-payload identical to off by construction.
             system_prompt = str(legacy_system_prompt or "")

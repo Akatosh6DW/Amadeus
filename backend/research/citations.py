@@ -17,7 +17,7 @@ from tools.safe_web import canonicalize_public_url
 def preferred_web_citation_id(results: list[dict[str, Any]]) -> str:
     valid_ids: set[str] = set()
     for item in results:
-        if not item.get("ok") or item.get("name") not in {"web_search", "read_web_page"}:
+        if not item.get("ok") or item.get("name") not in {"web_search", "read_web_page", "public_read"}:
             continue
         status = item.get("evidenceStatus") if isinstance(item.get("evidenceStatus"), dict) else {}
         if not status.get("sufficient"):
@@ -71,7 +71,7 @@ def public_web_sources(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for item in results:
-        if not item.get("ok") or item.get("name") not in {"web_search", "read_web_page"}:
+        if not item.get("ok") or item.get("name") not in {"web_search", "read_web_page", "public_read"}:
             continue
         raw_sources = item.get("sources") if isinstance(item.get("sources"), list) else []
         status = item.get("evidenceStatus") if isinstance(item.get("evidenceStatus"), dict) else {}
@@ -147,7 +147,7 @@ def readable_public_source_uids(
         for item in results
         if isinstance(item, dict)
         and item.get("ok")
-        and item.get("name") in {"web_search", "read_web_page"}
+        and item.get("name") in {"web_search", "read_web_page", "public_read"}
         for source in (
             item.get("sources") if isinstance(item.get("sources"), list) else []
         )
@@ -181,7 +181,7 @@ class VerifiedWebCitationService:
             for item in tool_results
             if isinstance(item, dict)
             and item.get("ok")
-            and item.get("name") in {"web_search", "read_web_page"}
+            and item.get("name") in {"web_search", "read_web_page", "public_read"}
             and isinstance(item.get("evidenceStatus"), dict)
         ]
         evidence_sufficient = (

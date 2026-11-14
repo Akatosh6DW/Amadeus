@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol, Sequence
 
 from agent.research_architecture import ResearchDecision, capability_envelope
-from agent.tool_architecture import TurnPreflight
+from agent.tool_architecture import TurnPreflight, WEB_TOOL_NAMES
 from agent.turn_execution_plan import (
     CapabilityObligation,
     TurnExecutionPlan,
@@ -74,8 +74,9 @@ def turn_capability_obligations(
 ) -> tuple[CapabilityObligation, ...]:
     """把已经有依据的具体需要转换为执行义务。
 
-    建议性质的预检候选不会进入这里。只有用户明确要求动作、当前轮绑定了附件，
-    或同一轮模型在回答交付前给出结构化工具升级时，能力才会变成强制义务。
+    建议性质的预检候选不会进入这里。具体的非公网动作、当前轮绑定的附件，
+    或同一轮模型在回答交付前给出的结构化工具升级，才会变成强制义务；
+    公开资料措辞仍由 ``TurnExecutionPlanner`` 保持为模型可选能力。
     """
     obligations: list[CapabilityObligation] = []
     for item in tool_requests:
@@ -110,20 +111,6 @@ def turn_capability_obligations(
     return tuple(obligations)
 
 
-def _has_explicit_web_obligation(plan: TurnExecutionPlan | None) -> bool:
-    """Return whether a saved plan already carries the same explicit web duty."""
-
-    if plan is None:
-        return False
-    return any(
-        str(reason).startswith((
-            "obligation:explicit_user_request:web_search:",
-            "obligation:explicit_user_request:read_web_page:",
-        ))
-        for reason in plan.authority_reasons
-    )
-
-
 def finalize_turn_execution_plan(
     body: dict[str, Any],
     *,
@@ -139,32 +126,15 @@ def finalize_turn_execution_plan(
 ) -> TurnExecutionPlan:
     """返回所有路由共同消费的唯一不可变权限记录。
 
-    路由只创建一次计划，常规执行原样复用；advisory 计划只有在同轮明确升级时
-    才产生新修订，已有同义显式联网义务的计划继续复用。
+    路由只创建一次计划，常规执行原样复用；advisory 计划只有在同轮出现
+    结构化模型/宿主升级时才产生新修订，公开资料措辞本身不写入强制义务。
     """
-    explicit_public_research = (
-        not has_attachments
-        and user_explicitly_requests_public_web_research(user_message)
-    )
     existing = execution_plan_from_dict(
         body.get("_turnExecutionPlan") if isinstance(body.get("_turnExecutionPlan"), dict) else None
     )
-    existing_explicit_web_obligation = _has_explicit_web_obligation(existing)
     permission_web_search = bool(settings.get("permissionWebSearch"))
-    existing_explicit_plan_matches_permission = bool(
-        existing_explicit_web_obligation
-        and existing is not None
-        and (
-            (permission_web_search and existing.research_policy == "required")
-            or (not permission_web_search and existing.research_policy == "forbidden")
-        )
-    )
-    explicit_research_escalation = explicit_public_research and not (
-        existing_explicit_plan_matches_permission
-    )
     escalation = bool(
-        explicit_research_escalation
-        or model_research_escalation
+        model_research_escalation
         or model_tool_escalation
         or evidence_recovery_escalation
     )
@@ -175,8 +145,6 @@ def finalize_turn_execution_plan(
         reasons.append("model_research_escalation")
     if evidence_recovery_escalation:
         reasons.append("grounded_claim_gate_evidence_gap")
-    if explicit_public_research:
-        reasons.append("explicit_public_web_research")
     hints = list(capability_hints_from_preflight(preflight))
     obligations = list(
         turn_capability_obligations(
@@ -197,19 +165,8 @@ def finalize_turn_execution_plan(
             )
         )
         obligated_capabilities.add(capability_name)
-    if explicit_public_research and not (
-        {"web_search", "read_web_page"} & obligated_capabilities
-    ):
-        obligations.append(
-            CapabilityObligation(
-                capability="web_search",
-                source="explicit_user_request",
-                reason="the user explicitly requested public standards or documentation",
-            )
-        )
-        obligated_capabilities.add("web_search")
     if (model_research_escalation or evidence_recovery_escalation) and (
-        not any((item.capability in {"web_search", "read_web_page"} for item in obligations))
+        not any((item.capability in WEB_TOOL_NAMES for item in obligations))
     ):
         obligations.append(
             CapabilityObligation(
@@ -369,6 +326,14 @@ def classify_streaming_chat_route(
         body.get("_todoReconciliation"),
     )
     tool_requests = services.tools.task_bound_tool_requests(body, tool_requests)
+    # A direct public-research request should reach the full model/tool loop,
+    # but it is still the model's job to choose whether and how to use the
+    # permitted web tools. Keep this route hint separate from the execution
+    # plan so it cannot manufacture a required web call or query.
+    explicit_public_research = (
+        not attachments
+        and user_explicitly_requests_public_web_research(user_message)
+    )
     execution_plan = finalize_turn_execution_plan(
         body,
         user_message=user_message,
@@ -434,12 +399,12 @@ def classify_streaming_chat_route(
         tool_requests = [
             item
             for item in tool_requests
-            if str(item.get("name") or "") not in {"web_search", "read_web_page"}
+            if str(item.get("name") or "") not in WEB_TOOL_NAMES
         ]
     elif execution_plan.research_policy == "required" and (
         not any(
             (
-                str(item.get("name") or "") in {"web_search", "read_web_page"}
+                str(item.get("name") or "") in WEB_TOOL_NAMES
                 for item in tool_requests
             )
         )
@@ -468,6 +433,13 @@ def classify_streaming_chat_route(
             "route": "tool_gated",
             "reason": "tool_evidence_required",
             "toolRequests": tool_requests,
+            **shared_route_context,
+        }
+    if explicit_public_research:
+        return {
+            "route": "tool_gated",
+            "reason": "explicit_public_research_model_selects",
+            "toolRequests": [],
             **shared_route_context,
         }
     if prepared_action_turn.route in {

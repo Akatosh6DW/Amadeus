@@ -5,7 +5,7 @@ from copy import deepcopy
 import json
 from typing import Any, Mapping, Sequence
 from agent.tool_arguments import TRANSPORT_ARGUMENT_FIELDS, tool_argument_error
-from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
+from agent.tool_architecture import DEFAULT_TOOL_REGISTRY, WEB_TOOL_NAMES
 from agent.todo_architecture import TodoCommand, TodoTargetRef
 from tools.safe_web import canonicalize_public_url
 
@@ -28,7 +28,7 @@ def canonical_tool_arguments(name: str, value: Any) -> dict[str, Any]:
     if name in {"todo_manage", "bookmark_manage", "qq_manage", "qq_space_write",
                 "qq_remember_alias", "qq_person_memory", "voice_configure"}:
         args.setdefault("commitIntent", args.pop("commit_intent", True))
-    if name in {"web_search", "read_web_page"}:
+    if name in WEB_TOOL_NAMES:
         args.pop("researchDepth", None)  # Effort selection does not change the requested evidence.
     if tool_argument_error(name, args):
         return args  # Retain invalid input for diagnostics; never substitute a different target.

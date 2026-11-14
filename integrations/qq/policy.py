@@ -1,6 +1,8 @@
 """QQ policy and durable send ledger, independent of any model/framework."""
 from __future__ import annotations
 
+from .media_library import MAX_REPLY_IMAGES
+
 import json
 import hashlib
 import random
@@ -12,12 +14,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .reply_segments import normalize_reply_parts
+
 
 DEFAULT_REPLY_INSTRUCTIONS = "QQ 日常回复默认用 1～2 句简短自然的话，先回答重点，不堆砌解释或连续长段；对方明确要求详细说明时再展开。"
 CONVERSATION_FIELDS = frozenset({'mode', 'reply_identity', 'reply_style', 'reply_instructions', 'reply_delay_seconds',
                                  'minimum_interval_seconds', 'history_messages', 'compact_reply',
                                  'group_triggers', 'group_keywords', 'reply_delay_mode', 'reply_format', 'voice_reply_percent', 'speech_language',
-                                 'reply_bubble_chars'})
+                                 'reply_bubble_chars', 'sticker_preferences', 'reply_on_login'})
 
 DEFAULT_POLICY = {
     "mode": "paused",
@@ -48,13 +52,14 @@ DEFAULT_POLICY = {
     "reply_format": "text",
     "reply_bubble_chars": 60,
     "voice_reply_percent": 100,
+    "sticker_preferences": None,
     "speech_language": "inherit",
     "conversation_overrides": {},
     "group_triggers": ["mention"],
     "group_keywords": [],
     "reply_instructions": DEFAULT_REPLY_INSTRUCTIONS,
     "reply_delay_seconds": 3,
-    "reply_delay_mode": "fixed",
+    "reply_delay_mode": "length",
     "minimum_interval_seconds": 10,
     "max_sends_per_hour": 0,
 }
@@ -113,6 +118,8 @@ def normalize_policy(raw: dict) -> dict:
     percent = result['voice_reply_percent']
     if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
         raise ValueError('语音回复频率必须为 0–100 的整数百分比')
+    from .sticker_preferences import normalize_sticker_preferences
+    result['sticker_preferences'] = normalize_sticker_preferences(result['sticker_preferences'])
     if result['reply_delay_mode'] not in {'fixed', 'length'}:
         raise ValueError('回复等待模式必须为 fixed / length')
     if not isinstance(result["reply_instructions"], str) or len(result["reply_instructions"]) > 2000:
@@ -201,10 +208,16 @@ def normalize_policy(raw: dict) -> dict:
                 if isinstance(number, bool) or not isinstance(number, (int, float)) or not minimum <= number <= maximum or (integer and not isinstance(number, int)):
                     raise ValueError(f'会话 {field} 必须为 {minimum}–{maximum}' + (' 的整数' if integer else ' 的数字'))
                 value[field] = number
+        if patch.get('sticker_preferences') is not None:
+            value['sticker_preferences'] = normalize_sticker_preferences(patch['sticker_preferences'])
         if patch.get('compact_reply') is not None:
             if not isinstance(patch['compact_reply'], bool):
                 raise ValueError('会话 compact_reply 必须为布尔值')
             value['compact_reply'] = patch['compact_reply']
+        if patch.get('reply_on_login') is not None:
+            if not isinstance(patch['reply_on_login'], bool):
+                raise ValueError('会话 reply_on_login 必须为布尔值')
+            value['reply_on_login'] = patch['reply_on_login']
         # Owner control has its own list; it must retain delivery preferences
         # even when the owner is not an ordinary auto-reply contact.
         saved_target = target in result[kind + '_ids'] or (kind == 'private' and target in result['owner_ids'])
@@ -216,7 +229,7 @@ def normalize_policy(raw: dict) -> dict:
 
 
 def conversation_policy(policy: dict, kind: str, target: str) -> dict:
-    effective = {**policy, **policy.get('conversation_overrides', {}).get(f'{kind}:{target}', {})}
+    effective = {'reply_on_login': False, **policy, **policy.get('conversation_overrides', {}).get(f'{kind}:{target}', {})}
     if effective.get('reply_style', 'auto') == 'auto':
         effective['reply_style'] = 'tieba' if kind == 'group' else 'game'
     elif effective.get('reply_style') == 'acg':
@@ -286,6 +299,25 @@ def reply_delay(policy: dict, text: str) -> float:
     return base
 
 
+def _semantic_plan_for_original(original_text: str, reply_parts: object) -> list[str] | None:
+    """Accept semantic boundaries only when they cover the original text."""
+    if not isinstance(reply_parts, list) or not reply_parts or not original_text.strip():
+        return None
+    if any(not isinstance(part, str) or not part.strip() for part in reply_parts):
+        return None
+    try:
+        projected = normalize_reply_parts(original_text, reply_parts)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(projected, list) or len(projected) != len(reply_parts):
+        return None
+    compact = lambda value: ''.join(character for character in value if not character.isspace())
+    if any(not isinstance(part, str) or compact(part) != compact(projected[index])
+           for index, part in enumerate(reply_parts)):
+        return None
+    return projected
+
+
 def outgoing(action: str, params: dict) -> tuple[str, str, list[dict]]:
     if action not in {"send_msg", "send_private_msg", "send_group_msg"}:
         raise ValueError("此接口未开放")
@@ -296,10 +328,26 @@ def outgoing(action: str, params: dict) -> tuple[str, str, list[dict]]:
         raise ValueError("消息目标类型不正确")
     target = str(params.get("group_id" if kind == "group" else "user_id", ""))
     segments = params.get("message")
+    reply_parts = params.get("replyParts")
+    if reply_parts is not None:
+        # A semantic array may preserve boundaries only when it covers the
+        # caller's original text.  Invalid/mismatched arrays leave that text
+        # untouched; they cannot smuggle a replacement body into send/draft.
+        original_text = segments if isinstance(segments, str) else (
+            ''.join(segment.get('data', {}).get('text', '') for segment in segments
+                    if isinstance(segment, dict) and segment.get('type') == 'text')
+            if isinstance(segments, list) else '')
+        projected = _semantic_plan_for_original(original_text, reply_parts)
+        if projected is not None and 1 <= len(projected) <= 32 and sum(len(part) for part in projected) <= 6000:
+            preserved = [segment for segment in segments
+                         if isinstance(segment, dict) and segment.get('type') == 'qq_image'] \
+                if isinstance(segments, list) else []
+            segments = [{"type": "text", "data": {"text": part}} for part in projected]
+            segments.extend(preserved)
     image_ids = params.get("imageIds")
     if image_ids is not None:
-        if not isinstance(image_ids, list) or len(image_ids) > 2:
-            raise ValueError("QQ 图片附件最多选择 2 张")
+        if not isinstance(image_ids, list) or len(image_ids) > MAX_REPLY_IMAGES:
+            raise ValueError(f"QQ 图片附件最多选择 {MAX_REPLY_IMAGES} 张")
         if any(not isinstance(asset_id, str) or not _ASSET_ID.fullmatch(asset_id) for asset_id in image_ids):
             raise ValueError("QQ 图片附件标识无效")
         if segments is None:
@@ -337,8 +385,8 @@ def outgoing(action: str, params: dict) -> tuple[str, str, list[dict]]:
                     or not _ASSET_ID.fullmatch(data["assetId"])):
                 raise ValueError("QQ 图片附件标识无效")
             image_count += 1
-            if image_count > 2:
-                raise ValueError("QQ 图片附件最多选择 2 张")
+            if image_count > MAX_REPLY_IMAGES:
+                raise ValueError(f"QQ 图片附件最多选择 {MAX_REPLY_IMAGES} 张")
             normalized.append({"type": "qq_image", "data": {"assetId": data["assetId"]}})
         else:
             raise ValueError("当前代发只支持文字和图库图片")
@@ -413,6 +461,11 @@ class Ledger:
             self.db.execute("DELETE FROM incoming WHERE created < ?", (time.time()-86400*7,))
             return bool(self.db.execute("INSERT OR IGNORE INTO incoming VALUES(?,?)", (account+":"+str(message_id), time.time())).rowcount)
 
+    def incoming_seen(self, account: str, message_id: Any) -> bool:
+        with self.lock:
+            return self.db.execute('SELECT 1 FROM incoming WHERE key=?',
+                                   (account + ':' + str(message_id),)).fetchone() is not None
+
     def draft(self, policy: dict, kind: str, target: str, message: list, *, actor: str,
               reason: str, request_key: str, speech: dict | None = None,
               creation_request_id: str = "") -> dict:
@@ -439,8 +492,11 @@ class Ledger:
             self.db.execute("INSERT INTO sends (id,request_key,creation_request_id,account,kind,target,message,reason,actor,state,created,updated,message_id,detail,reply_format,speech_json,speech_language) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (ident, request_key, creation_request_id, policy["account_id"], kind, target, serialized, reason, actor, "draft", now, now, None, "", reply_format, json.dumps(speech or {}, ensure_ascii=False), language))
             return self.get(ident)
 
-    def select_reply_format(self, policy: dict, kind: str, target: str, request_key: str) -> str:
+    def select_reply_format(self, policy: dict, kind: str, target: str, request_key: str,
+                            *, override: str | None = None) -> str:
         """Reserve once before generation, so retries/restarts keep the same plan."""
+        if override is not None and override not in ('text', 'voice'):
+            raise ValueError('本次回复形式必须为 text / voice')
         with self.lock, self.db:
             existing = self.db.execute('SELECT account,kind,target,reply_format FROM sends WHERE request_key=?', (request_key,)).fetchone()
             if existing is None:
@@ -449,10 +505,14 @@ class Ledger:
             if existing is not None:
                 if (existing['account'], existing['kind'], existing['target']) != (policy['account_id'], kind, target):
                     raise ValueError('同一请求标识对应了不同会话')
+                if override is not None and override != existing['reply_format']:
+                    raise ValueError('同一请求不能改写回复形式后重复发送，请查看原草稿或回执')
                 if existing['reply_format'] == 'voice' and not voice_enabled(effective):
                     raise ValueError('该会话已关闭语音或将语音频率设为 0，旧语音请求不能继续')
                 return existing['reply_format']
-            selected = choose_reply_format(effective)
+            selected = override or choose_reply_format(effective)
+            if selected == 'voice' and not voice_enabled(effective):
+                raise ValueError('该会话已关闭语音或将语音频率设为 0')
             self.db.execute('INSERT INTO reply_choices (request_key,account,kind,target,reply_format) VALUES(?,?,?,?,?)',
                             (request_key, policy['account_id'], kind, target, selected))
             return selected
@@ -490,6 +550,35 @@ class Ledger:
             result = dict(row)
             result.update(self._part_counts_locked(ident))
             return result
+
+    def sent_messages(self, account: str, kind: str, target: str, message_ids: list[str]) -> dict:
+        """Recover exact delivered content, including older synthesized voice.
+
+        Individual bubble receipts take precedence over their parent draft;
+        an unsent draft or another conversation is never quote evidence.
+        """
+        if not message_ids:
+            return {}
+        slots = ','.join('?' for _ in message_ids)
+        params = [account, kind, target, *message_ids]
+        with self.lock:
+            parts = self.db.execute(
+                "SELECT p.message_id,p.message,s.message AS original,s.reply_format FROM send_parts p "
+                "JOIN sends s ON s.id=p.draft_id WHERE s.account=? AND s.kind=? AND s.target=? "
+                "AND p.state='sent' AND p.message_id IN (" + slots + ')', params).fetchall()
+            drafts = self.db.execute(
+                "SELECT message_id,message,reply_format FROM sends WHERE account=? AND kind=? AND target=? "
+                "AND state='sent' AND message_id IN (" + slots + ')', params).fetchall()
+        result = {}
+        for row in parts:
+            message = json.loads(row['message'])
+            if row['reply_format'] == 'voice' and any(item.get('type') == 'record' for item in message):
+                message = [item for item in json.loads(row['original']) if item.get('type') == 'text']
+            result[str(row['message_id'])] = {'message': message, 'reply_format': row['reply_format']}
+        for row in drafts:
+            result.setdefault(str(row['message_id']), {
+                'message': json.loads(row['message']), 'reply_format': row['reply_format']})
+        return result
 
     def _part_counts_locked(self, ident: str) -> dict:
         row = self.db.execute(

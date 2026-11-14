@@ -176,6 +176,7 @@ def send_uncoordinated(
                 responseMode="json" if json_mode_active else "text",
                 httpStatus=http_status,
                 outputTokens=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+                **usage_log_fields(usage),
                 finishReason=llm_protocol.upstream_finish_reason(data),
                 rawBodyLength=len(raw),
                 requestPayloadFingerprint=runtime_fingerprint(request_body, length=24),
@@ -320,6 +321,41 @@ def send_uncoordinated(
     raise last_error or UpstreamProtocolError("upstream request failed without an error")
 
 
+def usage_log_fields(usage: Any) -> dict[str, int]:
+    """Input-side token counts as the provider billed them, when it reports them.
+
+    Covers the OpenAI-compatible ``prompt_tokens`` plus both common spellings
+    of prefix-cache accounting (DeepSeek ``prompt_cache_hit_tokens`` and
+    OpenAI ``prompt_tokens_details.cached_tokens``). Absent counts stay out
+    of the log instead of being recorded as a measured zero.
+    """
+
+    if not isinstance(usage, dict):
+        return {}
+    fields: dict[str, int] = {}
+
+    def number(value: Any) -> int | None:
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    prompt = number(usage.get("prompt_tokens"))
+    if prompt is None:
+        prompt = number(usage.get("input_tokens"))
+    if prompt is not None:
+        fields["inputTokens"] = prompt
+    details = usage.get("prompt_tokens_details")
+    hit = number(usage.get("prompt_cache_hit_tokens"))
+    if hit is None and isinstance(details, dict):
+        hit = number(details.get("cached_tokens"))
+    if hit is not None:
+        fields["cacheHitTokens"] = hit
+    miss = number(usage.get("prompt_cache_miss_tokens"))
+    if miss is None and hit is not None and prompt is not None:
+        miss = max(0, prompt - hit)
+    if miss is not None:
+        fields["cacheMissTokens"] = miss
+    return fields
+
+
 def iter_uncoordinated(
     settings: dict[str, Any],
     payload: dict[str, Any],
@@ -363,6 +399,7 @@ def iter_uncoordinated(
     reasoning_delta_count = 0
     reasoning_delta_chars = 0
     reasoning_delta_non_whitespace = 0
+    stream_usage: dict[str, Any] = {}
     try:
         io.check_cancelled(safe_request_id)
         with io.open_request(
@@ -409,6 +446,8 @@ def iter_uncoordinated(
                     sse_json_decode_error_count += 1
                     continue
                 sse_json_event_count += 1
+                if isinstance(data, dict) and isinstance(data.get("usage"), dict):
+                    stream_usage = data["usage"]
                 choices = data.get("choices") if isinstance(data, dict) else []
                 for choice in choices if isinstance(choices, list) else []:
                     if not isinstance(choice, dict):
@@ -582,4 +621,7 @@ def iter_uncoordinated(
         requestId=safe_request_id,
         elapsedMs=round((time.perf_counter() - started) * 1000),
         finishReasons=finish_reasons,
+        **({"outputTokens": int(stream_usage.get("completion_tokens") or stream_usage.get("output_tokens") or 0)}
+           if stream_usage else {}),
+        **usage_log_fields(stream_usage),
     )

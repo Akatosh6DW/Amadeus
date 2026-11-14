@@ -208,6 +208,13 @@ def _web_evidence_identity(ref: str, item: Mapping[str, Any]) -> str:
     """Return a stable page identity for deduplicating search/read aliases."""
     if item.get("rangeExact") is True:
         return evidence_url_key(item.get("url") or ref) + f"#read-{item.get('startChar', 0)}-{item.get('endChar', 0)}"
+    # Public APIs commonly return several records from one endpoint.  Their
+    # per-item sourceUid is the content identity; collapsing by the shared
+    # endpoint would silently drop all but one post/entry from model context.
+    if str(item.get("sourceOrigin") or "").strip().lower() == "public_read":
+        source_uid = str(item.get("sourceUid") or "").strip()
+        if source_uid:
+            return "public_read:" + source_uid
     return evidence_url_key(
         item.get("canonicalUrl")
         or item.get("url")
@@ -621,6 +628,12 @@ def compact_packet(
             # every new turn instead of waiting for context pressure. The raw
             # journal/evidence stays intact for validation and explicit recall.
             summary = historical_operation_summary(item['receipt'])
+            if isinstance(action_receipt, dict) and isinstance(action_receipt.get('timeFacts'), Mapping):
+                # Durations measured from that turn's clock are wrong by now;
+                # the absolute due time and local date/clock remain.
+                action_receipt = {**action_receipt, 'timeFacts': {
+                    key: value for key, value in action_receipt['timeFacts'].items()
+                    if key not in {'anchorIso', 'dayOffset', 'secondsUntilDue', 'hoursUntilDue'}}}
             return {
                 'id': ref, 'aliases': aliases, 'ok': bool(item.get('ok')),
                 'sourceType': item.get('sourceType'), 'title': str(item.get('name') or '')[:160],
@@ -732,12 +745,87 @@ def compact_packet(
         "context": deepcopy(state.get("context") or {}),
         "preferences": preferences,
         "experiences": deepcopy(active_experiences[-5:]),
-        "evidence": [
+        "evidence": _share_historical_instruction([
             project_evidence(ref, item, aliases)
             for ref, item, aliases in selected_evidence
-        ],
+        ]),
         "currentToolReceipts": current_receipts,
     }
+
+
+CLEARED_WEB_EVIDENCE_NOTE = (
+    "较早回合读过的网页，正文已从本轮上下文移除，只保留来源记录。需要其中内容时重新读取该 URL，"
+    "或读取原轮 trace 的 toolReceipts；不能凭这条记录引用网页正文。"
+)
+
+
+def clear_older_web_evidence(
+    items: list[dict[str, Any]], *, keep_turn_ids: Sequence[str], protected_refs: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Replace web pages read in older turns with a source record.
+
+    A web search leaves several page excerpts behind, and they used to ride
+    along with every later request whatever its topic. As in the tool-result
+    clearing used by long-running agents, pages from the current turn and from
+    ``keep_turn_ids`` (the turn just before, so a direct follow-up still has
+    them) stay readable; older ones keep their identity, title, URL and source
+    turn and lose the excerpt. The stored evidence is untouched and can be read
+    again from the trace, and a page the model explicitly selected for this
+    turn is never cleared.
+    """
+
+    keep = {str(item) for item in keep_turn_ids if item}
+    protected = {str(item) for item in protected_refs if item}
+    result: list[dict[str, Any]] = []
+    for item in items:
+        refs = {str(item.get("id") or ""), *(str(alias) for alias in item.get("aliases") or ())}
+        if (item.get("sourceType") != "web" or not item.get("historical")
+                or str(item.get("sourceTurnId") or "") in keep or refs & protected):
+            result.append(item)
+            continue
+        result.append({
+            "id": item.get("id"), "aliases": item.get("aliases") or [], "sourceType": "web",
+            "title": item.get("title"), "url": item.get("url"),
+            "historical": True, "freshness": item.get("freshness"),
+            "observedAt": item.get("observedAt"), "sourceTurnId": item.get("sourceTurnId"),
+            "projectionMode": "cleared_older_web_evidence",
+            "beliefUpdateEligibility": {"allowed": False, "reason": "body_not_in_current_context"},
+            "retrieval": {"sourceTurnId": item.get("sourceTurnId"), "url": item.get("url"),
+                          "viewOnly": True, "instruction": CLEARED_WEB_EVIDENCE_NOTE},
+        })
+    return result
+
+
+def _share_historical_instruction(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Say once what several carried-over evidence entries would each repeat.
+
+    Entries from earlier turns travel with every later request. Their reading
+    instruction and their claim contract are the same text for every entry of
+    the same kind, which made one past web search cost thousands of characters
+    per turn afterwards. Later entries now point at the first identical one.
+    Evidence produced in the current turn is left complete, because that is
+    what the model is citing right now.
+    """
+
+    instructions: dict[str, str] = {}
+    contracts: dict[str, str] = {}
+    for item in items:
+        if not item.get('historical'):
+            continue
+        ident = str(item.get('id') or '')
+        retrieval = item.get('retrieval')
+        if isinstance(retrieval, dict) and isinstance(retrieval.get('instruction'), str) and retrieval['instruction']:
+            first = instructions.setdefault(retrieval['instruction'], ident)
+            if first != ident:
+                retrieval['instruction'] = f'同 {first} 的说明。'
+        contract = item.get('claimContract')
+        if isinstance(contract, dict) and contract:
+            shape = json.dumps({key: value for key, value in contract.items() if key != 'evidenceRef'},
+                               ensure_ascii=False, sort_keys=True)
+            first = contracts.setdefault(shape, ident)
+            if first != ident:
+                item['claimContract'] = {'sameAs': first, 'evidenceRef': contract.get('evidenceRef')}
+    return items
 
 
 def read_user_adaptation_selection(preferences: Mapping[str, Any], query: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -782,7 +870,7 @@ def task_tool_violations(
         definition = registry.get(name)
         if "read_only" in restrictions and (definition is None or not definition.read_only):
             violations.append("task_read_only:" + name)
-        if "no_web" in restrictions and name in {"web_search", "read_web_page"}:
+        if "no_web" in restrictions and name in {"web_search", "read_web_page", "public_read"}:
             violations.append("task_no_web:" + name)
         if "no_observation" in restrictions and definition is not None and definition.side_effect_class == "sensor_capture":
             violations.append("task_no_observation:" + name)

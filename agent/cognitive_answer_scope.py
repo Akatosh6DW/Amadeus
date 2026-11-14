@@ -84,7 +84,7 @@ def has_current_search_evidence(evidence: Mapping) -> bool:
         if not isinstance(entry, Mapping) or entry.get('historical'):
             continue
         receipt = entry.get('receipt')
-        if (isinstance(receipt, Mapping) and receipt.get('name') == 'web_search'
+        if (isinstance(receipt, Mapping) and receipt.get('name') in {'web_search', 'public_read'}
                 and receipt.get('ok') is True and receipt.get('attempted', True) is not False):
             return True
     return False

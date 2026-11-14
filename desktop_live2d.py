@@ -78,6 +78,8 @@ from server import (
     refresh_runtime_client_leases,
     resolve_generated_file,
     should_start_vision_service,
+    start_background_services,
+    stop_background_services,
     stop_gpt_sovits_service,
     stop_vision_service,
     write_server_log,
@@ -237,12 +239,16 @@ def backend_service_main(port: int) -> None:
             daemon=True,
             name="amadeus-vision-starter",
         ).start()
-    write_server_log("desktop_backend_started", port=port, pid=os.getpid(), build=APP_BUILD)
-    print(f"Amadeus System desktop backend: http://{HOST}:{port} ({APP_BUILD})", flush=True)
     try:
+        # The desktop uses this entrypoint instead of server.main(); both own
+        # the same Todo and autonomous-life schedulers for the backend lifetime.
+        start_background_services()
+        write_server_log("desktop_backend_started", port=port, pid=os.getpid(), build=APP_BUILD)
+        print(f"Amadeus System desktop backend: http://{HOST}:{port} ({APP_BUILD})", flush=True)
         server.serve_forever(poll_interval=0.25)
     finally:
         idle_monitor.stop_event.set()
+        stop_background_services()
         stop_gpt_sovits_service()
         stop_vision_service()
         if server is not None:

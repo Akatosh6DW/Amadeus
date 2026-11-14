@@ -764,6 +764,7 @@ def safe_http_request(
     headers: dict[str, str] | None = None,
     timeout: float = 12,
     allow_http_redirects: bool = False,
+    accepted_content_types: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Fetch a bounded public text response with redirect revalidation."""
 
@@ -796,7 +797,7 @@ def safe_http_request(
         if status < 200 or status >= 300:
             raise SafeWebError(f"网页返回 HTTP {status}")
         content_type = response_headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
-        if content_type not in ALLOWED_CONTENT_TYPES:
+        if content_type not in (ALLOWED_CONTENT_TYPES if accepted_content_types is None else accepted_content_types):
             raise SafeWebError(f"不读取此内容类型：{content_type or 'unknown'}")
         return {
             "url": current,

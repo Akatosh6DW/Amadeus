@@ -1057,8 +1057,8 @@ def resolve_cognitive_response(
                                   and not has_current_execution and not selects_old_step)
         if (requests and not request_violations and isinstance(overlay, dict) and task.get("status") == "active"
                 and (not executable_steps or all(step.get("status") == "completed" for step in executable_steps)
-                     or (all(request.get("name") in {"web_search", "read_web_page"} for request in requests)
-                         and all(step.get("name") in {"web_search", "read_web_page"} for step in executable_steps))
+                     or (all(request.get("name") in {"web_search", "read_web_page", "public_read"} for request in requests)
+                         and all(step.get("name") in {"web_search", "read_web_page", "public_read"} for step in executable_steps))
                      or (previous_turn_plan and tool_plan_violations(task, requests))
                      or plan_sync_from_receipts)):
             # 工具调用本身就是主模型的具体计划，直接记录，不再增加语义分类或模型轮。

@@ -1,8 +1,14 @@
-# Amadeus System
+# Amadeus System: Adding simple autonomous life
 
 [中文](README.md)
 
 Chat with Amadeus on your Windows desktop.
+
+## Adding simple autonomous life
+
+This is the public source update relative to v1.1.1. Autonomous life is off by default; use the repository source to try this update. The currently downloadable installer remains v1.1.1. Existing QQ delegation, QQ Space, outbound voice, to-dos and reminders remain available.
+
+This update adds four independent autonomous-life rhythms, a shared daily context with the QQ owner, permission-aware reading of public sources, optional local ASR for incoming QQ voice, per-conversation catch-up after login, meaning-based QQ message splitting, per-message typing delays, improved quotes and sticker variety, and image pasting in the desktop chat. The new Bluesky, Bangumi, arXiv and RSS/Atom access is limited to public reading.
 
 Amadeus System is a *Steins;Gate* fan project. A Live2D character modeled on Kurisu Makise lives on your desktop: she chats with you, remembers what you tell her, keeps track of your to-dos and reminders, and speaks Chinese or Japanese with synchronized mouth movement.
 
@@ -12,12 +18,21 @@ Amadeus System is a *Steins;Gate* fan project. A Live2D character modeled on Kur
 - **To-dos and reminders**: add items in the to-do panel or just say "remind me about the meeting at 9 tomorrow"; she can also read something aloud to you a little later. Reminders and delayed tasks need the program to stay running.
 - **Reminder completion**: a one-time notification can complete after successful delivery. Ordinary to-dos still need your completion confirmation, and recurring tasks keep their next occurrence.
 - **Recurring tasks**: ask her to recommend papers based on your current interests every Monday at 9. Edit instructions, pause, and resume through conversation or the to-do editor. Tasks execute while the backend is running and save results for desktop delivery. After shutdown or sleep, missed occurrences are coalesced into one catch-up run.
-- **Voice and expressions**: desktop speech supports Chinese and Japanese. QQ text/voice mode, language and voice frequency can be configured separately.
-- **Images and research**: with your permission she can look at images, screenshots and camera frames, read and edit text files, and search the web with sources.
-- **QQ delegation**: configure recipients separately, including group triggers, reply identity, persona, text/voice, short message bubbles and timing. Account profiles keep settings and conversation contexts separate. Owner commands can use the tools enabled locally.
+- **Voice and expressions**: desktop speech supports Chinese and Japanese. QQ text/voice mode, language and voice frequency can be configured separately. The QQ gallery keeps static images and GIFs in their original form.
+- **Images and research**: paste images directly into the desktop chat. With your permission she can look at images, screenshots and camera frames, read and edit text files, and search the web with sources.
+- **QQ delegation**: configure recipients separately, including group triggers, reply identity, persona, text/voice, meaning-based message bubbles, typing waits, quotes, images/emojis and timing. Account profiles keep settings and conversation contexts separate. Owner commands can use the tools enabled locally.
+- **Incoming QQ voice**: with an optional local speech-recognition environment and model prepared, incoming QQ voice can enter the normal chat flow; it does not change outbound voice settings.
+- **Login catch-up**: enable missed-message catch-up separately for each friend or group. It is off by default, starts tracking when enabled, and reviews at most 90 recent messages after login or reconnect while respecting pause, review and group-trigger rules.
 - **Personas**: the local conversation uses Kurisu; individual QQ conversations can select Kurisu, Sunba or Kangba. Forum modes read only locally installed corpora; Sunba/Kangba corpora are not distributed with the public source or Release, so the persona remains selectable without forum examples when they are absent.
 - **Web research**: choose DeepSeek, Bing or DuckDuckGo and a fallback provider in browser settings. Search results can be followed by page/PDF text reading and continuation.
+- **Autonomous life (simple experimental feature)**: scheduled exploration of selected reading folders, public pages, Bluesky, Bangumi, arXiv abstracts and RSS/Atom feeds, with a separate journal and ongoing interests. Reading, considering a chat, reflecting and considering a QQ Space share use four independent rhythms. QQ owner conversations can become part of the same daily context. QQ Space posts can remain editable drafts or be published under a configured account and daily allowance. Disabled by default; not included in the v1.1.1 installer.
 - **Appearance**: a floating desktop layout or a video-call layout, two outfits, and backgrounds you can replace with your own pictures.
+
+## Use autonomous life
+
+Autonomous life is off by default. From a source checkout, open Settings → 自主生活. Choose nonsensitive UTF-8 reading folders, starting sources and interests, then save and try one run before enabling the schedule. Read content is sent to your configured model, and the backend must stay running. At 100% overall activity, reading, considering a chat, reflection and considering a Space post have separate intervals of about 2, 3, 6 and 12 hours. These are opportunities, not mandatory messages; manual trial runs do not postpone all four schedules. Desktop conversations and private QQ conversations with the configured owner can share this daily context. Global file/web/QQ permissions still apply. Sources are starting points for further public browsing.
+
+Publishing defaults to drafts. Automatic QQ Space publishing requires an exact account, visibility and daily allowance, plus the existing QQ connection and Space permissions. Unknown delivery results are retained without automatic resend. Stop cancels subsequent actions; a network request already dispatched cannot be recalled. The desktop chat can read the separate life journal; it does not automatically turn outside material into facts about the user. Bluesky, Bangumi, arXiv and RSS/Atom remain read-only public sources; logged-in browser publishing on other platforms is not implemented.
 
 ## Install
 
@@ -37,7 +52,7 @@ cd Amadeus
 .\start.cmd
 ```
 
-The first run sets up the desktop and speech environments and downloads about 614 MB of the published voice/context resources plus several GB of GPT-SoVITS, Python and PyTorch dependencies. You must still enter your own API key under Settings → API. Keep the project caches after an interrupted or failed download and run the same `start.cmd` again to continue.
+The first run sets up the desktop and outbound-speech environments and downloads about 614 MB of the published voice/context resources plus several GB of GPT-SoVITS, Python and PyTorch dependencies. The speech environment includes faster-whisper, but `start.cmd` does not download the small model used for incoming QQ voice; prepare that local model separately if you need transcription. You must still enter your own API key under Settings → API. Keep the project caches after an interrupted or failed download and run the same `start.cmd` again to continue.
 
 Sunba/Kangba corpora are optional local data and are not distributed with the public source or Release. The [QQ setup and usage guide](integrations/qq/README.md) describes the QQ/persona boundary and local-data requirements.
 

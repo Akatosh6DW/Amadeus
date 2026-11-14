@@ -63,6 +63,7 @@ class ConversationWriterPorts:
     compact_artifact: Callable[[list[dict[str, Any]]], Any]
     refine_summary: Callable[..., None]
     summary_jobs: SummaryJobRegistry
+    record_daily_turn: Callable[[dict[str, Any]], Any] = lambda turn: None
 
 
 class ConversationWriter:
@@ -475,6 +476,12 @@ class ConversationWriter:
             self.ports.record_salieri(turn)
         else:
             self.ports.write_context(context)
+        # Only accepted, current-epoch turns enter the shared daily timeline.
+        # This is a derived projection; an unavailable diary cannot fail chat.
+        try:
+            self.ports.record_daily_turn(turn)
+        except Exception as error:
+            self.ports.write_log("daily_turn_projection_failed", errorType=type(error).__name__)
         summary_job_id = summary_id if compressed and self.ports.configured(settings) else pending_summary_id
         summary_job_turns = compressed if compressed and self.ports.configured(settings) else pending_summary_turns
         summary_job_key = (self.ports.current_scope(), summary_job_id)

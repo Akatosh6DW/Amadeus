@@ -1058,7 +1058,9 @@ def turn_contract_prompt(
         "人格吐槽、昵称反应、害羞或调侃绝不能替代 required_acts。",
         "第一条可见中文及其日语发声稿必须覆盖 first_visible_must_cover，并且脱离任何未显示前文也能独立成立。",
         PROACTIVE_DIRECTIVE_INSTRUCTION,
-        "输出 completedActs、standalone、dependsOnUndeliveredPrefix、turnComplete；只有真正完成合同时才能声明完成。",
+        # Host delivery does not require the model's completion declarations.
+        # Deliverability and verified task success remain separate facts.
+        "不要输出 completedActs、standalone、dependsOnUndeliveredPrefix、turnComplete；交付状态由后端维护，任务成功仍以执行回执为准。",
     ])
 
 
@@ -1128,7 +1130,7 @@ def final_turn_envelope(
     )
 
 
-def policy_prompt(policy: TurnPolicy) -> str:
+def policy_prompt(policy: TurnPolicy, *, surface: str = '') -> str:
     """Render the dynamic policy without turning sentence guidance into a guillotine."""
 
     action_lines = "\n".join(f"- {item}" for item in policy.allowed_actions)
@@ -1143,6 +1145,10 @@ def policy_prompt(policy: TurnPolicy) -> str:
         f"allow_bullets: {str(policy.allow_bullets).lower()}",
         f"allow_summary: {str(policy.allow_summary).lower()}",
         (
+            "这是 QQ 中的一次接话，默认一两句讲清本轮最有用的意思即可；"
+            "话题复杂或调用过工具，本身不代表对方想读完整分析。按对方明确要求的深度和必答内容展开，"
+            "不为补齐背景、比喻或总结继续拉长；需要完整材料或多项结果时仍全部完成，不截断台词。"
+            if surface == 'qq' and policy.reply_mode != 'deep' else
             "通常用 "
             f"{policy.preferred_sentence_min}–{policy.preferred_sentence_max} 个完整句子即可。"
             "这是表达建议，不是硬性句数上限；按完整任务自行调整长度，不要漏答或突然停止。"

@@ -386,7 +386,7 @@ class ReferenceContextService:
             if not isinstance(item, dict) or str(item.get("toolStatus") or "") != "ok":
                 continue
             tool_name = str(item.get("toolUsed") or "")
-            if tool_name not in {"web_search", "read_web_page", "get_system_time", "capture_screen", "capture_camera"}:
+            if tool_name not in {"web_search", "read_web_page", "public_read", "get_system_time", "capture_screen", "capture_camera"}:
                 continue
             if tool_name == "web_search":
                 web_status = item.get("webEvidenceStatus") if isinstance(item.get("webEvidenceStatus"), dict) else {}

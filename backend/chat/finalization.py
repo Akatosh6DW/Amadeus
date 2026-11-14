@@ -60,6 +60,7 @@ class PresentationOperations:
     punctuation_fallback_speech_units: Callable[..., Any]
     speech_unit_contract_for_result: Callable[..., Any]
     enforce_speaker_attribution_grounding: Callable[..., Any]
+    resolve_reply_media: Callable[..., Any]
 
 
 @dataclass(frozen=True)
@@ -266,6 +267,10 @@ class ReplyFinalizer:
         if not isinstance(model_result, dict):
             raise UpstreamProtocolError("normalized upstream reply is not an object")
         result = require_delivery(model_result, settings=settings, logger=self.write_log, request_id=request_id)
+        # Stream containers are already normalized speech, but their gallery
+        # IDs still need the same account-bound projection as non-stream replies.
+        result['galleryMedia'] = self.presentation.resolve_reply_media(result)
+        result['imageIds'] = [item['id'] for item in result['galleryMedia']]
         canonical_reply = result["reply"]
         if cognitive_body is not None:
             self.context.bind_turn_context_to_result(cognitive_body, result)
@@ -406,7 +411,7 @@ class ReplyFinalizer:
             and any(
                 isinstance(item, dict)
                 and item.get("ok")
-                and item.get("name") in {"web_search", "read_web_page"}
+                and item.get("name") in {"web_search", "read_web_page", "public_read"}
                 for item in conversation_tool_results
             )
         ):

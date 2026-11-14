@@ -384,7 +384,7 @@ def send_conversation_brain_payload(
         active.pop("temperature", None)
     if prompt:
         active["messages"].append(
-            system_message('backend/chat/brain_transport.py:369', policy.participant_realization_rule, source='backend/chat/brain_transport.py', category='unclassified')
+            system_message('wire.participant_identity', policy.participant_realization_rule, source='backend/chat/brain_transport.py', category='unclassified')
         )
     native_web = bool(prompt) and native_web_enabled(settings, body, purpose)
     if native_web:
@@ -462,7 +462,7 @@ def iter_conversation_brain_stream(
             **payload,
             "messages": [
                 *payload.get("messages", []),
-                system_message('backend/chat/brain_transport.py:447', policy.participant_realization_rule, source='backend/chat/brain_transport.py', category='unclassified'),
+                system_message('wire.participant_identity', policy.participant_realization_rule, source='backend/chat/brain_transport.py', category='unclassified'),
             ],
         }
     outgoing = with_cognitive_transport_state(

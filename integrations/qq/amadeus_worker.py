@@ -13,11 +13,15 @@ from pathlib import Path
 import sys
 from dataclasses import replace
 
-from .amadeus_runtime import QQ_TOOLS, scope_key, session_settings
+from .amadeus_runtime import ROOT, QQ_TOOLS, scope_key, session_settings
 from .dialogue import build_task, profile_path
 from agent.dialogue_task import install_dialogue_task
+from agent.persona_context import read_scene_bodies
 from .media import image_attachments
-from .persona_style import qq_reply_layers, read_shared_style
+from .media_library import MAX_REPLY_IMAGES
+from .persona_style import FORUM_PERSONAS, qq_reply_layers, read_shared_style
+from .reply_segments import reply_parts_from_result
+from .citation_display import project_qq_result
 
 
 def incoming_text(payload: dict) -> str:
@@ -74,13 +78,23 @@ def run_scoped(payload: dict, root: Path, model_config: Path) -> dict:
     task = build_task(payload, media_notes=payload.get('media_notes', []) + image_notes)
     from agent.persona_examples import persona_examples_prompt
     mode = payload.get('reply_style', 'game')
+    # A worker is a short-lived process, so read the same eight source files
+    # once while freezing the task's reply layers.  This intentionally avoids
+    # the embedding runtime.  Forum personas and owner-voice ghostwriting are
+    # independent from the Kurisu scene guidance.
+    scene_bodies = (
+        read_scene_bodies(ROOT / 'skills' / 'persona')
+        if mode not in FORUM_PERSONAS and payload.get('reply_identity', 'assistant') != 'owner'
+        else ()
+    )
     layers = qq_reply_layers(payload.get('reply_instructions', ''),
         compact_reply=payload.get('compact_reply', True), reply_style=mode,
         engineering=task.system_prompt,
         shared_style=read_shared_style(model_config.parent.parent / 'persona_override.md')
                      if mode not in {'tieba', 'kangba'} else '',
         examples=persona_examples_prompt(model_config.parent.parent,
-            str(payload.get('owner_instruction') or payload.get('text') or ''), style=mode))
+            str(payload.get('owner_instruction') or payload.get('text') or ''), style=mode),
+        scene_bodies=scene_bodies)
     task = replace(task, reply_layers=layers, style_prompt=layers.expression)
     install_dialogue_task(task)
     # Diagnostics preserve ownership and must not masquerade as a persona patch.
@@ -105,11 +119,21 @@ def run_scoped(payload: dict, root: Path, model_config: Path) -> dict:
         "qq_history 仅可读取当前授权会话；qq_manage 仅可 mute 当前会话。不具备恢复、跨会话控制、发送、文件、设备或定时任务权限。"
         "qq_identity 核对当前会话的 QQ 身份；qq_remember_alias 只在本轮真实发言者是 OWNER 并明确介绍称呼时使用，须 write 授权和 commitIntent=true。"
         "qq_person_memory 只保存当前签名会话内简短、有来源的人物认知；区分 owner_explicit、person_statement、assistant_inference，须 write 授权和 commitIntent=true，不能改变权限或回复设置。"
-        "可以直接从已提供的表情目录选择imageIds与galleryAccount，随最终回复交给网关发送，无需重复search或attach；目录没有合适的图再用qq_media search/attach，最多两张真实assetId。不要每次硬配图。"
+        f"可以直接从已提供的表情目录选择imageIds与galleryAccount，随最终回复交给网关发送，无需重复search或attach；目录没有合适的图再用qq_media search/attach，每轮最多{MAX_REPLY_IMAGES}张真实assetId。不要每次硬配图。"
         "仍遵循主容器认知协议，保留 cognitive；工具数组使用 calls 或 toolRequests。"
     ))
     import server
     server.GALLERY_CONFIG_PATH = model_config.parent / 'gateway.json'
+    # Keep the user-owned series/frequency settings unchanged while carrying
+    # only confirmed, account-scoped delivery IDs into the model-facing
+    # catalogue.  This is advisory ordering, not a send-time rejection rule.
+    from backend.chat.gallery import recent_gallery_ids
+    gallery_preferences = payload.get('sticker_preferences')
+    recent_ids = recent_gallery_ids(payload.get('delivery_history'))
+    if recent_ids:
+        gallery_preferences = dict(gallery_preferences) if isinstance(gallery_preferences, dict) else {}
+        gallery_preferences['_recent_image_ids'] = recent_ids
+    server.GALLERY_REPLY_PREFERENCES = gallery_preferences
     from .visual import QQImageSources
     image_sources = QQImageSources(server.CONVERSATION_IMAGE_SERVICES.sources, model_config.parent / 'gateway.json',
         str(payload['account']), str(payload['kind']), str(payload['target']), log=server.write_server_log)
@@ -166,9 +190,9 @@ def run_scoped(payload: dict, root: Path, model_config: Path) -> dict:
                 return {'ok': False, 'error': 'qq_media_asset_unavailable', 'attempted': False,
                         'message': '没有确认到本账号图库中的全部图片，尚未附加。'}
             merged = list(dict.fromkeys([*selected_image_ids, *selected]))
-            if len(merged) > 2:
+            if len(merged) > MAX_REPLY_IMAGES:
                 return {'ok': False, 'error': 'qq_media_selection_limit', 'attempted': False,
-                        'message': '本轮最多选择两张图片，请先缩小选择。'}
+                        'message': f'本轮最多选择{MAX_REPLY_IMAGES}张图片，请先缩小选择。'}
             selected_image_ids[:] = merged
             return {'ok': True, 'account': str(payload['account']), 'imageIds': list(selected_image_ids),
                     'selected_image_ids': list(selected_image_ids), 'pendingFinalReply': True, 'sent': False,
@@ -235,12 +259,19 @@ def run_scoped(payload: dict, root: Path, model_config: Path) -> dict:
     result = response.result or {}
     if str(result.get('galleryAccount') or '') == str(payload['account']):
         for asset_id in result.get('imageIds') or []:
-            if asset_id not in selected_image_ids and len(selected_image_ids) < 2:
+            if asset_id not in selected_image_ids and len(selected_image_ids) < MAX_REPLY_IMAGES:
                 selected_image_ids.append(asset_id)
     if muted:
-        return {'ok': True, 'muted': True, 'reply': '', 'request_id': request_id, 'imageIds': list(selected_image_ids)}
+        return {'ok': True, 'muted': True, 'reply': '', 'replyParts': [],
+                'request_id': request_id, 'imageIds': list(selected_image_ids)}
     if response.status != 200 or result.get("ok") is False:
         raise RuntimeError("Amadeus 对话流程未成功完成")
+    voice = payload.get("reply_format") == "voice"
+    # Keep the desktop result authoritative while making the worker's bounded
+    # QQ payload safe for both text and voice.  ``citationSources`` survives
+    # for the gateway's independent source-note bubble; the spoken track never
+    # receives those notes.
+    result = project_qq_result(result, voice=voice)
     reply = str(result.get("reply") or "").strip()
     # A QQ image-only response is valid once the selected IDs have been
     # verified.  The gateway must carry imageIds into the outgoing segments;
@@ -250,7 +281,10 @@ def run_scoped(payload: dict, root: Path, model_config: Path) -> dict:
         raise ValueError("Amadeus 没有生成可发送的纯文字回复")
     from .voice import speech_plan
     return {"ok": True, "reply": reply, "request_id": request_id, "imageIds": list(selected_image_ids),
-            "speech": speech_plan(result) if payload.get("reply_format") == "voice" else {},
+            "replyParts": reply_parts_from_result(result, reply, voice=voice),
+            "speech": speech_plan(result) if voice else {},
+            "sources": result.get("citationSources", []),
+            "citationSources": result.get("citationSources", []),
             "source": str(result.get("source") or ""),
             "reason": "Amadeus 根据当前 QQ 会话的消息、独立历史和记忆生成回复"}
 

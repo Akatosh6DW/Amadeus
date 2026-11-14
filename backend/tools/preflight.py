@@ -10,6 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Mapping, Sequence
@@ -32,7 +33,12 @@ from agent.todo_architecture import (
 )
 from backend.chat.preparation_cache import reuse_preparation
 from backend.tools.validation import SENSOR_TOOL_NAMES, schedule_policy_allows_todo_write
-from todo_store import match_active_todos_to_dialogue, read_todo, list_todos
+from todo_store import (
+    list_recently_closed_todos,
+    list_todos,
+    match_active_todos_to_dialogue,
+    read_todo,
+)
 
 
 @dataclass(frozen=True)
@@ -225,6 +231,21 @@ class ToolPreflightService:
                     ]
                     reconciliation['requiresModelDecision'] = True
                     reconciliation['truncated'] = bool(reconciliation.get('truncated') or len(paused) > 4)
+                closed = list_recently_closed_todos(connection, limit=8)
+                if closed:
+                    reconciliation['recentlyClosed'] = [
+                        {
+                            'taskId': str(item.get('taskId') or ''),
+                            'title': str(item.get('title') or '')[:500],
+                            'status': str(item.get('status') or ''),
+                            'dueAt': str(item.get('dueAt') or ''),
+                            'dueDate': str(item.get('dueDate') or ''),
+                            'version': int(item.get('version') or 0),
+                            'closedAt': str(item.get('completedAt') or item.get('updatedAt') or ''),
+                        }
+                        for item in closed
+                        if str(item.get('taskId') or '').strip()
+                    ]
         except (OSError, sqlite3.Error, RuntimeError) as error:
             reconciliation = {
                 "active": False,
@@ -412,24 +433,88 @@ class ToolPreflightService:
         return result
 
 
+# First words of the fixed decision rules that follow the per-turn snapshot.
+# The rules must travel with the snapshot: sent apart from it, the model stops
+# reviewing the tasks (BUG-077). Tests use this marker to pin that adjacency.
+TODO_RECONCILIATION_RULES_START = "这是本轮从待办数据库读取的活动及暂停任务快照；"
+
+
+# The decision rules a turn needs when nothing in it points at a saved task:
+# what the snapshot is, how to act if the user does report on one of its rows,
+# and that only a receipt proves a change. The long form below adds the cases
+# that need a task the turn already refers to (reminder follow-ups, paused
+# tasks, "already as requested" no-ops, history queries); it is sent whenever
+# the utterance or the previous reply names a task. Sending the long form on
+# every unrelated chat turn cost about 2,600 characters per request for anyone
+# with a saved task.
+TODO_INVENTORY_RULES = (
+    TODO_RECONCILIATION_RULES_START
+    + "它只是用户已保存事项的背景，不表示当前话题与它们有关，也不要求调用工具；本轮与这些事项无关时照常回答，不输出 todoReview。"
+    "recentlyClosed=当前已完成/删除，非活动；旧时间不改状态。"
+    "版本和状态以此快照为准；待办 taskId 是用户事项，不是 packet.task.taskId。"
+    "用户本轮明确反馈其中某项的目标已经达成时，先在 cognitive.todoReview 写 "
+    "[{taskId:真实编号,version:当前版本,decision:'complete',reason:简短理由}]，并用 kind=tool_use 调用 "
+    'todo_manage，args 为 {"action":"complete","taskId":快照中的taskId,"expectedVersion":快照中的version,"commitIntent":true}；'
+    "不必让用户再说‘标记完成’。计划、否定、假设、他人的进度、无关闲聊，或整项工作才刚开始，都不算完成。"
+    "用户要求暂停、恢复、改期或修改其中某项时，沿用同一 taskId 和 expectedVersion 调用 todo_manage 的 "
+    "pause、resume 或 update，不新建任务代替；目标不明确时先 todo_search 或请用户选择。"
+    "只有收到 todo_manage 的 accepted actionReceipt 之后才能说已经完成或已经修改；"
+    "单写 outcome、scheduleIntent 或台词不会改变任务。"
+)
+
+
+def todo_snapshot_is_background_only(reconciliation: Mapping[str, Any]) -> bool:
+    """True when the snapshot is plain inventory with nothing tying it to the turn.
+
+    Decided from the prefilter's own structured result, not from the wording
+    of the message: no title match, no task named by the previous reply, no
+    delivered reminder being answered and no paused task waiting to resume.
+    """
+
+    # AMADEUS_TODO_RULES=full sends the long rules on every turn again.
+    if os.environ.get("AMADEUS_TODO_RULES", "").strip().lower() == "full":
+        return False
+    if (
+        reconciliation.get("recentlyClosed")
+        and not reconciliation.get("candidates")
+        and not reconciliation.get("previousReminder")
+    ):
+        return True
+    if reconciliation.get("matchSource") != "active_inventory" or reconciliation.get("previousReminder"):
+        return False
+    return all(
+        isinstance(item, Mapping) and item.get("matchType") != "paused_inventory"
+        for item in reconciliation.get("candidates", [])
+    )
+
+
 def todo_reconciliation_prompt(value: Any) -> str:
     """Give the model candidates and a decision contract, never a write verdict."""
 
     reconciliation = value if isinstance(value, Mapping) else {}
-    if not reconciliation.get("candidates") and not reconciliation.get("previousReminder"):
+    if (
+        not reconciliation.get("candidates")
+        and not reconciliation.get("previousReminder")
+        and not reconciliation.get("recentlyClosed")
+    ):
         return ""
     payload = {
         "matchSource": reconciliation.get("matchSource"),
         "candidates": reconciliation.get("candidates", []),
+        "recentlyClosed": reconciliation.get("recentlyClosed", []),
         "recentDialogue": reconciliation.get("recentDialogue", []),
         "activeTaskCount": reconciliation.get("activeTaskCount", 0),
         "truncated": bool(reconciliation.get("truncated")),
         "previousReminder": reconciliation.get("previousReminder"),
     }
+    snapshot = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if todo_snapshot_is_background_only(reconciliation):
+        return "[已保存日程的对话核对]\n" + snapshot + "\n" + TODO_INVENTORY_RULES
     return (
         "[已保存日程的对话核对]\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        + "\n这是本轮从待办数据库读取的活动及暂停任务快照；历史提醒仅用于关联目标，版本和状态以此快照为准。"
+        + snapshot
+        + "\n" + TODO_RECONCILIATION_RULES_START + "历史提醒仅用于关联目标，版本和状态以此快照为准。"
+        "recentlyClosed 是当前数据库已完成或已删除的事项；它们不是活动待办，历史文字里的旧到期时间也不能把它们恢复为待办。"
         "待办 taskId 与 packet.task.taskId 属于不同状态：前者是用户事项，后者是助手的工具执行计划。"
         "用户事项尚未完成，不表示以前已经结束的助手计划需要恢复，也不要因此把 outcome.taskStatus 改为 active。"
         "候选列表不代表任务已经完成，也不要求你调用工具；active_inventory 只是少量待办背景，并不表示当前话题与它们相关。"
@@ -585,6 +670,62 @@ def reconcile_research_with_tool_preflight(
     del preflight, user_message
     return decision
 
+def compact_capability_index(items: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+    """Render discovery entries as ``id(args)[actions]: summary`` grouped by family.
+
+    Every id, argument name, action and summary is kept verbatim. Only the
+    per-entry JSON keys, the quotes around each argument name and the repeated
+    family value are dropped, which was about a third of the catalogue.
+    """
+
+    grouped: dict[str, list[str]] = {}
+    for item in items:
+        arguments = ",".join(str(name) for name in item.get("argumentNames") or ())
+        actions = "|".join(str(name) for name in item.get("actions") or ())
+        line = f"{item.get('id')}({arguments})" + (f"[{actions}]" if actions else "") + f": {item.get('summary')}"
+        grouped.setdefault(str(item.get("family") or ""), []).append(line)
+    return grouped
+
+
+def capability_index_ids(index: Mapping[str, Sequence[str]]) -> tuple[str, ...]:
+    """Tool ids listed in a compact index, in catalogue order."""
+
+    return tuple(line.split("(", 1)[0] for lines in index.values() for line in lines)
+
+
+def compact_tool_definitions(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    catalogue_summaries: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Remove only catalogue prose duplicated by the capability index.
+
+    ``capabilityIndex`` already carries each callable tool's family and
+    discovery summary.  The selected ``toolDefinitions`` still carry the
+    executable schema, action list/contracts, call contract and receipt
+    semantics; those fields are deliberately untouched.  A prose field is
+    removed only when its exact value is present in the corresponding
+    capability-index summary.  This helper only changes the model-facing
+    render copy, never a registry ``ToolDef``.
+    """
+
+    summaries = catalogue_summaries or {}
+    rendered: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        tool_id = str(item.get("id") or "")
+        summary = summaries.get(tool_id)
+        rendered.append({
+            key: value
+            for key, value in dict(item).items()
+            if key not in {"description", "discoverySummary"}
+            or summary is None
+            or value != summary
+        })
+    return rendered
+
+
 def tool_preflight_prompt(
     preflight: TurnPreflight,
     capability: CapabilityEnvelope,
@@ -617,17 +758,38 @@ def tool_preflight_prompt(
             hints["candidateTools"] = list(preflight.candidate_capabilities)
         if preflight.perception.target_domain != "none":
             hints["perceptionCandidate"] = preflight.perception.to_dict()
+        # The summaries are the expensive part of this block. A tool whose
+        # setting is off cannot be called this turn, so it is listed by id only:
+        # the model can still tell the user which setting to turn on, and
+        # capabilityQuery still searches the complete registry. Without any
+        # permission information (allowed_tools empty) nothing is hidden.
+        full_index = DEFAULT_TOOL_REGISTRY.capability_index()
+        callable_ids = {
+            *capability.allowed_tools, *capability.required_tools,
+            *capability.initially_loaded_tool_ids,
+            str((current_requirement or {}).get("toolName") or ""),
+        }
+        listed = [item for item in full_index if item.get("id") in callable_ids] if capability.allowed_tools else list(full_index)
+        disabled = [item.get("id") for item in full_index if item not in listed]
+        # Settings-level fields first, per-turn fields last: a provider only
+        # reuses an exact leading match, and the catalogue is the large part.
+        # With requiredTools/candidateHints ahead of it, a tool follow-up
+        # re-paid for the whole catalogue its own first call had just sent.
         payload = {
             "selectionOwner": "model_using_current_request_and_dialogue",
             "permittedTools": list(capability.allowed_tools),
+            "capabilityIndex": compact_capability_index(listed),
+            **({"disabledBySettings": disabled} if disabled else {}),
             "requiredTools": list(capability.required_tools),
             "candidateHints": hints,
-            "capabilityIndex": list(DEFAULT_TOOL_REGISTRY.capability_index()),
-            "toolDefinitions": [
+            "toolDefinitions": compact_tool_definitions([
                 detail for tool_id in capability.initially_loaded_tool_ids
                 for detail in (DEFAULT_TOOL_REGISTRY.detail(tool_id),)
                 if detail is not None
-            ],
+            ], catalogue_summaries={
+                str(item.get("id") or ""): str(item.get("summary") or "")
+                for item in listed
+            }),
             "currentStateEvidenceTool": current_state_tool,
             "toolCallExample": tool_call_example(protocol_version),
             "capabilityQueryContract": capability_query_contract(),
@@ -637,6 +799,8 @@ def tool_preflight_prompt(
             + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             + "\n规则：结合本轮原话和对话上下文选择工具。candidateHints 只是预选提示，空值表示未预选；"
             "toolDefinitions 只表示已加载说明，不限制可选工具。permittedTools 来自设置权限，实际操作仍须符合当前用户授权范围。"
+            "capabilityIndex 按工具族分组，每项写作 工具名(参数名)[动作]: 说明。"
+            "disabledBySettings 是设置中未开启的工具，本轮不能调用；用户需要其中的能力时，说明要先在设置里开启对应权限。"
             "需要未加载工具时可用 capabilityQuery 读取定义，也可提交结构化 calls 由后端展开所选定义后继续。"
             "requiredTools 和 currentStateEvidenceTool 非空时，先取得对应的新回执。历史画面只证明当时；"
             "需要当前观察时选择对应感知工具，在 selection 中明确 targetDomain、freshness。"

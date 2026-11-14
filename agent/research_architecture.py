@@ -29,7 +29,7 @@ from .fingerprints import runtime_fingerprint
 
 ResearchPolicy = Literal["required", "allowed", "forbidden"]
 
-WEB_RESEARCH_TOOLS = ("web_search", "read_web_page")
+WEB_RESEARCH_TOOLS = ("web_search", "read_web_page", "public_read")
 
 STABLE_FOUNDATIONAL_TERMS = frozenset({
     "AI", "API", "CPU", "GPU", "HTTP", "HTTPS", "JSON", "TTS", "EXE", "KEY",

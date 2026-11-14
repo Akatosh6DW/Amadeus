@@ -20,6 +20,12 @@ SPEECH_FIELDS = frozenset({
 
 def speech_plan(result: dict) -> dict:
     """Keep the finalized speech track, not cognition/history or arbitrary audio URLs."""
+    from .citation_display import project_qq_result
+
+    # The worker normally projects before this helper, but keeping the
+    # boundary here also protects direct owner/literal voice calls and draft
+    # replays that carry the bounded citation source projection.
+    result = project_qq_result(result, voice=True)
     units = result.get('speechUnits') or []
     return {'speechLanguage': result.get('speechLanguage'), 'speechUnits': [
         {key: value for key, value in unit.items() if key in SPEECH_FIELDS}
@@ -42,9 +48,14 @@ def _number(value, default=1.0):
 
 def synthesize(server, root: Path, draft_id: str, text: str, plan: dict) -> dict:
     """Called in the same scoped worker as chat; saves audio, never sends it."""
+    from .citation_display import project_citation_text
     from backend.chat.presentation import speech_language_profile
     settings = server.load_settings()
     language = speech_language_profile(settings)
+    text, _ = project_citation_text(
+        text,
+        (plan or {}).get('sources') if isinstance(plan, dict) else None,
+    )
     units = speech_plan(plan).get('speechUnits', [])
     if not units or plan.get('speechLanguage') != language['speechLanguage']:
         # A literal owner-authored send has no model speech track. Use the same

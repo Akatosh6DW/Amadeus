@@ -138,7 +138,7 @@ def upstream_finish_reason(data: Any) -> str:
     return ""
 
 
-_NATIVE_WEB_TOOL_NAMES = frozenset({"web_search", "read_web_page"})
+_NATIVE_WEB_TOOL_NAMES = frozenset({"web_search", "read_web_page", "public_read"})
 _NATIVE_SELECTION_FIELDS = ("toolAuthorization", "targetDomain")
 
 
@@ -260,6 +260,13 @@ def _native_web_tool_container(
                 raise UpstreamProtocolError(
                     f"upstream tool {name} requires a non-empty {required_argument}"
                 )
+        elif name == "public_read":
+            for required_argument in ("source", "operation"):
+                required_value = arguments.get(required_argument)
+                if not isinstance(required_value, str) or not required_value.strip():
+                    raise UpstreamProtocolError(
+                        f"upstream tool {name} requires a non-empty {required_argument}"
+                    )
 
         call: dict[str, Any] = {"name": name, "args": arguments}
         native_id = raw_call.get("id")

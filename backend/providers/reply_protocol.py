@@ -59,7 +59,32 @@ PROTOCOL_FIELDS = frozenset({
     "toolRequests",
     "scheduleIntent",
     "sources",
+    # Optional QQ owner delivery metadata.  It is protocol metadata, not
+    # visible reply text, and is accepted only after enum normalization.
+    "qqReplyAudience",
 })
+
+QQ_REPLY_AUDIENCES = frozenset({"source", "private"})
+
+
+def normalize_qq_reply_audience(value: Any) -> str:
+    """Return the bounded QQ delivery audience or an empty value.
+
+    This is deliberately a two-value enum.  In particular, arbitrary target
+    strings must never be allowed to cross the reply boundary as recipients.
+    """
+
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in QQ_REPLY_AUDIENCES else ""
+
+
+def merge_qq_reply_audiences(*values: Any) -> str:
+    """Retained private content keeps a combined/repaired reply private."""
+
+    audiences = {normalize_qq_reply_audience(value) for value in values}
+    if "private" in audiences:
+        return "private"
+    return "source" if "source" in audiences else ""
 
 _MAX_UNWRAP_DEPTH = 3
 
@@ -208,6 +233,11 @@ def unwrap_reply_envelope(value: Mapping[str, Any], *, max_depth: int = _MAX_UNW
         if nested is None or nested == current:
             break
         current = {**current, **dict(nested)}
+    audience = normalize_qq_reply_audience(current.get("qqReplyAudience"))
+    if audience:
+        current["qqReplyAudience"] = audience
+    elif "qqReplyAudience" in current:
+        current.pop("qqReplyAudience", None)
     return current
 
 
@@ -296,6 +326,7 @@ def looks_like_truncated_reply_envelope(text: Any) -> bool:
 
 
 __all__ = [
+    "QQ_REPLY_AUDIENCES",
     "PROTOCOL_FIELDS",
     "VISIBLE_REPLY_FIELDS",
     "is_reply_envelope",
@@ -304,6 +335,8 @@ __all__ = [
     "looks_like_truncated_reply_envelope",
     "parse_json_document",
     "parse_json_mapping",
+    "normalize_qq_reply_audience",
+    "merge_qq_reply_audiences",
     "unwrap_reply_envelope",
     "visible_reply",
 ]

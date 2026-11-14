@@ -26,6 +26,27 @@ class ProactiveGenerator:
         self.dialogue_style = dialogue_style
         self.write_log = write_log
 
+    def _read_companion_prompt(self, body: dict[str, Any]) -> str:
+        """Use the same host-approved voice/continuity projection when wired."""
+
+        user_message = str(body.get("userMessage") or "")
+        prompt = self.persona.read_companion_prompt(
+            user_message,
+            cognitive_body=body,
+        )
+        if prompt:
+            return prompt
+        callback = getattr(self.context, "companion_prompt", None)
+        if callback is None:
+            return ""
+        try:
+            value = callback(user_message, cognitive_body=body)
+        except TypeError:
+            # Keep a small compatibility bridge for a host callback that only
+            # accepts the opaque body.  The callback still owns scope policy.
+            value = callback(body)
+        return str(value or "").strip()
+
     def generate(self, prepared: PreparedProactiveTurn) -> dict[str, Any]:
         body = prepared.body
         context = prepared.context
@@ -60,14 +81,26 @@ class ProactiveGenerator:
                     )
                     + f"\n未通过候选：{duplicate_candidate[:500]}"
                 )
+            companion_prompt = self._read_companion_prompt(body)
+            if companion_prompt:
+                persona_messages = [
+                    {"role": "system", "content": companion_prompt},
+                    # Preserve the proactive disclosure boundary while the
+                    # companion callback supplies the shared character voice.
+                    {"role": "system", "content": self.persona.read_proactive_persona_prompt()},
+                ]
+            else:
+                persona_messages = [
+                    {"role": "system", "content": self.persona.read_proactive_persona_prompt()},
+                    {"role": "system", "content": self.dialogue_style()},
+                    {"role": "system", "content": self.context.relationship_context_prompt(self.context.read_relationship_state())},
+                ]
             payload: dict[str, Any] = {
                 "model": settings["apiModel"],
                 "temperature": 0.78 if attempt == 0 else 0.9,
                 "max_tokens": 520,
                 "messages": [
-                    {"role": "system", "content": self.persona.read_proactive_persona_prompt()},
-                    {"role": "system", "content": self.dialogue_style()},
-                    {"role": "system", "content": self.context.relationship_context_prompt(self.context.read_relationship_state())},
+                    *persona_messages,
                     {"role": "system", "content": generation_rule + retry_rule},
                     {"role": "user", "content": json.dumps(prompt_input, ensure_ascii=False)},
                 ],

@@ -8,14 +8,15 @@ from dataclasses import dataclass
 from typing import Any, Callable
 import json
 from agent.persona_context import PersonaContextSnapshot
-from agent.dialogue_architecture import DialogueValidation, TurnPolicy, policy_prompt, validate_character_reply
+from agent.dialogue_architecture import DialogueValidation, TurnPolicy, validate_character_reply
 from backend.chat.completion import reply_integrity_issues
 from backend.attachments.delivery import preserve_attachment_delivery
 from backend.context.reference import contextual_reference_prompt
 from backend.context.tool_evidence import tool_context_prompt
 from backend.providers.errors import UpstreamProtocolError
+from backend.providers.reply_protocol import merge_qq_reply_audiences
 from .response_rules import local_empty_reply
-from backend.context.reply_layers import reply_layer_messages, independent_persona
+from backend.context.reply_layers import reply_layer_messages, independent_persona, reply_policy_prompt
 
 @dataclass(frozen=True)
 class ReplyRepairPorts:
@@ -32,6 +33,7 @@ class ReplyRepairPorts:
     natural_style: Callable[[], str]
     emotion_rule: Callable[[], str]
     forbidden_phrases: Callable[[], Any]
+    alignment_reason: Callable[..., str] | None = None
 
 class ReplyRepairs:
     def __init__(self, ports: ReplyRepairPorts) -> None:
@@ -68,14 +70,21 @@ class ReplyRepairs:
         spoken = str(result.get("spokenTextJa") or "").strip()
         missing_fields: list[str] = []
         invalid_fields: list[str] = []
+        alignment_reason = ""
         if not spoken or result.get("spokenTextJaMissingFromModel"):
             missing_fields.append("spokenTextJa")
+            alignment_reason = "missing_model_speech" if result.get("spokenTextJaMissingFromModel") else "empty_speech"
         else:
             spoken_probe = dict(result)
             spoken_probe["speechSegmentCountMissingFromModel"] = False
             if self.ports.should_align(settings, spoken_probe,
                                       **({'persona_snapshot': persona_snapshot} if persona_snapshot is not None else {})):
                 invalid_fields.append("spokenTextJa")
+                alignment_reason = (
+                    self.ports.alignment_reason(settings, spoken_probe,
+                        **({'persona_snapshot': persona_snapshot} if persona_snapshot is not None else {}))
+                    if self.ports.alignment_reason is not None else "alignment_recommended"
+                )
         if result.get("emotionMissingFromModel"):
             missing_fields.append("emotion")
         model_units = result.get("_modelSpeechUnits")
@@ -86,6 +95,7 @@ class ReplyRepairs:
             "structureValid": not bool(result.get("structuredOutputInvalid")),
             "missingFields": list(dict.fromkeys(missing_fields)),
             "invalidFields": list(dict.fromkeys(invalid_fields)),
+            "spokenAlignmentReason": alignment_reason,
             "requiresFullRetry": not content_valid,
             "requiresFieldRepair": bool(
                 content_valid
@@ -187,7 +197,7 @@ class ReplyRepairs:
                     if persona_snapshot is not None and persona_snapshot.uses_hybrid_provider_context
                     else deep_persona_prompt
                 )}]),
-                {"role": "system", "content": policy_prompt(turn_policy)},
+                {"role": "system", "content": reply_policy_prompt(turn_policy, persona_snapshot)},
                 *([] if persona_snapshot is not None and independent_persona(persona_snapshot) else
                   [{"role": "system", "content": self.ports.relationship_prompt(relationship_state)}]),
                 *([{
@@ -223,6 +233,13 @@ class ReplyRepairs:
             purpose="dialogue_style_repair",
         )
         repaired = self.ports.normalize_reply(content, settings=settings)
+        previous_qq_reply_audience = merge_qq_reply_audiences(
+            result.get("qqReplyAudience"), repaired.get("qqReplyAudience")
+        )
+        if previous_qq_reply_audience:
+            # A wording-only repair must retain either version's private
+            # choice while carrying the same answer content.
+            repaired["qqReplyAudience"] = previous_qq_reply_audience
         if isinstance(preserved_file_outputs, list):
             repaired["_fileOutputs"] = preserved_file_outputs
         preserve_attachment_delivery(result, repaired)

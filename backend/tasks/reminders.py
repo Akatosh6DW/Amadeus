@@ -13,11 +13,45 @@ from todo_store import (prepare_all_day_reminders, claim_due_reminder,
 from backend.chat.reply_fields import SPOKEN_JA_NO_EMOJI_RULE
 
 
+def prepare_scheduled_speech(result: dict[str, Any], settings: dict[str, Any], *,
+                             align: Callable[..., dict[str, Any]],
+                             write_log: Callable[..., None], request_id: str,
+                             persona_snapshot: Any = None) -> dict[str, Any]:
+    """Use normal Japanese alignment without giving it ownership of task text."""
+    if not settings.get('voiceEnabled', True) or result.get('emptyReply'):
+        return result
+    canonical_reply = result.get('reply')
+    try:
+        prepared = (align(settings, dict(result), persona_snapshot=persona_snapshot)
+                    if persona_snapshot is not None else align(settings, dict(result)))
+        if not isinstance(prepared, dict):
+            raise TypeError('speech alignment returned no result')
+    except Exception as error:
+        prepared = dict(result)
+        prepared['spokenTextJa'] = ''
+        prepared['speechUnavailableReason'] = 'spoken_alignment_failed'
+        prepared['ttsUnavailableReason'] = 'spoken_alignment_failed'
+        write_log('scheduled_speech_alignment_failed', requestId=request_id,
+                  errorType=type(error).__name__, error=str(error)[:500])
+    prepared['reply'] = canonical_reply
+    if str(prepared.get('speechLanguage') or settings.get('speechLanguage') or 'ja-JP') == 'ja-JP':
+        prepared['textOnlyDelivery'] = not bool(str(prepared.get('spokenTextJa') or '').strip())
+    write_log('scheduled_speech_prepared', requestId=request_id,
+              textOnlyDelivery=bool(prepared.get('textOnlyDelivery')),
+              speechValidation=prepared.get('speechValidation') or {},
+              repaired=bool(prepared.get('spokenTextJaRepaired')))
+    return prepared
+
+
 def scheduled_delivery_status(result: dict[str, Any], model_status: str) -> str:
-    """An earlier model success cannot certify a later local fallback reply."""
-    if (result.get("emptyReply") or result.get("source") == "local-empty-recovery"
-            or result.get("fullReplyRepairSucceeded") is False
-            or (result.get("speechUnitContract") or {}).get("allUnitsComplete") is False):
+    """Keep task completion separate from optional speech presentation.
+
+    A missing audio track must not discard a completed task's canonical text.
+    A replacement/empty answer still cannot inherit the original outcome.
+    """
+    if (not str(result.get("reply") or "").strip()
+            or result.get("emptyReply") or result.get("source") == "local-empty-recovery"
+            or result.get("fullReplyRepairSucceeded") is False):
         return "failed"
     if result.get("repairedEmptyReply"):
         # The replacement was generated after the original outcome validation.
@@ -42,6 +76,14 @@ def _ensure_scheduled_error(result: dict[str, Any], status: str) -> dict[str, An
         return result
     existing = result.get('scheduledExecutionError')
     if isinstance(existing, dict) and str(existing.get('message') or '').strip():
+        return result
+    if (not str(result.get('reply') or '').strip() or result.get('emptyReply')
+            or result.get('source') == 'local-empty-recovery'
+            or result.get('fullReplyRepairSucceeded') is False):
+        result['scheduledExecutionError'] = {
+            'type': 'scheduled_reply_unavailable',
+            'message': 'The task result has no usable original reply.',
+        }
         return result
     detail = result.get('error') or result.get('failureReason') or 'model reported execution failure'
     result['scheduledExecutionError'] = {

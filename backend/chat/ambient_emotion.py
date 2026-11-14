@@ -3,9 +3,12 @@
 它只返回表情控制数据，不生成聊天台词、不改变对话状态；失败时使用既有本地规则。
 """
 from __future__ import annotations
-from typing import Any, Callable
+from concurrent.futures import Future
+import hashlib
 import json
 import re
+import threading
+from typing import Any, Callable
 from backend.common.values import clamp_float, clamp_int
 from backend.chat.parsing import parse_json_object
 from backend.chat.presentation import ALLOWED_EMOTIONS, ALLOWED_GESTURES, EMOTION_ALIASES, GESTURE_ALIASES
@@ -59,36 +62,80 @@ class AmbientEmotion:
         self.settings = settings
         self.configured = configured
         self.send_chat = send_chat
+        # Model answers by exact input. The page asks on a timer while idle;
+        # an unchanged conversation and emotion must not buy the same answer
+        # again. Only model results are kept, never the local fallback.
+        self._answers: dict[str, dict[str, Any]] = {}
+        # Requests are shared per input key. A per-key future keeps unrelated
+        # contexts independent while all same-key callers await one provider
+        # request.
+        self._inflight: dict[str, Future] = {}
+        self._answers_lock = threading.Lock()
 
     def generate_context_emotion_token(self, body: dict[str, Any]) -> dict[str, Any]:
         settings = self.settings()
         if not self.configured(settings):
             return local_emotion_token(body)
         messages = body.get("messages") if isinstance(body.get("messages"), list) else []
-        payload: dict[str, Any] = {
-            "model": settings["apiModel"],
-            "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": EMOTION_SELECTION_RULE},
-                {"role": "system", "content": (
-                    "你是 Amadeus 的空闲表情控制器。只输出 JSON，不输出解释。"
-                    "根据最近上下文判断此刻没有新发言时应呈现的 emotion token。"
-                    "如果上一段强情绪已经结束，尤其是 shy/flustered/affectionate，不要机械延续，优先回 neutral。"
-                    "允许字段：emotion, gesture, emotionIntensity, blushIntensity, eyeContact, gazeX, gazeY, tension, holdMs, fadeMs。"
-                    "holdMs 和 fadeMs 用毫秒；没有明确情绪时 emotion=neutral, gesture=idle, holdMs=0。"
-                )},
-                {"role": "user", "content": json.dumps({
-                    "currentEmotion": body.get("currentEmotion") or "neutral",
-                    "recentMessages": messages[-8:],
-                }, ensure_ascii=False)},
-            ],
-        }
-        if settings.get("useResponseFormat"):
-            payload["response_format"] = {"type": "json_object"}
-        if "deepseek.com" in settings["apiEndpoint"]:
-            payload["thinking"] = {"type": "disabled"}
+        answer_key = hashlib.sha256(json.dumps(
+            [settings.get("apiModel"), body.get("currentEmotion") or "neutral", messages[-8:]],
+            ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        with self._answers_lock:
+            cached = self._answers.get(answer_key)
+            if cached is not None:
+                return {**cached, "source": "api_cached"}
+            pending = self._inflight.get(answer_key)
+            owner = pending is None
+            if owner:
+                pending = Future()
+                self._inflight[answer_key] = pending
+
+        if not owner:
+            try:
+                token = pending.result()
+            except Exception:
+                token = None
+            if token is None:
+                return local_emotion_token(body)
+            return {**token, "source": "api_cached"}
+
+        token: dict[str, Any] | None = None
         try:
+            payload: dict[str, Any] = {
+                "model": settings["apiModel"],
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": EMOTION_SELECTION_RULE},
+                    {"role": "system", "content": (
+                        "你是 Amadeus 的空闲表情控制器。只输出 JSON，不输出解释。"
+                        "根据最近上下文判断此刻没有新发言时应呈现的 emotion token。"
+                        "如果上一段强情绪已经结束，尤其是 shy/flustered/affectionate，不要机械延续，优先回 neutral。"
+                        "允许字段：emotion, gesture, emotionIntensity, blushIntensity, eyeContact, gazeX, gazeY, tension, holdMs, fadeMs。"
+                        "holdMs 和 fadeMs 用毫秒；没有明确情绪时 emotion=neutral, gesture=idle, holdMs=0。"
+                    )},
+                    {"role": "user", "content": json.dumps({
+                        "currentEmotion": body.get("currentEmotion") or "neutral",
+                        "recentMessages": messages[-8:],
+                    }, ensure_ascii=False)},
+                ],
+            }
+            if settings.get("useResponseFormat"):
+                payload["response_format"] = {"type": "json_object"}
+            if "deepseek.com" in settings["apiEndpoint"]:
+                payload["thinking"] = {"type": "disabled"}
             content = self.send_chat(settings, payload, timeout=40, purpose="ambient_emotion")
-            return normalize_emotion_token(content, source="api")
+            token = normalize_emotion_token(content, source="api")
+            with self._answers_lock:
+                if len(self._answers) >= 64:
+                    self._answers.pop(next(iter(self._answers)))
+                self._answers[answer_key] = dict(token)
         except Exception:
-            return local_emotion_token(body)
+            token = None
+        finally:
+            # Always release all same-key waiters. Failed calls are removed
+            # without entering the answer cache so a later caller retries.
+            with self._answers_lock:
+                if self._inflight.get(answer_key) is pending:
+                    self._inflight.pop(answer_key, None)
+                    pending.set_result(dict(token) if token is not None else None)
+        return token if token is not None else local_emotion_token(body)

@@ -15,6 +15,8 @@ from backend.providers.errors import classify_provider_response_body
 from backend.providers.reply_protocol import (
     is_reply_envelope,
     looks_like_truncated_reply_envelope,
+    normalize_qq_reply_audience,
+    merge_qq_reply_audiences,
     parse_json_document,
     parse_json_mapping,
     unwrap_reply_envelope,
@@ -127,10 +129,15 @@ def _dialogue_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(value.get("payload") or {}) if isinstance(value.get("payload"), Mapping) else dict(value)
     if isinstance(value.get("payload"), Mapping):
         payload = {**value, **dict(value["payload"])}
+    outer_audience = normalize_qq_reply_audience(payload.get("qqReplyAudience"))
     if isinstance(payload.get("utterances"), list):
         utterances = [item for item in payload["utterances"] if isinstance(item, Mapping)]
         if utterances:
-            payload = dict(utterances[0])
+            first_utterance = dict(utterances[0])
+            payload = first_utterance
+            audience = merge_qq_reply_audiences(outer_audience, first_utterance.get("qqReplyAudience"))
+            if audience:
+                payload["qqReplyAudience"] = audience
     reply = str(
         payload.get("reply")
         or payload.get("textZh")

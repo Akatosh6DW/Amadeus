@@ -263,6 +263,25 @@ def read_todo(connection: sqlite3.Connection, task_id: str) -> dict[str, Any]:
     return _row_dict(row)
 
 
+def list_recently_closed_todos(
+    connection: sqlite3.Connection,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Read the latest completed/deleted rows for current-state projections."""
+
+    rows = connection.execute(
+        """
+        SELECT * FROM todo_items
+        WHERE status IN ('completed', 'deleted')
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (max(1, min(50, int(limit))),),
+    ).fetchall()
+    return [_row_dict(row) for row in rows]
+
+
 def verify_todo_state(task: Mapping[str, Any], expected: Mapping[str, Any], *, task_id: str) -> dict[str, Any]:
     """Compare a resolved requested state with a database read, not two commands."""
     mismatched = []
@@ -549,7 +568,18 @@ def match_active_todos_to_dialogue(
         bound = [by_id[task_id] for task_id in dict.fromkeys(referenced_ids) if task_id in by_id]
         if bound:
             if not strong_match:
-                ranked = [{**item, "matchType": "recent_task_reference"} for item in bound]
+                # The nearest assistant turn names these tasks, so they lead.
+                # The user may still be reporting on a different saved task
+                # ("我已经取完快递了" right after another reminder was set), so
+                # the rest of the bounded inventory stays visible behind them
+                # instead of being replaced; otherwise the model has no
+                # snapshot row to complete and can only claim it did (BUG-077).
+                bound_ids = {str(item.get("taskId") or "") for item in bound}
+                ranked = [
+                    *({**item, "matchType": "recent_task_reference"} for item in bound),
+                    *({**item, "matchType": "active_inventory"} for item in ranked
+                      if str(item.get("taskId") or "") not in bound_ids),
+                ]
                 source = "recent_task_reference"
             recent_dialogue = [{"role": "assistant", "content": str(message.get("content") or "")[:500]}]
         # Never silently bind an older topic past the nearest assistant turn.

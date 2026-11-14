@@ -93,6 +93,8 @@ def normalize_settings(
     raw = raw or {}
     settings = dict(defaults)
     settings.update(raw)
+    from integrations.qq.sticker_preferences import normalize_sticker_preferences
+    settings["stickerPreferences"] = normalize_sticker_preferences(settings.get("stickerPreferences"))
     available_voice_presets = load_voice_presets()
     requested_voice_preset = str(settings.get("gptSovitsModelPreset") or "").strip()
     if requested_voice_preset not in available_voice_presets:

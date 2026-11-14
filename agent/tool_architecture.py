@@ -12,6 +12,13 @@ from dataclasses import asdict, dataclass, field, replace
 import re
 from typing import Any, Literal, Mapping, Sequence
 from agent.tool_arguments import FILE_TOOL_INPUT_SCHEMAS, IMAGE_TOOL_INPUT_SCHEMAS
+from integrations.qq.media_library import MAX_REPLY_IMAGES
+
+# All read-only public evidence tools share the same execution-policy bucket.
+# Keep this identity in one registry-adjacent place so capability, routing and
+# no_web/task restrictions cannot silently drift when another public reader is
+# added.
+WEB_TOOL_NAMES = frozenset({"web_search", "read_web_page", "public_read"})
 
 PerceptionTarget = Literal[
     "none",
@@ -909,6 +916,25 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
         estimated_latency_ms=2200, freshness_semantics="retrieved_at",
     ),
     ToolDef(
+        "public_read", "public_research",
+        "只读访问公开 Bluesky、Bangumi、arXiv 或 RSS/Atom 内容并返回摘要与来源",
+        "permissionWebSearch",
+        aliases=("Bluesky", "公开帖子", "帖子串", "账号动态", "Bangumi", "番组", "条目", "arXiv", "论文摘要", "RSS", "Atom"),
+        input_schema={
+            "source": "bluesky|bangumi|arxiv|rss",
+            "operation": "Bluesky: search|posts|account|thread; Bangumi: search|subject|detail; arXiv: search|abstract|detail; RSS/Atom: feed",
+            "query": "optional search keywords for Bluesky, Bangumi or arXiv",
+            "actor": "optional Bluesky handle or DID for posts",
+            "uri": "optional Bluesky at:// post URI for a thread",
+            "id": "optional Bangumi subject ID or arXiv ID/URL",
+            "url": "RSS/Atom feed URL",
+            "limit": "optional integer 1..20",
+            "cursor": "optional Bluesky continuation cursor",
+        },
+        concurrency_safe=True, estimated_latency_ms=1800,
+        freshness_semantics="provider_read_at",
+    ),
+    ToolDef(
         "open_browser", "external_action",
         "在系统默认浏览器打开用户明确指定或确认的公网目标",
         "permissionOpenBrowser", side_effect=True,
@@ -975,7 +1001,7 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
     ToolDef(
         "todo_manage", "local_productivity",
         "创建、修改、完成、暂停、恢复或推迟本机任务；支持延迟触发，到点提醒或用 onDue 交给 Amadeus 执行",
-        discovery_summary='日程：title 标题，dueAt ISO 时间或 timeSpec。纯提醒 onDue 留空、completionMode=delivery；待办 manual；到点做事才填 onDue 完整要求。QQ 提醒本人 deliveryTarget:{channel:"qq",recipient:"owner"}，宿主冻结账号和收件人；省略目标则本地提醒',
+        discovery_summary='日程：title 标题，dueAt ISO 时间或 timeSpec。timeSpec 为对象：{kind:"calendar",dayOffset:1,clock:"09:00"}、{kind:"next_weekday",weekday:1,clock}、{kind:"next_clock",clock}、{kind:"after",seconds:600}。纯提醒 onDue 留空、completionMode=delivery；待办 manual；到点做事才填 onDue 完整要求。QQ 提醒本人 deliveryTarget:{channel:"qq",recipient:"owner"}，宿主冻结账号和收件人；省略目标则本地提醒',
         side_effect=True,
         aliases=("添加待办", "修改任务", "完成任务", "暂停任务", "恢复任务", "删除任务", "推迟提醒"),
         input_schema={
@@ -1108,14 +1134,14 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
     ),
     ToolDef(
         "qq_media", "qq_account",
-        "检索当前 QQ 账号已导入的图片图库；主对话只允许 search，QQ 子对话可在当前回复中 attach 最多两张由真实 assetId 命中的图片。图库查询按账号隔离，不能猜 assetId、读取别的账号或直接发送；attach 只选择本轮待发送图片，最终是否发送由 QQ 网关审核和回执决定。",
+        f"检索当前 QQ 账号已导入的图片图库；主对话只允许 search，QQ 子对话可在当前回复中 attach 最多{MAX_REPLY_IMAGES}张由真实 assetId 命中的图片。图库查询按账号隔离，不能猜 assetId、读取别的账号或直接发送；attach 只选择本轮待发送图片，最终是否发送由 QQ 网关审核和回执决定。",
         "permissionQqControl", aliases=("QQ图片", "图片图库", "发送配图"),
         input_schema={
             "action": "search|attach; main desktop only search, QQ worker attach only",
             "expectedAccount": "optional; the host binds the current verified QQ account; explicit mismatch is rejected",
             "query": "search only: name, tag or asset ID text",
             "limit": "search only: integer 1..20",
-            "imageIds": "attach only: list of 1..2 exact asset IDs returned by search",
+            "imageIds": f"attach only: list of 1..{MAX_REPLY_IMAGES} exact asset IDs returned by search",
         },
         concurrency_safe=True, estimated_latency_ms=120,
         freshness_semantics="local_media_index_read_at",
@@ -1129,12 +1155,13 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
             "instruction":"delegate only: the owner's specific task, facts and reply requirements for this recipient, at most 4000 chars. Pass the intent, not a desktop-written final reply. Never copy unrelated private desktop chat. The child reads this recipient's history and keeps this instruction in its own context",
             "speechLanguage":"optional zh-CN|ja-JP for delegate/send/draft only: one request language override explicitly requested by the owner; does not save policy or enable voice/change frequency. Omit to use effective QQ language. Repeating a request cannot change its language. For a lasting language switch use configure policy.speech_language and verify the returned policy; existing drafts keep their bound language",
             "text":"plain text for send/draft; may be empty when attachmentIds or imageIds are present. To forward an uploaded image, use send with its exact attachmentIds, not delegate with an image description. approve must match the exact previously shown draft text",
-            "imageIds":"send/draft/approve: exact list of up to 2 asset IDs returned by qq_media search/attach; approve must repeat the IDs bound to the shown draft; gateway converts them to qq_image segments",
+            "replyParts":"optional send/draft array of complete semantic message units covering text in order; keep related explanation together, do not cut on commas or character counts. Each message waits for its own typing duration. Omit for one complete message",
+            "imageIds":f"send/draft/approve: exact list of up to {MAX_REPLY_IMAGES} asset IDs returned by qq_media search/attach; approve must repeat the IDs bound to the shown draft; gateway converts them to qq_image segments",
             "attachmentIds":"send/draft only: exact image attachment IDs from the current main chat; backend imports these into the current QQ account library before composing the draft; never guess from recency",
             "expectedAccount":"optional for ordinary send/draft; with attachmentIds the host binds the current verified account and rejects an explicit mismatch before importing",
             "draftId":"approve only: exact draftId/id from a real tool result, and include its matching targetType, targetId and full text; only after owner explicitly confirms that concrete draft",
             "reason":"explanation to the owner; for delegate this defaults to instruction if omitted",
-            "policy":"configure with targetType+targetId: only mode(auto|review), reply_format(text|voice), voice_reply_percent(0–100 integer; inherited by default), speech_language(inherit|zh-CN|ja-JP; null inherits global; inherit explicitly follows desktop), reply_identity(assistant|owner), reply_style(game=Kurisu personality|tieba=Sunba corpus personality|kangba=最强攻击性语料 (Kangba); same identity and permissions), reply_instructions(max 2000 chars), reply_delay_seconds(0–30), reply_delay_mode(fixed|length; length adds non-whitespace chars/6 seconds, jittered and capped at 30 seconds after generation), reply_bubble_chars(0–240 integer; controls automatic reply bubble size, default60), minimum_interval_seconds(1–3600 integer), history_messages(0–30), compact_reply(boolean), group_triggers(array: mention | keyword | reply | all; OR matching, all overrides others; groups only), group_keywords(array of up to 30 literal phrases, each 1–80 chars; required with keyword mode), set a field to null to inherit global defaults. reply_format=voice must be explicitly enabled by the owner. voice_reply_percent sets the chance of voice for each reply (default 100 for existing voice mode; 0 always text, 100 always voice); text mode always sends text. The gateway samples once before generation and keeps that choice for retries. An authenticated owner request, whether from desktop or the QQ owner-control route, authorizes changing this policy. Ordinary QQ contacts cannot change it, and the model must not change it without owner intent. In a verified QQ owner turn, reply-to-me targets private:replyTo, not desktop speech settings. A saved owner ID can be configured without adding it to the ordinary auto-reply allowlist. voice reuses the current desktop voice and synthesis settings; speech_language selects QQ speech language. Global inherit follows desktop, target null/omission follows the global QQ language, target inherit follows desktop directly. zh-CN speaks Chinese; ja-JP speaks Japanese. Owner requests to switch QQ speech language require an actual configure call; never merely promise to switch. This does not enable voice automatically: if the owner also explicitly requests voice mode, configure reply_format=voice. The selected language is bound before generation and retained by that draft and its retries. This changes only that saved conversation; global pause still wins. configure without target: account_role(assistant|owner; assistant is Amadeus's own QQ account, owner is the human owner's personal account and does not change reply_identity), qzone_enabled(boolean), qzone_allow_write(boolean, likes/comments), qzone_allow_publish(boolean, also needs write), qzone_autonomous(boolean, separate periodic autonomous worker), qzone_interval_minutes(integer 5–10080, default60), qzone_instructions(max2000chars), owner_ids(array of exact QQ IDs selected by the authenticated owner request; the host may resolve and freeze a name to an ID from a verified identity context, but a directory lookup alone never grants configuration authority, and the owner sentence need not repeat a number; separate from the assistant account), owner_control_enabled(boolean; allow these owners to control the actual local assistant with its existing permissions), owner_developer_mode(boolean; allow already verified owners to prefix /dev for direct desktop-equivalent task routing; no new permissions), owner_control_in_groups(boolean; also allow the owner to issue commands by exact @ in authorized groups; public lookups use the isolated group context; verified QQ control status can return to the group; private/local content stays in owner private chat), max_sends_per_hour(nonnegative integer; 0 means unlimited, account-wide total across all contacts), global defaults mode(paused|review|auto), reply_format(text|voice; default text, voice only after the owner explicitly enables voice mode), voice_reply_percent(0–100 integer; default 100; applies only in voice mode), speech_language(inherit|zh-CN|ja-JP; default inherit follows desktop), reply_identity(assistant: speak as Amadeus herself (助手 is her nickname, not a separate assistant of Amadeus), owner: first-person ghostwriting), reply_style(auto|game|tieba|kangba; auto means Kurisu/game in private and Tieba corpus/tieba in groups; preserves identity and permissions), reply_instructions, private_ids/group_ids, muted_private_ids/muted_group_ids, background_enabled, history_messages(0–30; 0 disables private automatic history reads, group triggers still read 10), compact_reply, reply_delay_seconds(0–30), reply_delay_mode(fixed|length; length adds non-whitespace chars/6 seconds, jittered and capped at 30 seconds after generation), reply_bubble_chars(0–240 integer; default60), group_triggers(default [mention]), group_keywords(default []). reply means quoting a message sent by the account, not every ordinary reply. Omit untouched fields; do not edit defaults when owner names a particular contact",
+            "policy":"configure with targetType+targetId: only sticker_preferences(object mapping exact gallery series names to integer percentages, sum<=100; null inherits global, empty object disables proactive stickers), mode(auto|review), reply_format(text|voice), voice_reply_percent(0–100 integer; inherited by default), speech_language(inherit|zh-CN|ja-JP; null inherits global; inherit explicitly follows desktop), reply_identity(assistant|owner), reply_style(game=Kurisu personality|tieba=Sunba corpus personality|kangba=最强攻击性语料 (Kangba); same identity and permissions), reply_instructions(max 2000 chars), reply_delay_seconds(0–30), reply_delay_mode(fixed|length; default length adds each individual message's non-whitespace chars/6 seconds, jittered and capped at 30 seconds per message after generation; wait then send each message before starting the next wait), reply_bubble_chars(legacy integer field: 0 merges the reply into one message; any positive value enables model-chosen semantic units, default60; no character slicing. Use reply_instructions for a shorter conversational style), minimum_interval_seconds(1–3600 integer), history_messages(0–30), compact_reply(boolean), group_triggers(array: mention | keyword | reply | all; OR matching, all overrides others; groups only), group_keywords(array of up to 30 literal phrases, each 1–80 chars; required with keyword mode), set a field to null to inherit global defaults. reply_format=voice must be explicitly enabled by the owner. voice_reply_percent sets the chance of voice for each reply (default 100 for existing voice mode; 0 always text, 100 always voice); text mode always sends text. The gateway samples once before generation and keeps that choice for retries. An authenticated owner request, whether from desktop or the QQ owner-control route, authorizes changing this policy. Ordinary QQ contacts cannot change it, and the model must not change it without owner intent. In a verified QQ owner turn, reply-to-me targets private:replyTo, not desktop speech settings. A saved owner ID can be configured without adding it to the ordinary auto-reply allowlist. voice reuses the current desktop voice and synthesis settings; speech_language selects QQ speech language. Global inherit follows desktop, target null/omission follows the global QQ language, target inherit follows desktop directly. zh-CN speaks Chinese; ja-JP speaks Japanese. Owner requests to switch QQ speech language require an actual configure call; never merely promise to switch. This does not enable voice automatically: if the owner also explicitly requests voice mode, configure reply_format=voice. The selected language is bound before generation and retained by that draft and its retries. This changes only that saved conversation; global pause still wins. configure without target: account_role(assistant|owner; assistant is Amadeus's own QQ account, owner is the human owner's personal account and does not change reply_identity), qzone_enabled(boolean), qzone_allow_write(boolean, likes/comments), qzone_allow_publish(boolean, also needs write), qzone_autonomous(boolean, separate periodic autonomous worker), qzone_interval_minutes(integer 5–10080, default60), qzone_instructions(max2000chars), owner_ids(array of exact QQ IDs selected by the authenticated owner request; the host may resolve and freeze a name to an ID from a verified identity context, but a directory lookup alone never grants configuration authority, and the owner sentence need not repeat a number; separate from the assistant account), owner_control_enabled(boolean; allow these owners to control the actual local assistant with its existing permissions), owner_developer_mode(boolean; allow already verified owners to prefix /dev for direct desktop-equivalent task routing; no new permissions), owner_control_in_groups(boolean; also allow the owner to issue commands by exact @ in authorized groups; public lookups use the isolated group context; verified QQ control status can return to the group; private/local content stays in owner private chat), max_sends_per_hour(nonnegative integer; 0 means unlimited, account-wide total across all contacts), global defaults sticker_preferences(null=automatic, object mapping gallery series to 0..100 integer percentages of ALL replies, sum<=100; leftover=no proactive sticker; explicit image requests still allowed), mode(paused|review|auto), reply_format(text|voice; default text, voice only after the owner explicitly enables voice mode), voice_reply_percent(0–100 integer; default 100; applies only in voice mode), speech_language(inherit|zh-CN|ja-JP; default inherit follows desktop), reply_identity(assistant: speak as Amadeus herself (助手 is her nickname, not a separate assistant of Amadeus), owner: first-person ghostwriting), reply_style(auto|game|tieba|kangba; auto means Kurisu/game in private and Tieba corpus/tieba in groups; preserves identity and permissions), reply_instructions, private_ids/group_ids, muted_private_ids/muted_group_ids, background_enabled, reply_on_login(boolean; conversation only with targetType+targetId; default off, null restores off; check recent missed messages once on login/reconnect), history_messages(0–30; 0 disables private automatic history reads, group triggers still read 10), compact_reply, reply_delay_seconds(0–30), reply_delay_mode(fixed|length; default length adds each individual message's non-whitespace chars/6 seconds, jittered and capped at 30 seconds per message after generation; wait then send each message before starting the next wait), reply_bubble_chars(legacy integer: 0 merges text; positive enables semantic units, default60), group_triggers(default [mention]), group_keywords(default []). reply means quoting a message sent by the account, not every ordinary reply. Omit untouched fields; do not edit defaults when owner names a particular contact",
             "expectedRevision":"configure: required; copy policyRevision from qq_status (or use complete expectedPolicy). delegate/send/approve: optional optimistic check; the adapter always reads current policy and atomically checks it, and rejects a supplied stale revision. pause/resume/mute/unmute/stop do not use this field",
             "expectedPolicy":"configure only: legacy alternative to expectedRevision, complete policy from qq_status; never invent account/contact IDs",
             "commitIntent":"optional; host-authenticated owner request defaults to true; explicit false rejects the mutation"},
@@ -1172,6 +1199,13 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry((
         input_schema=FILE_TOOL_INPUT_SCHEMAS["list_directory"],
         concurrency_safe=True, estimated_latency_ms=30,
         freshness_semantics="filesystem_read_at",
+    ),
+    ToolDef(
+        "life_journal", "local_information",
+        "读取自己的自主生活日记、近期阅读记录、持续兴趣和动态草稿/发布状态。回答最近在看什么、做什么时以此为准；只供桌面主人对话，不修改设置或发布内容。",
+        aliases=("自主生活", "生活日记", "最近在看什么"),
+        input_schema={}, concurrency_safe=True, estimated_latency_ms=10,
+        freshness_semantics="sqlite_read_at",
     ),
     ToolDef(
         "read_text_file", "workspace_file",
@@ -1685,7 +1719,7 @@ def assemble_tool_pool(
         # Web schemas must be visible whenever permission allows them.  Put
         # them before heuristic candidates so the pool limit cannot silently
         # remove the model's ability to choose research.
-        *(("web_search", "read_web_page") if research_policy != "forbidden" else ()),
+        *(("web_search", "read_web_page", "public_read") if research_policy != "forbidden" else ()),
         # Capabilities selected for the actual task must survive the pool
         # limit; generic conveniences below must not displace them.
         *extra_tool_ids,

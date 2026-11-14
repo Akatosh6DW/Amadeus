@@ -180,7 +180,7 @@
 
     function appendGalleryImages(bubble, media) {
       if (!Array.isArray(media)) return;
-      for (const item of media.slice(0, 2)) {
+      for (const item of media.slice(0, 10)) {
         // Only an explicit, server-verified local gallery attachment is
         // renderable.  Markdown in message text is always textContent and
         // never triggers an external image fetch.

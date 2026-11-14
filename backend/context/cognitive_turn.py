@@ -16,7 +16,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from agent.cognitive_brain import cognitive_prompt
 from agent.engineering_contracts import LOADED_KEY, select_contracts
 from agent.cognitive_context import effective_context_controls
-from agent.cognitive_runtime import compact_packet
+from agent.cognitive_runtime import _share_historical_instruction, clear_older_web_evidence, compact_packet
 from agent.cognitive_state import stage_revision as stage_cognitive_revision
 from agent.cognitive_tools import project_tool_plan_receipts
 from agent.dialogue_waiting import (
@@ -148,6 +148,15 @@ def cognitive_turn_prompt(
         for item in recent[-8:]
         if isinstance(item, Mapping)
     ]
+    # Pages read two or more turns ago leave only a source record; the turn
+    # just before this one keeps its excerpts for direct follow-up questions.
+    previous_turn_ids = [item["turnId"] for item in packet["traceCandidates"][-1:] if item["turnId"]]
+    packet["evidence"] = _share_historical_instruction(clear_older_web_evidence(
+        list(packet.get("evidence") or []),
+        keep_turn_ids=[str(snapshot.get("currentTurnId") or ""), *previous_turn_ids],
+        protected_refs=[ref for ref, entry in (body.get("_cognitiveEvidence") or {}).items()
+                        if isinstance(entry, Mapping) and entry.get("selectedForCurrentTurn")],
+    ))
     known_turns = {item["turnId"] for item in packet["traceCandidates"]}
     packet["traceCandidates"].extend(
         {
@@ -172,7 +181,9 @@ def cognitive_turn_prompt(
         body['_engineeringPromptMode'] = 'compact' if compact_engineering_enabled() else 'legacy'
     prompt = cognitive_prompt(packet, analysis_only=analysis_only, contract_ids=contracts)
     from agent.engineering_contracts import tool_contract_prompt
-    prompt += tool_contract_prompt(body)
+    prompt += tool_contract_prompt(
+        body, preloaded_available=not analysis_only and not body.get("_cognitiveRepairRoute"),
+    )
     # The normal request already owns the schedule module. Its time anchor
     # remains data in this packet; do not insert a second instruction manual.
     if isinstance(body, dict):

@@ -14,6 +14,7 @@ import inspect
 import random
 import re
 import secrets
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -30,13 +31,17 @@ from .reply_segments import (
     DEFAULT_REPLY_BUBBLE_CHARS,
     MAX_OWNER_CONTROL_BUBBLES,
     MAX_REPLY_BUBBLES,
-    split_reply,
+    normalize_reply_parts,
 )
+from .citation_display import citation_source_parts, project_qq_result
 from .history import read_history
 from .media import collect_images, image_segments
+from .incoming_voice import VoiceInputError, VoiceTranscriber, record_segments, transcribe_event
+from .media_library import MAX_REPLY_IMAGES
 from .contacts import clean_contacts, read_contacts, write_contacts
 from .identity_gateway import QQIdentities
 from .references import resolve_reply, message_context
+from .login_catchup import LoginCheckpoints, enabled_conversations, pending_messages
 from .context_reset import (ContextResetStore, archive_profiles, restore_profiles,
                              scope_key as reset_scope_key, validate_scope)
 from .owner_control import (OwnerControlClient, OwnerControlUnavailable, OwnerControlBackendFailure,
@@ -63,7 +68,13 @@ class _DeliveryStopped(Exception):
 
 def _delivery_parts(message: list[dict], max_chars: int, *, compact: bool = True,
                     max_parts: int = MAX_REPLY_BUBBLES) -> list[list[dict]]:
-    """Split one plain text draft into immutable OneBot message payloads."""
+    """Render one plain text draft using only explicit paragraph boundaries.
+
+    Zero ``max_chars`` keeps the saved single-message preference; positive
+    values enable semantic splitting without imposing a character limit.
+    ``max_parts`` remains for API compatibility.  Without a reliable semantic
+    array, only explicit blank paragraphs supply boundaries.
+    """
     if not isinstance(message, list) or not message:
         return [message]
     result = []
@@ -73,14 +84,9 @@ def _delivery_parts(message: list[dict], max_chars: int, *, compact: bool = True
         if not text_buffer:
             return
         text = ''.join(text_buffer)
-        # Keep each short message a valid OneBot message (a list of segments)
-        # and apply the same compact-reply rendering at the actual bubble
-        # boundary.  Applying it here preserves complete sentence boundaries
-        # while removing the model's trailing punctuation/newlines per bubble.
-        stripped = text.strip()
-        parts = ([stripped] if not compact and
-                 (max_chars == 0 or len(stripped) <= max_chars)
-                 else split_reply(text, max_chars, max_parts=max_parts))
+        # Keep each paragraph a valid OneBot message (a list of segments) and
+        # apply compact-reply rendering at the explicit boundary.
+        parts = [text] if max_chars == 0 else normalize_reply_parts(text)
         for part in parts:
             rendered = format_reply(part, compact)
             if rendered:
@@ -102,6 +108,128 @@ def _delivery_parts(message: list[dict], max_chars: int, *, compact: bool = True
     return result or [message]
 
 
+def _semantic_delivery_parts(reply: str, reply_parts: object, *, compact: bool,
+                             split_enabled: bool = True) -> list[list[dict]] | None:
+    """Turn a validated model unit array into immutable QQ message parts.
+
+    The semantic worker owns the boundaries.  This function intentionally
+    never calls ``split_reply``: the only fallback accepted here is the
+    worker's paragraph-only normalizer.  ``None`` leaves non-text payloads
+    to their existing renderer.
+    """
+    if not isinstance(reply, str) or not reply.strip():
+        return None
+    try:
+        parts = normalize_reply_parts(reply, reply_parts) if split_enabled else [reply]
+    except (TypeError, ValueError):
+        return None
+    if not parts:
+        return None
+    messages: list[list[dict]] = []
+    for part in parts:
+        rendered = format_reply(part, compact)
+        if rendered:
+            messages.append([{'type': 'text', 'data': {'text': rendered}}])
+    return messages or None
+
+
+def _source_delivery_parts(result: dict | None, *, compact: bool) -> list[list[dict]]:
+    """Render projected source notes as independent QQ text bubbles."""
+
+    parts: list[list[dict]] = []
+    for note in citation_source_parts(result):
+        rendered = format_reply(note, compact)
+        if rendered:
+            parts.append([{'type': 'text', 'data': {'text': rendered}}])
+    return parts
+
+
+def _speech_for_draft(result: dict | None, *, voice: bool) -> dict:
+    """Persist text-only source notes beside, never inside, the speech plan."""
+
+    speech = result.get('speech') if isinstance(result, dict) else None
+    projected = dict(speech) if isinstance(speech, dict) else {}
+    if not voice:
+        return projected
+    notes = citation_source_parts(result)
+    if notes:
+        projected['qqSourceParts'] = notes
+    else:
+        projected.pop('qqSourceParts', None)
+    return projected
+
+
+async def _wait_reply_part(policy: dict, text: str) -> None:
+    """Wait once for this concrete outgoing text bubble.
+
+    The wait is deliberately measured after model generation.  It is applied
+    per part, with the same small random variation for fixed and length modes,
+    so multi-part replies cannot collapse into a burst.
+    """
+    if not text:
+        return
+    delay = reply_delay(policy, text)
+    if not delay:
+        return
+    wait = random.uniform(delay * 0.7, delay * 1.3)
+    if policy.get('reply_delay_mode') == 'length':
+        wait = min(30, wait)
+    await asyncio.sleep(wait)
+
+
+def _outgoing_reply_plan(kind: str, target: str, result: dict, *, compact: bool,
+                         split_enabled: bool = True,
+                         include_source_parts: bool = True) -> tuple[list[dict], list[list[dict]] | None]:
+    """Normalize a model result and optionally return its semantic plan.
+
+    The flattened ``segments`` value is the logical draft payload.  When the
+    model supplied a valid semantic array, ``plan`` is frozen separately in
+    ``Ledger.send_parts`` before auto-send or approval, so a retry cannot
+    re-split the reply using a changed character preference.
+    """
+    reply = result.get('reply') or ''
+    image_ids = result.get('imageIds', [])
+    semantic_messages = _semantic_delivery_parts(
+        reply,
+        result.get('replyParts'),
+        compact=compact,
+        split_enabled=split_enabled,
+    )
+    source_messages = (
+        _source_delivery_parts(result, compact=compact)
+        if include_source_parts else []
+    )
+    if semantic_messages is None and source_messages:
+        # A source note still needs its own QQ bubble when an upstream result
+        # did not provide a usable semantic array.  This fallback keeps the
+        # complete reply intact and does not introduce lexical splitting.
+        semantic_messages = _semantic_delivery_parts(
+            reply, None, compact=compact, split_enabled=False,
+        )
+    if semantic_messages is not None:
+        text_segments = [
+            segment
+            for message in [*semantic_messages, *source_messages]
+            for segment in message
+        ]
+        _, _, segments = outgoing('send_msg', {
+            'message_type': kind,
+            'group_id' if kind == 'group' else 'user_id': target,
+            'message': text_segments,
+            'imageIds': image_ids,
+        })
+        image_parts = [[segment] for segment in segments
+                       if isinstance(segment, dict) and segment.get('type') == 'qq_image']
+        return segments, [*semantic_messages, *source_messages, *image_parts]
+    _, _, segments = outgoing('send_msg', {
+        'message_type': kind,
+        'group_id' if kind == 'group' else 'user_id': target,
+        'message': format_reply(reply, compact),
+        'imageIds': image_ids,
+    })
+    return segments, None
+
+
 class Gateway:
     def __init__(self, config_path: Path):
         self.config_path = config_path
@@ -109,6 +237,12 @@ class Gateway:
         self.policy = normalize_policy(self.config["policy"])
         self.identities = QQIdentities(self)
         self.ledger = Ledger(config_path.parent / "ledger.sqlite3")
+        self.login_checkpoints = LoginCheckpoints(self.ledger)
+        self.login_checkpoints.sync(self.policy, now=config_path.stat().st_mtime)
+        self._login_jobs = {}
+        self._login_checked = set()
+        self._login_live = {}
+        self._login_retry_at = {}
         self.napcat = None
         self.astrbot = None
         self.pending: dict[str, asyncio.Future] = {}
@@ -120,6 +254,8 @@ class Gateway:
         self.tasks: set[asyncio.Task] = set()
         self.owner_tasks: set[asyncio.Task] = set()
         self.amadeus = AmadeusRunner(config_path.parent, python=self.config.get("amadeus_python"), frozen=self.config.get('amadeus_frozen', False))
+        bundle_root = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
+        self.voice_input = VoiceTranscriber(bundle_root, config_path.parent)
         self.amadeus_tasks: set[asyncio.Task] = set()
         self.owners: dict[str, float] = {}
         self.lease_seconds = 25
@@ -167,7 +303,8 @@ class Gateway:
             if not isinstance(args, dict):
                 raise ValueError('空间操作参数无效')
             if args.get('action') == 'publish' and not policy['qzone_allow_publish']:
-                return {'ok': False, 'error': 'qzone_publish_disabled', 'message': '发说说权限尚未开启'}
+                return {'ok': False, 'error': 'qzone_publish_disabled', 'attempted': False,
+                        'sent': False, 'message': '发说说权限尚未开启'}
             call = await self.require_account(policy['account_id'])
             result = await self.qzone.execute(args, policy, call)
             # Account-scoped calls reject stale transports. Keep receipts small;
@@ -189,13 +326,17 @@ class Gateway:
         summary = ''
         try:
             from .qzone_runtime import QzoneRunner
+            from backend.life.qzone_bridge import export_qzone_context, record_qzone_event
             model = json.loads(self.amadeus.model_path.read_text(encoding='utf-8'))
             runner = QzoneRunner(self.config_path.parent, python=self.config.get('amadeus_python'),
                                  frozen=self.config.get('amadeus_frozen', False))
+            life_db = self.config_path.parent.parent / 'autonomous-life.sqlite3'
             result = await runner.run(account=account, settings=model,
                 control_url=f"http://127.0.0.1:{self.config['control_port']}",
                 control_token=self.config['control_token'], instructions=policy['qzone_instructions'],
-                allow_write=policy['qzone_allow_write'], allow_publish=policy['qzone_allow_publish'])
+                allow_write=policy['qzone_allow_write'], allow_publish=policy['qzone_allow_publish'],
+                life_context=export_qzone_context(life_db, account), request_id=run_id)
+            record_qzone_event(life_db, account, run_id, result)
             state = 'completed' if result.get('ok') else 'failed'
             summary = str(result.get('reply') or '')[:500]
         except asyncio.CancelledError:
@@ -248,6 +389,15 @@ class Gateway:
         temporary.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding='utf-8')
         temporary.replace(self.config_path)
         self.config, self.policy = updated, updated['policy']
+        self._sync_login_policy()
+
+    def _sync_login_policy(self):
+        self.login_checkpoints.sync(self.policy)
+        self._login_checked = {key for key in self._login_checked
+            if key[1] == self.policy['account_id'] and self._login_allowed(key[2], key[3])}
+        for (account, kind, target), job in list(self._login_jobs.items()):
+            if account != self.policy['account_id'] or not self._login_allowed(kind, target):
+                job.cancel()
 
     def request_stop(self, reason: str, *, explicit: bool = False):
         if self.stop_requested:
@@ -322,15 +472,15 @@ class Gateway:
 
     def annotate_history(self, context: dict):
         ids = [str(item['messageId']) for item in context.get('messages', [])]
-        delivered = set()
-        if ids:
-            with self.ledger.lock:
-                delivered = {str(row[0]) for row in self.ledger.db.execute(
-                    "SELECT message_id FROM sends WHERE state='sent' AND account=? AND kind=? AND target=? AND message_id IN (" + ','.join('?' for _ in ids) + ')',
-                    [self.policy['account_id'], context.get('targetType'), context.get('targetId'), *ids])}
+        account = str(context.get('account') or self.policy['account_id'])
+        delivered = self.ledger.sent_messages(account, context.get('targetType'), context.get('targetId'), ids)
         for item in context.get('messages', []):
-            if item['senderId'] == self.policy['account_id'] and item['messageId'] in delivered:
+            saved = delivered.get(str(item['messageId'])) if item['senderId'] == account else None
+            if saved:
                 item['speakerRole'] = 'assistant'
+                if saved['reply_format'] == 'voice' and any(part.get('type') == 'text' for part in saved['message']):
+                    from .history import _text
+                    item['text'], item['textTruncated'] = _text(saved)
             for ref in item.get('imageRefs', []):
                 ref['token'] = self.image_token(context['account'], context['targetType'], context['targetId'], item['messageId'], ref['index'])
         context['identityContext'] = self.identities.directory.context(
@@ -338,10 +488,57 @@ class Gateway:
             self._contacts, history=context)
         return context
 
+    async def _transcribe_voice(self, call, event):
+        if not record_segments(event):
+            return event
+        account = str(event.get('self_id', ''))
+        kind, target = conversation(event)
+        receipt = {'account': account, 'kind': kind, 'target': target,
+                   'message_id': event.get('message_id')}
+        self.record_event('voice_transcribing', receipt)
+        try:
+            prepared = await transcribe_event(call, event, self.voice_input)
+            if message_text_length(prepared) > MAX_QQ_TEXT_CHARS:
+                raise VoiceInputError('voice_too_long', '这条语音内容太长了，分成几条发给我吧。')
+        except VoiceInputError as exc:
+            self.record_event('voice_transcription_failed', {**receipt, 'code': exc.code,
+                                                            'reason': exc.user_message})
+            raise
+        self.record_event('voice_transcribed', {**receipt,
+            'segments': len(record_segments(event)), 'characters': message_text_length(prepared)})
+        return prepared
+
+    async def _voice_failure_reply(self, event, error, generation, epoch):
+        """Deliver a listening failure through the existing review/delivery path."""
+        account = str(event['self_id'])
+        kind, target = conversation(event)
+        if (generation != self.generation or not self.account_verified
+                or not self._scope_is_current_now(account, kind, target, epoch)
+                or self.policy['mode'] == 'paused' or not allowed(self.policy, kind, target)
+                or not self.lifecycle_status()['active']):
+            return
+        # A transport error is text even when normal answers use synthesized voice.
+        overrides = dict(self.policy['conversation_overrides'])
+        key = f'{kind}:{target}'
+        overrides[key] = {**overrides.get(key, {}), 'reply_format': 'text'}
+        policy = {**self.policy, 'conversation_overrides': overrides}
+        request_key = 'voice-input-error:e' + str(epoch) + ':' + reply_request_id(
+            account, kind, target, event['message_id'])
+        draft = self.ledger.draft(policy, kind, target,
+            [{'type': 'text', 'data': {'text': error.user_message}}], actor='Amadeus',
+            reason=error.user_message, request_key=request_key)
+        if conversation_policy(self.policy, kind, target)['mode'] == 'auto':
+            await self.send_draft(draft['id'], generation=generation, _scope_epoch=epoch)
+
     async def message_material(self, call, event, account, kind, target, history=None):
         """Keep the reply edge and its pixels through either owner or child routing."""
+        if history is not None:
+            history.update(self.annotate_history({**history, 'account': account,
+                'targetType': kind, 'targetId': target}))
         reply, quoted = await resolve_reply(call, event, account, kind, target, history)
         images, notes = [], []
+        if event.get('_voice_transcripts'):
+            notes.append('当前消息含语音，正文已按语音转文字；识别可能存在同音字误差。')
         for relation, source in [('reply', quoted), ('current', event)]:
             if source is None:
                 continue
@@ -360,7 +557,7 @@ class Gateway:
                 notes.append(f'{label} {ident} 只读取前 {remaining} 张图片，其余图片尚未读取')
         if reply.get('status') == 'unavailable':
             notes.append(reply['message'])
-        if quoted is not None and history is not None:
+        if quoted is not None:
             from .history import _message
             row = _message(quoted, account, kind, target, 0)
             row.pop('_realSeq', None)
@@ -368,7 +565,9 @@ class Gateway:
             row['sourceRelation'] = 'reply'
             projected = self.annotate_history({'ok': True, 'account': account, 'targetType': kind,
                                                'targetId': target, 'messages': [row]})
-            history['referencedMessages'] = projected['messages']
+            reply['text'] = projected['messages'][0]['text'][:3000]
+            if history is not None:
+                history['referencedMessages'] = projected['messages']
         if reply:
             self.record_event('reply_context_read', {'account': account, 'kind': kind, 'target': target,
                 'message_id': event.get('message_id'), 'reply_message_id': reply['messageId'],
@@ -489,13 +688,15 @@ class Gateway:
                 return None
         else:
             return None
+        if event.get('_loginCatchup') and not self._login_allowed(kind, target):
+            return None
         # Match the desktop backend's request-id key so a reused OneBot
         # message number in another channel cannot suppress a distinct event.
         marker = (account, sender, kind, target, str(message_id))
         if check_seen and marker in self._owner_control_seen:
             return None
         text = owner_message_text(event)
-        if not text:
+        if not text and not record_segments(event):
             return None
         return {
             "account": account,
@@ -507,12 +708,15 @@ class Gateway:
             "marker": marker,
         }
 
-    def _try_owner_control_event(self, event: dict) -> bool:
+    def _try_owner_control_event(self, event: dict):
         details = self._owner_control_details(event, check_seen=False)
         if details is None:
             return False
+        if self.ledger.incoming_seen(details['account'], details['message_id']):
+            return True
         if not self.owner_receipts.claim(*details['marker']):
             return True  # Consume duplicate owner events; never proxy them.
+        self.ledger.fresh_incoming(details['account'], details['message_id'])
         self._owner_control_seen.add(details["marker"])
         # Keep the local replay guard bounded during a long-running gateway.
         if len(self._owner_control_seen) > 4096:
@@ -522,12 +726,15 @@ class Gateway:
             "target": details["target"], "sender": details["sender"],
             "message_id": details["message_id"],
         })
-        self.spawn(self._owner_control_reply(details, event, self.generation, self.napcat), owner_control=True)
-        return True
+        return self.spawn(self._owner_control_reply(details, event, self.generation, self.napcat), owner_control=True)
 
     def _record_owner_control_result(self, details: dict, *, ok: bool,
                                       request_id: str = "", status: str = "",
-                                      message_ids: list[str] | None = None) -> None:
+                                      message_ids: list[str] | None = None,
+                                      delivery_kind: str = "",
+                                      delivery_target: str = "",
+                                      route: str = "",
+                                      reply_audience: str = "") -> None:
         # Keep a small audit receipt without persisting the owner's private
         # text or model/tool result in the QQ transport ledger.
         with contextlib.suppress(Exception):
@@ -536,13 +743,52 @@ class Gateway:
                 "target": details["target"], "sender": details["sender"],
                 "message_id": details["message_id"], "ok": ok,
                 "request_id": request_id, "status": status,
+                # ``kind``/``target`` are the authenticated source scope. Keep
+                # explicit names beside them so an audit reader can distinguish
+                # a group-originated result that was actually sent privately.
+                "source_kind": details["kind"],
+                "source_target": details["target"],
             }
+            if delivery_kind in {"private", "group"} and delivery_target:
+                payload["delivery_kind"] = delivery_kind
+                payload["delivery_target"] = str(delivery_target)
+            if route:
+                payload["route"] = route
+            if reply_audience in {"source", "private"}:
+                payload["reply_audience"] = reply_audience
             if message_ids is not None:
                 # Message IDs are delivery receipts, not owner content.  Keep
                 # them so a successful multi-bubble result is auditable while
                 # leaving the private reply text out of the event ledger.
                 payload["message_ids"] = [str(value) for value in message_ids]
             self.record_event("owner_control_result", payload)
+
+    def _owner_gallery_history(self, account: str, kind: str, target: str,
+                               *, limit: int = 64) -> list[dict]:
+        """Read confirmed owner image sends for one source/delivery scope."""
+
+        try:
+            return self.owner_receipts.gallery_history(account, kind, target, limit=limit)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            # A history read is advisory context for selection.  It must not
+            # prevent the authenticated owner request from reaching the
+            # normal local pipeline if the optional history table is unavailable.
+            return []
+
+    def _record_owner_gallery_delivery(self, details: dict, *, receipt_key: str,
+                                       request_id: str, asset_id: str,
+                                       message_id: str = "", state: str = "",
+                                       detail: str = "") -> None:
+        """Persist one direct-owner gallery attempt without touching Ledger."""
+
+        if not state:
+            return
+        with contextlib.suppress(Exception):
+            self.owner_receipts.record_gallery_delivery(
+                details["account"], details["kind"], details["target"], asset_id,
+                message_id, state=state, receipt_key=receipt_key,
+                request_id=request_id, detail=detail,
+            )
 
     async def _owner_request(self, details, event, napcat):
         account, sender = details['account'], details['sender']
@@ -600,15 +846,23 @@ class Gateway:
         if details['kind'] == 'private' and details['target'] not in read_policy['private_ids']:
             read_policy = {**read_policy, 'private_ids': [*read_policy['private_ids'], details['target']]}
         try:
-            history = await asyncio.wait_for(read_history(call, read_policy,
+            history = event.get('_loginCatchupHistory') or await asyncio.wait_for(read_history(call, read_policy,
                 {'targetType': details['kind'], 'targetId': details['target'], 'limit': 10}), 5)
         except TimeoutError:
             history = {'ok': False, 'messages': []}
         linked_message, images, media_notes = await self.message_material(call, event, account, details['kind'], details['target'], history)
+        if event.get('_loginCatchup'):
+            media_notes.insert(0, '这是登录后补看的未回复消息；结合上下文集中回复即可，不必逐条补发或说明检查过程。')
         identity_context = await self.identities.context(account, details['kind'], details['target'], event,
             history=history, call=call)
         if self.napcat is not napcat or account != self.policy['account_id']:
             return
+        # The model runs with the authenticated source conversation's
+        # presentation context.  A later ``replyAudience=private`` decision
+        # changes only the actual send scope; it must not turn a group @ into a
+        # reduced ordinary worker request.  Explicit qq_manage sends remain
+        # tool-owned deliveries and use their own target scope.
+        owner_delivery_policy = conversation_policy(self.policy, details["kind"], details["target"])
         return await self.owner_control.chat(
             control_token=self.config.get("control_token", ""),
             account=account,
@@ -619,6 +873,9 @@ class Gateway:
             text=details["text"],
             identity_context=identity_context,
             message_context=linked_message, images=images, media_notes=media_notes,
+            # Generation uses the authenticated source conversation.
+            sticker_preferences=owner_delivery_policy.get("sticker_preferences"),
+            delivery_history=self._owner_gallery_history(account, details["kind"], details["target"]),
         )
 
     async def _owner_control_reply(self, details: dict, event: dict,
@@ -626,27 +883,66 @@ class Gateway:
         account = details["account"]
         sender = details["sender"]
         receipt_key = owner_receipt_key(*details['marker'])
-        group_chat = False
         group_control = False
+        reply_audience = ""
+        reply_route = ""
+        reply_kind = ""
+        reply_target = ""
         request_id = ""
         result_ok = False
+        result = None
         try:
+            if record_segments(event):
+                current = self._owner_control_details(event, check_seen=False)
+                if current is None or current['marker'] != details['marker'] or self.napcat is not napcat:
+                    return
+                call = await self.require_account(account)
+                event = await self._transcribe_voice(call, event)
+                details = {**details, 'text': owner_message_text(event)}
             result = await self._owner_request(details, event, napcat)
+            if isinstance(result, dict):
+                # Strip internal citation markers before the result can enter the
+                # owner reply, voice, or receipt paths.  A later projection
+                # after the selected format adds text-only source bubbles.
+                result = project_qq_result(result)
             result_ok = isinstance(result, dict) and result.get("ok") is True
             request_id = result.get("requestId", "") if isinstance(result, dict) else ""
-            group_chat = result_ok and result.get('route') == 'group_chat' and details['kind'] == 'group'
-            if result_ok and result.get('route') == 'group_control' and details['kind'] == 'group':
+            reply_route = result.get('route', '') if isinstance(result, dict) else ''
+            if result_ok and reply_route == 'group_control' and details['kind'] == 'group':
                 from .owner_delivery import control_ack_text
                 public_ack = control_ack_text(result.get('controlAck'))
                 group_control = bool(public_ack)
+            elif result_ok and reply_route in {'owner_reply', 'owner_task'}:
+                # The authenticated event supplies both possible
+                # destinations; the final model may choose only the bounded
+                # audience enum.  Legacy owner_task quick commands default to
+                # source as well, so a group command does not silently move
+                # to private merely because it used the older route name.
+                reply_audience = result.get('replyAudience', 'source')
+                if reply_audience not in {'source', 'private'}:
+                    reply_audience = 'source'
+                if reply_audience == 'source':
+                    reply_kind, reply_target = details['kind'], details['target']
+                else:
+                    reply_kind, reply_target = 'private', sender
             if isinstance(result, dict) and result.get('outcome'):
-                self.record_event('owner_control_outcome', {key: result[key] for key in (
-                    'requestId', 'outcome', 'errorCode', 'errorStage', 'deliveryState', 'messageId') if key in result})
+                outcome = {key: result[key] for key in (
+                    'requestId', 'outcome', 'errorCode', 'errorStage', 'deliveryState', 'messageId')
+                    if key in result}
+                outcome.update({
+                    'source_kind': details['kind'], 'source_target': details['target'],
+                })
+                if reply_kind and reply_target:
+                    outcome.update({'delivery_kind': reply_kind,
+                                    'delivery_target': str(reply_target)})
+                self.record_event('owner_control_outcome', outcome)
             self.owner_receipts.set_state(receipt_key, 'accepted' if result_ok else 'failed', request_id=request_id)
             self._record_owner_control_result(
                 details, ok=result_ok,
                 request_id=request_id if isinstance(request_id, str) else "",
                 status="accepted" if result_ok else "rejected",
+                delivery_kind=reply_kind, delivery_target=reply_target,
+                route=reply_route, reply_audience=reply_audience,
             )
             if not result_ok:
                 reply = "主人指令暂时未完成，请稍后再试。"
@@ -661,6 +957,10 @@ class Gateway:
                     reply = reply.strip()
         except asyncio.CancelledError:
             raise
+        except VoiceInputError as exc:
+            self._record_owner_control_result(details, ok=False, status=exc.code)
+            self.owner_receipts.set_state(receipt_key, 'failed')
+            reply = exc.user_message
         except (OwnerControlBackendFailure, OwnerControlOutcomeUnknown) as exc:
             request_id = exc.request_id
             self.record_event('owner_control_error', exc.to_public())
@@ -686,20 +986,43 @@ class Gateway:
                 or current["account"] != account
                 or self.napcat is not napcat):
             return
-        if group_chat:
-            # No main-chat text enters this branch. Generate a fresh ordinary
-            # reply using only this group's history and trusted owner mapping.
-            if self.policy['mode'] != 'paused' and allowed(self.policy, 'group', details['target']):
-                await self.amadeus_reply(event, self.generation)
-            return
-
-        # Owner-control uses the same sentence-aware QQ renderer as ordinary
-        # text, with a smaller bubble ceiling so a verbose desktop result does
-        # not become a long burst.  ``split_reply`` coalesces the tail and
-        # preserves all text; it is not a character truncation mechanism.
-        reply_kind = 'group' if group_control else 'private'
-        reply_target = details['target'] if group_control else sender
+        # Owner-control uses the same semantic/paragraph QQ renderer as
+        # ordinary text.  Without a reliable model unit array, the fallback
+        # keeps explicit paragraphs together instead of inventing bubbles from
+        # punctuation or a character ceiling.
+        if not reply_kind or not reply_target:
+            # Fixed safe errors and host control acknowledgements also answer
+            # where they were asked; only a private audience changes scope.
+            reply_kind, reply_target = details['kind'], details['target']
+            reply_audience = 'source'
         owner_policy = conversation_policy(self.policy, reply_kind, reply_target)
+        # Project the content actually authorized for this reply. Legacy
+        # public acknowledgements and fixed errors must not inherit sources
+        # or speech parts from a backend result that is not being delivered.
+        reply_result = project_qq_result({
+            **(result if result_ok and not group_control else {}),
+            'reply': reply,
+        }, include_source_parts=True)
+        reply = reply_result['reply']
+        if event.get('_loginCatchup') and conversation_policy(self.policy, details['kind'], details['target'])['mode'] == 'review':
+            login_request_key = 'owner-result:' + receipt_key
+            login_format = self.ledger.select_reply_format(
+                self.policy, reply_kind, reply_target, login_request_key,
+            )
+            segments, plan = _outgoing_reply_plan(
+                reply_kind, reply_target, reply_result,
+                compact=owner_policy['compact_reply'],
+                split_enabled=owner_policy['reply_bubble_chars'] != 0,
+                include_source_parts=login_format != 'voice',
+            )
+            draft = self.ledger.draft(self.policy, reply_kind, reply_target, segments,
+                actor='Amadeus', reason='登录后补回遗漏消息，等待审核',
+                request_key=login_request_key,
+                speech=_speech_for_draft(reply_result, voice=login_format == 'voice'))
+            if plan is not None and draft['reply_format'] != 'voice':
+                self.ledger.ensure_send_parts(draft['id'], plan)
+            self.record_event('login_catchup_draft', {'kind': reply_kind, 'target': reply_target, 'draft_id': draft['id']})
+            return
         message_ids: list[str] = []
 
         def finish_delivery(state: str, status: str) -> None:
@@ -719,6 +1042,10 @@ class Gateway:
                 request_id=request_id,
                 status=status,
                 message_ids=message_ids,
+                delivery_kind=reply_kind,
+                delivery_target=reply_target,
+                route=reply_route,
+                reply_audience=reply_audience,
             )
 
         try:
@@ -733,7 +1060,9 @@ class Gateway:
             if selected_format == 'voice':
                 language = self.delivery_language(reply_kind, reply_target, request_key)
                 self.record_event('owner_voice_preparing', {'account': account,
-                    'sender': sender, 'requestId': request_id, 'speech_language': language})
+                    'sender': sender, 'requestId': request_id, 'speech_language': language,
+                    'source_kind': details['kind'], 'source_target': details['target'],
+                    'delivery_kind': reply_kind, 'delivery_target': str(reply_target)})
                 try:
                     message = await self.synthesize_voice_message(
                         account=account, kind=reply_kind, target=reply_target,
@@ -743,20 +1072,31 @@ class Gateway:
                     raise
                 except Exception:
                     self.record_event('owner_voice_failed', {'account': account,
-                        'sender': sender, 'requestId': request_id})
+                        'sender': sender, 'requestId': request_id,
+                        'source_kind': details['kind'], 'source_target': details['target'],
+                        'delivery_kind': reply_kind, 'delivery_target': str(reply_target)})
                     finish_delivery('failed', 'voice_failed')
                     return
                 delivery_parts = [message]
             else:
-                delivery_parts = _delivery_parts(
-                    [{'type': 'text', 'data': {'text': reply}}],
-                    owner_policy.get('reply_bubble_chars', DEFAULT_REPLY_BUBBLE_CHARS),
+                delivery_parts = _semantic_delivery_parts(
+                    reply,
+                    reply_result.get('replyParts'),
                     compact=owner_policy.get('compact_reply', True),
-                    max_parts=MAX_OWNER_CONTROL_BUBBLES,
+                    split_enabled=owner_policy.get('reply_bubble_chars', DEFAULT_REPLY_BUBBLE_CHARS) != 0,
                 )
+                if delivery_parts is None:
+                    delivery_parts = _delivery_parts(
+                        [{'type': 'text', 'data': {'text': reply}}],
+                        owner_policy.get('reply_bubble_chars', DEFAULT_REPLY_BUBBLE_CHARS),
+                        compact=owner_policy.get('compact_reply', True),
+                        max_parts=MAX_OWNER_CONTROL_BUBBLES,
+                    )
+            # Voice carries answer-only audio; sources follow as a text note.
+            delivery_parts.extend(_source_delivery_parts(reply_result, compact=owner_policy.get('compact_reply', True)))
             if result_ok and not group_control and str(result.get('galleryAccount') or '') == account:
                 ids = result.get('imageIds') or []
-                if isinstance(ids, list) and 1 <= len(ids) <= 2:
+                if isinstance(ids, list) and 1 <= len(ids) <= MAX_REPLY_IMAGES:
                     found = self._media_library(account).get(ids, reusable_only=True)
                     if found.get('ok') and not found.get('missing'):
                         delivery_parts.extend([[{'type': 'qq_image', 'data': {'assetId': item['id']}}]
@@ -778,6 +1118,14 @@ class Gateway:
                             conversation_policy(self.policy, reply_kind, reply_target)):
                         finish_delivery('failed', 'voice_disabled')
                         return
+                    part_asset_ids = [
+                        str(segment.get('data', {}).get('assetId', ''))
+                        for segment in part
+                        if isinstance(segment, dict)
+                        and segment.get('type') == 'qq_image'
+                        and isinstance(segment.get('data'), dict)
+                        and segment.get('data', {}).get('assetId')
+                    ]
                     part_text = ''.join(
                         segment.get('data', {}).get('text', '')
                         for segment in part
@@ -785,6 +1133,21 @@ class Gateway:
                     ).strip()
                     if not part_text and selected_format != 'voice' and not any(p.get('type') == 'qq_image' for p in part):
                         continue
+                    # The model's semantic array is already the durable
+                    # boundary plan.  Pace each actual text bubble, including
+                    # the first one, then repeat identity/account checks.
+                    if selected_format != 'voice':
+                        await _wait_reply_part(owner_policy, part_text)
+                        current = self._owner_control_details(event, check_seen=False)
+                        if (current is None or current["marker"] != details["marker"]
+                                or current["account"] != account
+                                or self.napcat is not napcat):
+                            finish_delivery("unknown" if message_ids else "failed", "delivery_stopped")
+                            return
+                        if selected_format == 'voice' and not voice_enabled(
+                                conversation_policy(self.policy, reply_kind, reply_target)):
+                            finish_delivery('failed', 'voice_disabled')
+                            return
                     part = await self._resolve_media_message(part, account)
                     part_call = await self.require_account(account)
                     # ``require_account`` can yield while account selection or the
@@ -801,8 +1164,8 @@ class Gateway:
                         return
                     attempt_started = True
                     result = await part_call(
-                        'send_group_msg' if group_control else 'send_private_msg',
-                        {'group_id' if group_control else 'user_id': int(reply_target),
+                        'send_group_msg' if reply_kind == 'group' else 'send_private_msg',
+                        {'group_id' if reply_kind == 'group' else 'user_id': int(reply_target),
                          'message': part if selected_format == 'voice' or any(
                              segment.get('type') != 'text' for segment in part) else part_text},
                     )
@@ -815,16 +1178,39 @@ class Gateway:
                         # A failed/partial OneBot call has an uncertain side effect.
                         # Persist unknown and stop; the claim store prevents an
                         # automatic replay of this owner command.
+                        gallery_state = (
+                            "failed" if isinstance(result, dict)
+                            and result.get("retcode") not in (None, 0)
+                            else "unknown"
+                        )
+                        for asset_id in part_asset_ids:
+                            self._record_owner_gallery_delivery(
+                                {**details, "kind": reply_kind, "target": reply_target},
+                                receipt_key=receipt_key, request_id=request_id,
+                                asset_id=asset_id, state=gallery_state,
+                                detail="onebot_delivery_failed" if gallery_state == "failed"
+                                else "onebot_delivery_unknown",
+                            )
                         finish_delivery("unknown", "delivery_unknown")
                         return
                     message_id = str(message_id)
                     message_ids.append(message_id)
+                    for asset_id in part_asset_ids:
+                        self._record_owner_gallery_delivery(
+                            {**details, "kind": reply_kind, "target": reply_target},
+                            receipt_key=receipt_key, request_id=request_id,
+                            asset_id=asset_id, message_id=message_id, state="sent",
+                        )
                     with contextlib.suppress(Exception):
                         self.record_event("owner_control_bubble_sent", {
                             "account": account, "kind": details["kind"],
                             "target": details["target"], "sender": sender,
                             "message_id": details["message_id"],
                             "part_index": part_index, "send_message_id": message_id,
+                            "source_kind": details["kind"],
+                            "source_target": details["target"],
+                            "delivery_kind": reply_kind,
+                            "delivery_target": str(reply_target),
                         })
                 finish_delivery("sent", "sent")
         except asyncio.CancelledError:
@@ -916,7 +1302,20 @@ class Gateway:
             # timestamp.
             if cutoff and float(item.get("created") or 0.0) <= cutoff:
                 continue
-            rows.append(item)
+            row = dict(item)
+            if item.get("state") == "sent":
+                ids = [part.get("data", {}).get("assetId") for part in item.get("message", [])
+                       if isinstance(part, dict) and part.get("type") == "qq_image"]
+                if ids:
+                    try:
+                        found = self._media_library(account).get(ids, reusable_only=True)
+                        row["galleryMedia"] = [
+                            {"id": image["id"], "account": account, "name": image["name"]}
+                            for image in found.get("items", [])
+                        ]
+                    except (OSError, ValueError):
+                        pass  # An unavailable catalogue must not block conversation history.
+            rows.append(row)
             if len(rows) >= 5:
                 break
         return rows
@@ -1174,61 +1573,208 @@ class Gateway:
                     continue
                 if data.get("post_type") != "message":
                     continue
-                # Owner control is a separate, explicit route.  It runs
-                # before ordinary allowlists and paused-mode filtering, while
-                # still requiring the verified account and active desktop
-                # lease inside _owner_control_details.
-                if self._try_owner_control_event(data):
-                    continue
-                if self.policy["mode"] == "paused" or not self.lifecycle_status()['active']:
-                    continue
-                kind, target = conversation(data)
-                if not allowed(self.policy, kind, target) or sender_id(data) == self.policy["account_id"]:
-                    continue
-                # ``reply_trigger`` intentionally avoids materializing group
-                # text.  Check the shared model-input limit here first so an
-                # @-mention with an overlong body is observable instead of
-                # disappearing through the broad reader exception handler.
-                text_length = message_text_length(data)
-                if text_length > MAX_QQ_TEXT_CHARS:
-                    self.record_event("received_too_long", {
-                        "kind": kind, "target": target,
-                        "sender": str(data.get("user_id", "")),
-                        "message_id": data.get("message_id"),
-                        "length": text_length,
-                        "maxLength": MAX_QQ_TEXT_CHARS,
-                    })
-                    continue
-                scope = self._scope_id(self.policy["account_id"], kind, target)
-                if self.reply_agent == "amadeus":
-                    if not reply_trigger(data, self.policy["account_id"], conversation_policy(self.policy, kind, target)):
-                        continue
-                    if scope in self._resetting_scopes:
-                        self._defer_event(scope, data)
-                        continue
-                    if len(self.amadeus_tasks) >= 16:
-                        self.record_event("amadeus_busy", {"kind": kind, "target": target,
-                            "reason": "待处理消息已满，本条未交给模型"})
-                        continue
-                elif not self.astrbot or self.astrbot.closed:
-                    continue
-                if not self.ledger.fresh_incoming(self.policy["account_id"], data.get("message_id")):
-                    continue
-                self.record_event("received", {"account": self.policy["account_id"], "kind": kind, "target": target,
-                    "sender": str(data.get("user_id", "")), "message_id": data.get("message_id"),
-                    "text": str(data.get("raw_message", ""))[:6000]})
-                if self.reply_agent == "amadeus":
-                    task = self.spawn(self.amadeus_reply(data, self.generation),
-                                      scope=(self.policy["account_id"], kind, target))
-                    self.amadeus_tasks.add(task)
-                    task.add_done_callback(self.amadeus_tasks.discard)
-                else:
-                    await self.astrbot.send_json(data)
+                await self.dispatch_message(data)
             except (ValueError, TypeError):
                 continue
         for future in list(self.pending.values()):
             if not future.done():
                 future.set_exception(ConnectionError("NapCat 连接中断"))
+
+    async def dispatch_message(self, data):
+        """Use one routing/deduplication path for live and login-history events."""
+        if not self.account_verified or str(data.get('self_id', '')) != self.policy['account_id']:
+            return None
+        kind, target = conversation(data)
+        if not data.get('_loginCatchup'):
+            scope = (self.policy['account_id'], kind, target)
+            key = (self.generation, *scope)
+            if (not data.get('_loginAfterCatchup') and self._login_allowed(kind, target)
+                    and (scope in self._login_jobs or key not in self._login_checked)
+                    and time.monotonic() >= self._login_retry_at.get(key, 0)):
+                # The socket reader must keep consuming history API receipts.
+                # Queue live events behind the asynchronous login scan instead
+                # of cancelling it and losing its earlier offline messages.
+                self._login_live.setdefault(scope, []).append(data)
+                self._start_login_check(kind, target)
+                return None
+            if self._login_allowed(kind, target) and key in self._login_checked:
+                self.login_checkpoints.advance(self.policy['account_id'], kind, target, time.time(),
+                    message_ids=[data.get('message_id')])
+        # Owner control is a separate, explicit route.  It runs
+        # before ordinary allowlists and paused-mode filtering, while
+        # still requiring the verified account and active desktop
+        # lease inside _owner_control_details.
+        owner_task = self._try_owner_control_event(data)
+        if owner_task:
+            return owner_task
+        if self.policy["mode"] == "paused" or not self.lifecycle_status()['active']:
+            return None
+        kind, target = conversation(data)
+        if not allowed(self.policy, kind, target) or sender_id(data) == self.policy["account_id"]:
+            return None
+        # ``reply_trigger`` intentionally avoids materializing group
+        # text.  Check the shared model-input limit here first so an
+        # @-mention with an overlong body is observable instead of
+        # disappearing through the broad reader exception handler.
+        text_length = message_text_length(data)
+        if text_length > MAX_QQ_TEXT_CHARS:
+            self.record_event("received_too_long", {
+                "kind": kind, "target": target,
+                "sender": str(data.get("user_id", "")),
+                "message_id": data.get("message_id"),
+                "length": text_length,
+                "maxLength": MAX_QQ_TEXT_CHARS,
+            })
+            return None
+        scope = self._scope_id(self.policy["account_id"], kind, target)
+        if self.reply_agent == "amadeus":
+            if not reply_trigger(data, self.policy["account_id"], conversation_policy(self.policy, kind, target)):
+                return None
+            if scope in self._resetting_scopes:
+                self._defer_event(scope, data)
+                return None
+            if len(self.amadeus_tasks) >= 16:
+                self.record_event("amadeus_busy", {"kind": kind, "target": target,
+                    "reason": "待处理消息已满，本条未交给模型"})
+                return None
+        elif not self.astrbot or self.astrbot.closed:
+            return None
+        if not self.ledger.fresh_incoming(self.policy["account_id"], data.get("message_id")):
+            return None
+        self.record_event("received", {"account": self.policy["account_id"], "kind": kind, "target": target,
+            "sender": str(data.get("user_id", "")), "message_id": data.get("message_id"),
+            "text": str(data.get("raw_message", ""))[:6000]})
+        if self.reply_agent == "amadeus":
+            task = self.spawn(self.amadeus_reply(data, self.generation),
+                              scope=(self.policy["account_id"], kind, target))
+            self.amadeus_tasks.add(task)
+            task.add_done_callback(self.amadeus_tasks.discard)
+            return task
+        else:
+            await self.astrbot.send_json(data)
+
+    def _login_allowed(self, kind, target):
+        return (self.reply_agent == 'amadeus' and self.lifecycle_status()['active']
+                and control_allowed(self.policy, kind, target)
+                and conversation_policy(self.policy, kind, target)['mode'] != 'paused'
+                and conversation_policy(self.policy, kind, target)['reply_on_login'])
+
+    async def watch_login_messages(self):
+        while True:
+            if not self.account_verified:
+                self._login_checked.clear()
+            else:
+                account = self.policy['account_id']
+                for kind, target in enabled_conversations(self.policy):
+                    scope = (account, kind, target)
+                    key = (self.generation, *scope)
+                    if not self._login_allowed(kind, target):
+                        self._login_checked.discard(key)
+                        job = self._login_jobs.get(scope)
+                        if job:
+                            job.cancel()
+                        continue
+                    if (key in self._login_checked or scope in self._login_jobs
+                            or time.monotonic() < self._login_retry_at.get(key, 0)):
+                        continue
+                    self._start_login_check(kind, target)
+            await asyncio.sleep(5)
+
+    def _start_login_check(self, kind, target):
+        scope = (self.policy['account_id'], kind, target)
+        if scope not in self._login_jobs:
+            task = self.spawn(self._run_login_check(scope, self.generation), scope=scope)
+            self._login_jobs[scope] = task
+            def finished(done):
+                if self._login_jobs.get(scope) is done:
+                    self._login_jobs.pop(scope, None)
+            task.add_done_callback(finished)
+
+    async def _run_login_check(self, scope, generation):
+        account, kind, target = scope
+        key = (generation, *scope)
+        try:
+            if await self.check_login_messages(kind, target):
+                self._login_checked.add(key)
+                self._login_retry_at.pop(key, None)
+            else:
+                self._login_retry_at[key] = time.monotonic() + 60
+        finally:
+            self._login_jobs.pop(scope, None)
+        if generation == self.generation and account == self.policy['account_id'] and self.account_verified:
+            for event in self._login_live.pop(scope, []):
+                await self.dispatch_message({**event, '_loginAfterCatchup': True})
+
+    async def check_login_messages(self, kind, target):
+        """Read a bounded recent backlog, then enter the normal reply path once."""
+        from .history import _message
+        account, generation = self.policy['account_id'], self.generation
+        since = self.login_checkpoints.since(account, kind, target)
+        if since is None or not self._login_allowed(kind, target):
+            return
+        since = max(since, self._scope_cutoff_now(account, kind, target))
+        checked_at = time.time()
+        rows, ids, cursor = [], set(), None
+        try:
+            # Three pages cap a long absence at 90 recent messages. Never flood
+            # the conversation with one reply per old event.
+            for _ in range(3):
+                context = await self.scoped_history({'targetType': kind, 'targetId': target,
+                    'limit': 30, **({'cursor': cursor} if cursor else {})}, owner_authorized=True)
+                if not context.get('ok'):
+                    raise ValueError('history_unavailable')
+                page = [row for row in context.get('messages', []) if row['messageId'] not in ids]
+                ids.update(row['messageId'] for row in page)
+                rows = page + rows
+                if not page or page[0]['time'] < since or not context.get('nextCursor'):
+                    break
+                cursor = context['nextCursor']
+            if generation != self.generation or not self._login_allowed(kind, target):
+                return
+            rows = [row for row in rows if row['time'] >= since]
+            boundary_ids = self.login_checkpoints.boundary_ids(account, kind, target)
+            pending = pending_messages(rows, account=account, since=since,
+                seen=lambda mid: mid in boundary_ids or self.ledger.incoming_seen(account, mid))
+            pending = [row for row in pending if not self.owner_receipts.get(
+                account, row.get('senderId', ''), kind, target, row['messageId'])]
+            call = await self.require_account(account)
+            chosen = None
+            for row in reversed(pending):
+                response = await call('get_msg', {'message_id': row['messageId']})
+                raw = response.get('data') if response.get('retcode') == 0 else None
+                normalized = _message(raw, account, kind, target, 0)
+                if normalized['messageId'] != row['messageId'] or normalized['senderId'] != row['senderId']:
+                    raise ValueError('history_message_changed')
+                event = {**raw, 'self_id': account, 'post_type': 'message', 'message_type': kind,
+                         'user_id': row['senderId'], '_loginCatchup': True,
+                         '_loginCatchupHistory': {'ok': True, 'messages': rows}}
+                if kind == 'group':
+                    event['group_id'] = target
+                    if not (self._owner_control_details(event, check_seen=False) or
+                            await resolve_group_trigger(call, event, account, conversation_policy(self.policy, kind, target))):
+                        continue
+                chosen = event
+                break
+            if generation != self.generation or not self._login_allowed(kind, target):
+                return
+            if chosen is not None:
+                task = await self.dispatch_message(chosen)
+                if not task:
+                    return
+                for row in pending:
+                    self.ledger.fresh_incoming(account, row['messageId'])
+                if isinstance(task, asyncio.Task):
+                    await task
+            self.login_checkpoints.advance(account, kind, target, checked_at,
+                message_ids=[row['messageId'] for row in rows if row['time'] == int(checked_at)])
+            self.record_event('login_catchup_checked', {'account': account, 'kind': kind, 'target': target,
+                'readCount': len(rows), 'pendingCount': len(pending), 'repliedTo': chosen['message_id'] if chosen else None})
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.record_event('login_catchup_failed', {'account': account, 'kind': kind, 'target': target,
+                'error': type(exc).__name__})
 
     def delivery_language(self, kind: str, target: str, request_key: str, override=None) -> str:
         from backend.chat.presentation import speech_language_profile
@@ -1279,6 +1825,20 @@ class Gateway:
                     or not self.lifecycle_status()['active']):
                 return
             call = await self.require_account(account)
+            try:
+                event = await self._transcribe_voice(call, event)
+            except VoiceInputError as exc:
+                # A failed keyword-only candidate has not actually addressed us.
+                if kind == 'group' and not await resolve_group_trigger(
+                        call, event, account, conversation_policy(self.policy, kind, target)):
+                    return
+                await self._voice_failure_reply(event, exc, generation, epoch)
+                return
+            if (generation != self.generation or not self.account_verified
+                    or not self._scope_is_current_now(account, kind, target, epoch)
+                    or self.policy['mode'] == 'paused' or not allowed(self.policy, kind, target)
+                    or not self.lifecycle_status()['active']):
+                return
             trigger = None
             if kind == 'group':
                 # Never await a OneBot response in napcat_reader: it must keep
@@ -1302,18 +1862,17 @@ class Gateway:
                     return
             cutoff = self._scope_cutoff_now(account, kind, target)
             history = [{"state": row["state"], "message_id": row["message_id"],
+                        "galleryMedia": row.get("galleryMedia", []),
                         "text": "".join(x.get("data", {}).get("text", "") for x in row["message"]
                                           if isinstance(x, dict))[:1500]}
-                       for row in self.ledger.snapshot()["sends"]
-                       if row["account"] == account and row["kind"] == kind and row["target"] == target
-                       and (not cutoff or float(row.get("created") or 0.0) > cutoff)][:5]
+                       for row in self._delivery_history(account, kind, target, cutoff)]
             try:
                 reply_policy = conversation_policy(self.policy, kind, target)
                 history_limit = reply_policy['history_messages'] or (10 if kind == 'group' else 0)
-                context = await asyncio.wait_for(self._automatic_history(
+                context = event.get('_loginCatchupHistory') or (await asyncio.wait_for(self._automatic_history(
                     account, kind, target,
                     {"targetType": kind, "targetId": target, "limit": history_limit}, epoch),
-                    timeout=5) if history_limit else {'ok': True, 'messages': []}
+                    timeout=5) if history_limit else {'ok': True, 'messages': []})
             except (TimeoutError, ConnectionError):
                 context = {"ok": False, "message": "本次未取得 QQ 历史，只能依据当前来信和已保存的工作记录。"}
             if kind == 'group':
@@ -1321,6 +1880,8 @@ class Gateway:
                     'message_id': event.get('message_id'), 'source': (trigger or {}).get('type'), 'trigger': trigger, 'ok': bool(context.get('ok')),
                     'count': len(context.get('messages', [])), 'reason': f'{trigger_label}后主动读取当前群聊上下文'})
             linked_message, images, media_notes = await self.message_material(call, event, account, kind, target, context)
+            if event.get('_loginCatchup'):
+                media_notes.insert(0, '这是登录后补看的未回复消息；结合上下文集中回复即可，不必逐条补发或说明检查过程。')
             if (generation != self.generation or not self.account_verified
                     or not self._scope_is_current_now(account, kind, target, epoch)):
                 return
@@ -1351,6 +1912,7 @@ class Gateway:
                                               event=event, delivery_history=history, conversation_context=context,
                                               reply_instructions=reply_policy.get("reply_instructions", ""),
                                               reply_style=reply_policy.get('reply_style', 'game'),
+                                              sticker_preferences=reply_policy.get('sticker_preferences'),
                                                owner_ids=reply_policy.get('owner_ids', []),
                                                account_role=reply_policy['account_role'], identity_context=identity_context,
                                                message_context=linked_message,
@@ -1368,16 +1930,24 @@ class Gateway:
                 self.record_event("amadeus_discarded", {"account": account, "kind": kind, "target": target,
                     "reason": "生成期间连接或授权已改变，没有发送"})
                 return
+            result = project_qq_result(
+                result,
+                include_source_parts=True,
+                voice=selected_format == 'voice',
+            )
             if result.get('muted'):
                 return
             if not result.get("reply") and not result.get("imageIds"):
                 return
-            _, _, segments = outgoing("send_msg", {"message_type": kind,
-                "group_id" if kind == "group" else "user_id": target,
-                "message": format_reply(result.get("reply") or "", reply_policy['compact_reply']),
-                "imageIds": result.get("imageIds", [])})
+            segments, semantic_plan = _outgoing_reply_plan(
+                kind, target, result, compact=reply_policy['compact_reply'],
+                split_enabled=reply_policy.get('reply_bubble_chars', DEFAULT_REPLY_BUBBLE_CHARS) != 0,
+                include_source_parts=selected_format != 'voice')
             draft = self.ledger.draft(self.policy, kind, target, segments, actor="Amadeus",
-                reason=result["reason"], request_key=request_key, speech=result.get("speech"))
+                reason=result["reason"], request_key=request_key,
+                speech=_speech_for_draft(result, voice=selected_format == 'voice'))
+            if semantic_plan is not None and draft.get('reply_format') != 'voice':
+                self.ledger.ensure_send_parts(draft['id'], semantic_plan)
             if reply_policy["mode"] == "auto":
                 await self.send_draft(draft["id"], generation=generation, _scope_epoch=epoch)
         except asyncio.CancelledError:
@@ -1482,6 +2052,7 @@ class Gateway:
                                                      since=cutoff),
                 reply_instructions=reply_policy['reply_instructions'], reply_identity=identity,
                 reply_style=reply_policy.get('reply_style', 'game'),
+                sticker_preferences=reply_policy.get('sticker_preferences'),
                 owner_ids=reply_policy.get('owner_ids', []),
                 account_role=reply_policy['account_role'], identity_context=identity_context,
                 identity_scope=self.identities.scope(account, kind, target, '', identity_context),
@@ -1489,17 +2060,25 @@ class Gateway:
             if (generation != self.generation or not self.lifecycle_status()['active']
                     or not self._scope_is_current_now(account, kind, target, epoch)):
                 raise ValueError('生成期间授权或连接已变化，委托未发送')
+            result = project_qq_result(
+                result,
+                include_source_parts=True,
+                voice=selected_format == 'voice',
+            )
             if result.get('muted'):
                 raise ValueError('该会话已停止或没有生成可发送的正文')
             if not result.get('reply') and not result.get('imageIds'):
                 raise ValueError('该会话已停止或没有生成可发送的正文')
-            _, _, segments = outgoing('send_msg', {'message_type': kind,
-                'group_id' if kind == 'group' else 'user_id': target,
-                'message': format_reply(result.get('reply') or '', reply_policy['compact_reply']),
-                'imageIds': result.get('imageIds', [])})
+            segments, semantic_plan = _outgoing_reply_plan(
+                kind, target, result, compact=reply_policy['compact_reply'],
+                split_enabled=reply_policy.get('reply_bubble_chars', DEFAULT_REPLY_BUBBLE_CHARS) != 0,
+                include_source_parts=selected_format != 'voice')
             row = self.ledger.draft(self.policy, kind, target, segments, actor='Amadeus', reason=reason,
-                                    request_key=request_key, speech=result.get("speech"),
+                                    request_key=request_key,
+                                    speech=_speech_for_draft(result, voice=selected_format == 'voice'),
                                     creation_request_id=request_id)
+            if semantic_plan is not None and row.get('reply_format') != 'voice':
+                self.ledger.ensure_send_parts(row['id'], semantic_plan)
             self.ledger.save_delegation(request_key, instruction, self.policy, reply_identity=identity)
             if reply_policy['mode'] == 'auto':
                 await self.send_draft(row['id'], generation=generation, idempotent=True,
@@ -1526,7 +2105,7 @@ class Gateway:
                if isinstance(part, dict) and part.get('type') == 'qq_image']
         if not ids:
             return message
-        if len(ids) > 2 or any(not re.fullmatch(r'[0-9a-fA-F]{64}', asset_id) for asset_id in ids):
+        if len(ids) > MAX_REPLY_IMAGES or any(not re.fullmatch(r'[0-9a-fA-F]{64}', asset_id) for asset_id in ids):
             raise ValueError('QQ 图片附件标识无效')
         segments = await self._media_call(self._media_library(account), 'segments', ids)
         if not isinstance(segments, list) or len(segments) != len(ids):
@@ -1569,14 +2148,6 @@ class Gateway:
                     return {"status": "ok" if sent else "failed", "retcode": 0 if sent else 1403,
                             "data": {"message_id": previous["message_id"]}, "replayed": True}
                 send_policy = conversation_policy(self.policy, previous['kind'], previous['target'])
-                if not approved and send_policy["mode"] == "auto":
-                    content = ''.join(part.get('data', {}).get('text', '') for part in json.loads(previous['message']))
-                    delay = reply_delay(send_policy, content)
-                    if delay:
-                        wait = random.uniform(delay * 0.7, delay * 1.3)
-                        if send_policy.get('reply_delay_mode') == 'length':
-                            wait = min(30, wait)
-                        await asyncio.sleep(wait)
                 if (generation is not None and generation != self.generation
                         or not self._scope_is_current_now(account, kind, target, epoch)):
                     raise ValueError("连接或授权已变更，旧动作已取消")
@@ -1589,17 +2160,28 @@ class Gateway:
                                           owner_authorized=owner_authorized)
                 message = json.loads(previous['message'])
                 images = [part for part in message if part.get('type') == 'qq_image']
-                mixed_voice = previous.get('reply_format') == 'voice' and bool(images)
+                speech_payload = json.loads(previous['speech_json'])
+                stored_source_parts = citation_source_parts({
+                    'sourceParts': speech_payload.get('qqSourceParts')
+                    if isinstance(speech_payload, dict) else None,
+                })
+                mixed_voice = previous.get('reply_format') == 'voice' and bool(
+                    images or stored_source_parts
+                )
                 saved_parts = self.ledger.send_parts(ident) if mixed_voice else []
                 if previous.get('reply_format') == 'voice' and not saved_parts:
                     content = ''.join(part.get('data', {}).get('text', '') for part in message)
                     speech_language = self.delivery_language(previous['kind'], previous['target'], previous['request_key'])
+                    tts_speech = dict(speech_payload) if isinstance(speech_payload, dict) else {}
+                    # Source notes are persisted for the post-audio text
+                    # bubble, but the voice adapter must never consume URLs.
+                    tts_speech.pop('qqSourceParts', None)
                     self.record_event('voice_preparing', {'draft_id': ident, 'account': previous['account'],
                         'kind': previous['kind'], 'target': previous['target'], 'reason': '按已开启的语音模式合成回复'})
                     try:
                         message = await self.synthesize_voice_message(account=previous['account'], kind=previous['kind'],
                             target=previous['target'], reply_identity=send_policy['reply_identity'], draft_id=ident,
-                            text=content, speech=json.loads(previous['speech_json']), speech_language=speech_language)
+                            text=content, speech=tts_speech, speech_language=speech_language)
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -1619,7 +2201,13 @@ class Gateway:
                 # move boundaries or resend an already delivered part.
                 if mixed_voice:
                     if not saved_parts:
-                        self.ledger.ensure_send_parts(ident, [message, *[[part] for part in images]])
+                        source_segments = _source_delivery_parts(
+                            {'sourceParts': stored_source_parts},
+                            compact=send_policy.get('compact_reply', True),
+                        )
+                        self.ledger.ensure_send_parts(
+                            ident, [message, *source_segments, *[[part] for part in images]]
+                        )
                     delivery_parts = self.ledger.send_parts(ident)
                 elif previous.get('reply_format') == 'voice':
                     delivery_parts = None
@@ -1641,26 +2229,23 @@ class Gateway:
                 part_results = []
                 is_split = previous.get('reply_format') != 'voice' or mixed_voice
                 attempt_started = False
-                sent_any = False
                 try:
                     for part in delivery_parts:
                         if part.get('state') == 'sent':
-                            sent_any = True
                             continue
                         part_index = int(part['part_index'])
-                        # Every bubble gets its own delay and fresh account,
-                        # lifecycle, scope and quota checks.  The conversation
-                        # cooldown is intentionally not reused between parts;
-                        # the per-bubble reply delay is the pacing mechanism.
+                        # Every text bubble gets its own delay, including the
+                        # first and an explicitly approved draft.  The wait is
+                        # kept inside the send lock so parallel owner/ordinary
+                        # deliveries remain ordered; all account, lifecycle,
+                        # scope and quota checks run again afterward.
                         current_policy = conversation_policy(self.policy, kind, target)
-                        if sent_any:
-                            text = ''.join(segment.get('data', {}).get('text', '')
-                                           for segment in part.get('message', [])
-                                           if isinstance(segment, dict)
-                                           and segment.get('type') == 'text')
-                            delay = reply_delay(current_policy, text)
-                            if delay:
-                                await asyncio.sleep(delay)
+                        text = ''.join(segment.get('data', {}).get('text', '')
+                                       for segment in part.get('message', [])
+                                       if isinstance(segment, dict)
+                                       and segment.get('type') == 'text').strip()
+                        if is_split and text:
+                            await _wait_reply_part(current_policy, text)
                             current_policy = conversation_policy(self.policy, kind, target)
                         if (generation != self.generation
                                 or self.policy.get('account_id') != account
@@ -1711,7 +2296,6 @@ class Gateway:
                             if is_split:
                                 self.ledger.finish_send_part(ident, part_index, 'sent', str(msg_id))
                             part_results.append({"index": part_index, "result": result})
-                            sent_any = True
                             continue
                         if result.get("status") == "failed":
                             if is_split:
@@ -2129,6 +2713,7 @@ class Gateway:
                     self.account_verified = False
             self.policy = policy
             self.config = updated
+            self._sync_login_policy()
             if account_changed:
                 self._contacts, self._contacts_at, self._contacts_complete = [], 0.0, False
                 self._contacts_account = policy["account_id"]
@@ -2209,9 +2794,21 @@ class Gateway:
             epoch = self._scope_epoch_now(account, kind, target)
             request_key = (("amadeus-send:" if sending else "amadeus:") + account + ':'
                            + data['request_id'] + ':e' + str(epoch))
+            self.ledger.select_reply_format(self.policy, kind, target, request_key,
+                                            override=data.get('replyFormat'))
             self.delivery_language(kind, target, request_key, data.get('speechLanguage'))
             row = self.ledger.draft(self.policy, kind, target, message, actor="Amadeus", reason=reason,
                 request_key=request_key, creation_request_id=creation_request_id)
+            reply_policy = conversation_policy(self.policy, kind, target)
+            semantic_plan = _semantic_delivery_parts(
+                ''.join(segment.get('data', {}).get('text', '') for segment in message
+                        if isinstance(segment, dict) and segment.get('type') == 'text'),
+                data.get('replyParts'), compact=reply_policy['compact_reply'],
+                split_enabled=reply_policy['reply_bubble_chars'] != 0)
+            if semantic_plan is not None and row.get('reply_format') != 'voice':
+                image_parts = [[segment] for segment in message
+                               if isinstance(segment, dict) and segment.get('type') == 'qq_image']
+                self.ledger.ensure_send_parts(row['id'], [*semantic_plan, *image_parts])
             return row, "通过 QQ 向 "+kind+":"+target+" 发送消息。原因："+reason
         async def draft(request):
             row, explanation = owner_draft(await request.json())
@@ -2284,7 +2881,11 @@ class Gateway:
             task = asyncio.create_task(self.bridge())
             watcher = asyncio.create_task(self.watch_owner())
             space_watcher = asyncio.create_task(self.watch_qzone())
+            login_watcher = asyncio.create_task(self.watch_login_messages())
             yield
+            login_watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await login_watcher
             space_watcher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await space_watcher
@@ -2297,6 +2898,7 @@ class Gateway:
             for child in list(self.tasks):
                 child.cancel()
             await asyncio.gather(*self.tasks, return_exceptions=True)
+            await self.voice_input.close()
             self.ledger.db.close()
             self.owner_receipts.close()
         app.cleanup_ctx.append(lifecycle)

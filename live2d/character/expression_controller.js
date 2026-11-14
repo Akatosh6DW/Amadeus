@@ -98,6 +98,7 @@
     let currentExpressionDetail = { ...DEFAULT_DETAIL };
     let nextContextEmotionAt = now() + 18000;
     let contextEmotionRequestInFlight = false;
+    let settledContextEmotionKey = null;
     const emotionGestureSteps = new Map();
 
     function emotionSemanticsFor(emotion) {
@@ -349,6 +350,23 @@
         * visualIntensity(currentEmotionWeight);
     }
 
+    function contextEmotionKey(emotion, recentMessages) {
+      try {
+        return JSON.stringify([emotion, recentMessages.map(item => [
+          item?.role ?? "", item?.content ?? item?.text ?? "", item?.id ?? item?.messageId ?? "",
+        ])]);
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function currentContextEmotionKey() {
+      const messages = getMessages();
+      return Array.isArray(messages)
+        ? contextEmotionKey(currentEmotion, messages.slice(-8))
+        : null;
+    }
+
     function maybeRefreshContextEmotion(currentTime = now()) {
       if (getPersistentColdShoulder()) {
         nextContextEmotionAt = currentTime + 30000;
@@ -365,19 +383,48 @@
         nextContextEmotionAt = currentTime + 30000;
         return;
       }
+      // The answer depends only on the current emotion and the recent
+      // messages. Once the model has confirmed the emotion for this exact
+      // input, asking again on a timer returns the same thing; a new message
+      // or a local emotion change produces a new key and one new request.
+      const requestEmotion = currentEmotion;
+      const recentMessages = messages.slice(-8);
+      const contextKey = contextEmotionKey(requestEmotion, recentMessages);
+      if (contextKey === null) {
+        nextContextEmotionAt = currentTime + 30000;
+        return;
+      }
+      if (contextKey === settledContextEmotionKey) {
+        nextContextEmotionAt = currentTime + 45000;
+        return;
+      }
       contextEmotionRequestInFlight = true;
       nextContextEmotionAt = currentTime + 45000;
-      Promise.resolve(requestContextEmotion({
-        currentEmotion,
-        messages: messages.slice(-8),
-      }))
+      let requestPromise;
+      try {
+        requestPromise = requestContextEmotion({
+          currentEmotion: requestEmotion,
+          messages: recentMessages,
+        });
+      } catch (error) {
+        requestPromise = Promise.reject(error);
+      }
+      Promise.resolve(requestPromise)
         .then(data => {
           if (!data || data.ok === false) throw new Error(data?.error || "emotion context unavailable");
+          // A response is only valid for the exact emotion and message
+          // context captured when it was requested. New messages or a local
+          // expression change make an older answer unsafe to apply.
+          if (currentContextEmotionKey() !== contextKey) {
+            nextContextEmotionAt = now();
+            return;
+          }
           const emotion = Object.prototype.hasOwnProperty.call(emotionTargets, data.emotion)
             ? data.emotion
             : "neutral";
           const gesture = normalizeGesture(data.gesture);
           if (emotion === currentEmotion) {
+            settledContextEmotionKey = contextKey;
             nextContextEmotionAt = now() + (emotion === "neutral" ? 45000 : 12000);
             return;
           }

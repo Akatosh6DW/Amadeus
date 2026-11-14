@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Callable, Mapping, Sequence
 
 from agent.action_grounding import PreparedTurn
@@ -215,6 +216,45 @@ def manage_final_payload(settings: dict[str, Any], payload: dict[str, Any], *,
                                + payload_overhead_tokens(payload),
         request_id=request_id, stage=purpose + "_final_payload", default_context_limit=65536,
         write_log=write_log, summary_callback=summary_callback)
+    # "off" restores the builders' own order and content; "order" only moves
+    # whole stable modules; "split" also sends the fixed head of the cognitive
+    # block as a stable module; "wire" additionally places the fixed
+    # output-format and participant rules in the cached prefix. The default
+    # ("turn") is "wire" plus the turn prefix for the calls of one chat turn:
+    # blocks that are the same for every call of the turn follow the stable
+    # section, and the blocks that differed only in a per-call part are sent
+    # as a shared part and a per-call part. "turn1"/"turn2" stop after the
+    # reordering or after the block splits, for comparison runs.
+    stable_prefix_mode = os.environ.get("AMADEUS_PROMPT_STABLE_PREFIX", "").strip().lower()
+    if stable_prefix_mode != "off":
+        from agent.conversation_json import JSON_CONTAINER_INSTRUCTION
+        from agent.engineering_contracts import compact_engineering_enabled
+        from backend.context.prompt_assembly import (
+            cache_stable_order, dedupe_repeated_text, dedupe_tool_evidence, label_history_block,
+            split_capability_block, split_cognitive_packet, split_dignity_output,
+            split_static_protocol, turn_prefix_stage,
+        )
+        # A tool result is sent once: the packet copy stays, an identical
+        # copy in the separate evidence block becomes a pointer to it.
+        messages = dedupe_tool_evidence(messages)
+        # The turn contract and the output-format rule each embed this rule in
+        # full; one request needs it once.
+        messages = dedupe_repeated_text(
+            messages, (PROACTIVE_DIRECTIVE_INSTRUCTION,),
+            pointer="proactiveDirective 的判断规则在后文完整给出，此处不重复。")
+        if compact_engineering_enabled() and stable_prefix_mode != "order":
+            messages = split_static_protocol(
+                messages, container_marker=JSON_CONTAINER_INSTRUCTION.split("\n", 1)[0])
+        turn_stage = turn_prefix_stage(stable_prefix_mode, purpose) if compact_engineering_enabled() else 0
+        if turn_stage >= 1:
+            messages = label_history_block(messages)
+        if turn_stage >= 2:
+            messages = split_dignity_output(split_capability_block(messages))
+        if turn_stage >= 3 and compact_engineering_enabled():
+            messages = split_cognitive_packet(messages)
+        messages = cache_stable_order(
+            messages, include_wire_rules=stable_prefix_mode not in {"order", "split"},
+            turn_stable=turn_stage >= 1)
     return {**payload, "messages": wire_messages(messages)}
 
 

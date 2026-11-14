@@ -5,8 +5,9 @@ import json
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
+from agent.tool_architecture import WEB_TOOL_NAMES
 
-WEB_NAMES = {"web_search", "read_web_page"}
+WEB_NAMES = WEB_TOOL_NAMES
 
 
 def native_web_enabled(settings: Mapping[str, Any], body: Mapping[str, Any], purpose: str) -> bool:
@@ -51,10 +52,19 @@ def prepare_native_web_payload(payload: Mapping[str, Any], body: Mapping[str, An
           "searchProvider": {"type": "string"},
           "find": {"type": "string"}, "startChar": {"type": "integer", "minimum": 0},
           "maxChars": {"type": "integer", "minimum": 1, "maximum": 14000}}, "url"),
+        ("public_read", "Read public content without login or posting. Use source=bluesky with search|posts|account|thread; source=bangumi with search|subject|detail; source=arxiv with search|abstract|detail (abstract/detail use id); or source=rss with feed (url is the subscription URL).",
+         {"source": {"type": "string", "enum": ["bluesky", "bangumi", "arxiv", "rss"]},
+          "operation": {"type": "string", "enum": ["search", "posts", "account", "thread", "subject", "detail", "abstract", "feed"]},
+          "query": {"type": "string"}, "actor": {"type": "string"},
+          "uri": {"type": "string"}, "id": {"type": "string"},
+          "url": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+          "cursor": {"type": "string"}}, ("source", "operation")),
     ]
     active["tools"] = [{"type": "function", "function": {
         "name": name, "description": description, "parameters": {
-            "type": "object", "properties": properties, "required": [required], "additionalProperties": False,
+            "type": "object", "properties": properties,
+            "required": [required] if isinstance(required, str) else list(required),
+            "additionalProperties": False,
         },
     }} for name, description, properties, required in definitions]
     plan = body.get("_turnExecutionPlan") or {}
@@ -77,7 +87,8 @@ def prepare_native_web_payload(payload: Mapping[str, Any], body: Mapping[str, An
     active.pop("response_format", None)
     active["stream"] = False
     active["messages"] = [*active.get("messages", []), {"role": "system", "content":
-        "本轮提供原生联网函数。搜索和读网页直接使用这些函数；函数结果会作为工具证据返回。"
+        "本轮提供原生联网函数。搜索、读网页或读取公开 Bluesky/Bangumi/arXiv/RSS 内容直接使用这些函数；"
+        "函数结果会作为工具证据返回。"
         "其他工具继续使用原来的 kind=tool_use/calls。资料够用后按原有对话 JSON 容器给出最终回答。"}]
     return active
 

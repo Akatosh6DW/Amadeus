@@ -945,12 +945,12 @@ class StreamChatDelivery:
             tool_status = {
                 "stage": (
                     "research-planning"
-                    if tool_names & {"web_search", "read_web_page"}
+                    if tool_names & {"web_search", "read_web_page", "public_read"}
                     else "tool-executing"
                 ),
                 "displayText": (
                     "正在核对回答中需要确认的公开信息"
-                    if tool_names & {"web_search", "read_web_page"}
+                    if tool_names & {"web_search", "read_web_page", "public_read"}
                     else "正在获取回答所需的工具证据"
                 ),
                 "speakable": False,

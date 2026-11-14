@@ -71,12 +71,18 @@ class QzoneRunner:
         instructions: str = "",
         allow_write: bool = False,
         allow_publish: bool = False,
+        *,
+        life_context: dict | None = None,
+        request_id: str = "",
     ) -> dict:
         """Run one model turn in ``runtime/qzone/<account>/agent``.
 
         ``settings`` is copied into the child process and filtered there.  It
         may contain the current model/web configuration, but no desktop data
-        paths are used by this runner.
+        paths are used by this runner.  ``life_context`` is an optional,
+        already-bounded material snapshot; the worker treats it as material,
+        never as an instruction.  ``request_id`` lets the host correlate the
+        worker result with a durable life event.
         """
 
         account = normalize_account(account)
@@ -99,7 +105,8 @@ class QzoneRunner:
                 "instructions": str(instructions or "")[:2000],
                 "allow_write": bool(allow_write),
                 "allow_publish": bool(allow_write and allow_publish),
-                "request_id": "",
+                "request_id": str(request_id or "").strip()[:256],
+                "life_context": life_context if isinstance(life_context, dict) else {},
             }
             return await self._invoke(account_root, agent_root, payload)
 

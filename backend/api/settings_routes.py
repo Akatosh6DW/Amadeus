@@ -22,6 +22,7 @@ class SettingsOperations:
     background_images: Callable[[], list[dict[str, str]]]
     test_api: Callable[[], dict[str, Any]]
     test_web_search: Callable[[], dict[str, Any]]
+    sticker_series: Callable[[], list[str]] = lambda: []
 
 
 class SettingsRoutes:
@@ -34,6 +35,7 @@ class SettingsRoutes:
         response.send_json({
             "settings": self.operations.public_settings(),
             "backgroundPresets": self.operations.background_images(),
+            "stickerSeries": self.operations.sticker_series(),
             "windowAspectRatios": {
                 mode: [window_limits(mode).min_ratio, window_limits(mode).max_ratio]
                 for mode in ("lite", "full")

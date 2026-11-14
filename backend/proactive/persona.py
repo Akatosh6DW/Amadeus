@@ -6,16 +6,36 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from backend.common.text import unique_strings
 
 class PersonaResources:
     def __init__(self, *, root: Callable[[], Path], layers_path: Callable[[], Path],
-                 prompt_path: Callable[[], Path], read_json: Callable[..., Any]) -> None:
+                 prompt_path: Callable[[], Path], read_json: Callable[..., Any],
+                 companion_prompt: Callable[..., str] | None = None) -> None:
         self.root = root
         self.layers_path = layers_path
         self.prompt_path = prompt_path
         self.read_json = read_json
+        self.companion_prompt = companion_prompt
+
+    def read_companion_prompt(
+        self,
+        user_message: str = "",
+        *,
+        cognitive_body: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Read the host-owned shared persona/continuity projection.
+
+        Existing callers keep the old proactive persona when no callback is
+        wired.  The callback receives the opaque host body so the owner check
+        remains in the host instead of guessing from proactive text.
+        """
+
+        if self.companion_prompt is None:
+            return ""
+        value = self.companion_prompt(user_message, cognitive_body=cognitive_body)
+        return str(value or "").strip()
 
     def read_proactive_persona_prompt(self) -> str:
         """Return the deliberately limited persona used only for idle outreach."""

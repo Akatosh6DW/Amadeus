@@ -11,11 +11,16 @@ from backend.relationship.dignity_rules import dignity_locked_response, furious_
 
 class DignityBoundaryService:
     def __init__(self, *, read_state: Callable[..., Any], write_state: Callable[..., Any],
-                 classify: Callable[..., Any], write_log: Callable[..., Any]) -> None:
+                 classify: Callable[..., Any], write_log: Callable[..., Any],
+                 counting_suspended: Callable[[], bool] | None = None) -> None:
         self.read_state = read_state
         self.write_state = write_state
         self.classify = classify
         self.write_log = write_log
+        # True while the turn comes from a QQ conversation. The owner asked
+        # that QQ chat never adds to the insult count; the host decides this
+        # from the verified transport, never from message or model text.
+        self.counting_suspended = counting_suspended
 
     def dignity_preflight(
         self,
@@ -69,6 +74,13 @@ class DignityBoundaryService:
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Persist only model-confirmed severe insults; normal anger never increments."""
 
+        if self.counting_suspended is not None and self.counting_suspended():
+            # The reply itself is kept as the model wrote it. Nothing is
+            # counted, no cold shoulder starts and the stored state is not
+            # written, so a QQ exchange cannot lock the desktop companion.
+            output = dict(result)
+            output["boundaryAssessment"] = normalize_boundary_assessment(None)
+            return output, self.read_state()
         state = self.read_state()
         preflight = preflight if isinstance(preflight, dict) else {}
         assessment = normalize_boundary_assessment(

@@ -61,6 +61,8 @@ const MODEL_PROFILE_CONTROLLER = window.AmadeusModelProfileController;
 if (!MODEL_PROFILE_CONTROLLER) throw new Error("settings/model_profile_controller.js is required");
 const SETTINGS_CONTROLLER = window.AmadeusSettingsController;
 if (!SETTINGS_CONTROLLER) throw new Error("settings/settings_controller.js is required");
+const LIFE_CONTROLLER = window.AmadeusLifeController;
+if (!LIFE_CONTROLLER) throw new Error("settings/life_controller.js is required");
 const UPDATE_CONTROLLER = window.AmadeusUpdateController;
 if (!UPDATE_CONTROLLER) throw new Error("settings/update_controller.js is required");
 const TOUCH_INTERACTION = window.AmadeusTouchInteraction;
@@ -158,6 +160,7 @@ const PROACTIVE_FREQUENCY_PROFILES = Object.freeze({
 });
 
 const DEFAULT_SETTINGS = {
+  stickerPreferences: null,
   apiEndpoint: "https://api.deepseek.com/chat/completions",
   apiModel: "deepseek-flash",
   cognitiveRepairModel: "follow",
@@ -384,6 +387,8 @@ let messageView = null;
 let apiVerificationController = null;
 let modelProfileController = null;
 let settingsController = null;
+let desktopStickerEditor = null, desktopStickerSeries = [];
+let lifeController = null;
 let qqSetupController = null;
 let qqActivityController = null;
 let toolPickerController = null;
@@ -1005,6 +1010,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindBookmarks();
   bindMessageView();
   bindSettingsController();
+  bindLifeController();
   bindUpdateController();
   bindTodoController();
   bindSceneController();
@@ -1112,6 +1118,7 @@ function bindDom() {
     todoEditorTitle: document.getElementById("todoEditorTitle"),
     todoEditorDetails: document.getElementById("todoEditorDetails"),
     todoEditorMode: document.getElementById("todoEditorMode"),
+    todoEditorDelivery: document.getElementById("todoEditorDelivery"),
     todoEditorDueAt: document.getElementById("todoEditorDueAt"),
     todoEditorDueDate: document.getElementById("todoEditorDueDate"),
     todoEditorPriority: document.getElementById("todoEditorPriority"),
@@ -1276,6 +1283,44 @@ function bindDom() {
     updateStatus: document.getElementById("updateStatus"),
     settingsTabs: [...document.querySelectorAll(".settings-tabs button")],
     tabPages: [...document.querySelectorAll(".tab-page")],
+    lifeEnabledInput: document.getElementById("lifeEnabledInput"),
+    lifeActivityFrequencyInput: document.getElementById("lifeActivityFrequencyInput"),
+    lifeActivityFrequencyValue: document.getElementById("lifeActivityFrequencyValue"),
+    lifeActivityFrequencyPreview: document.getElementById("lifeActivityFrequencyPreview"),
+    lifeActiveStartHourInput: document.getElementById("lifeActiveStartHourInput"),
+    lifeActiveEndHourInput: document.getElementById("lifeActiveEndHourInput"),
+    lifeInstructionsInput: document.getElementById("lifeInstructionsInput"),
+    lifeDirectoriesInput: document.getElementById("lifeDirectoriesInput"),
+    lifeSourcesInput: document.getElementById("lifeSourcesInput"),
+    lifeSourcePresetInput: document.getElementById("lifeSourcePresetInput"),
+    lifeAddSourceBtn: document.getElementById("lifeAddSourceBtn"),
+    lifeAllowWebInput: document.getElementById("lifeAllowWebInput"),
+    lifeAllowQqReadInput: document.getElementById("lifeAllowQqReadInput"),
+    lifeAllowQqChatInput: document.getElementById("lifeAllowQqChatInput"),
+    lifeQqChatOwnerInput: document.getElementById("lifeQqChatOwnerInput"),
+    lifeQqChatHint: document.getElementById("lifeQqChatHint"),
+    lifePublishModeInput: document.getElementById("lifePublishModeInput"),
+    lifePublishAccountInput: document.getElementById("lifePublishAccountInput"),
+    lifeUseQqAccountBtn: document.getElementById("lifeUseQqAccountBtn"),
+    lifeAccountHint: document.getElementById("lifeAccountHint"),
+    lifePublishVisibilityInput: document.getElementById("lifePublishVisibilityInput"),
+    lifeDailyPublishLimitInput: document.getElementById("lifeDailyPublishLimitInput"),
+    lifeSaveBtn: document.getElementById("lifeSaveBtn"),
+    lifeRunBtn: document.getElementById("lifeRunBtn"),
+    lifeStopBtn: document.getElementById("lifeStopBtn"),
+    lifeRefreshBtn: document.getElementById("lifeRefreshBtn"),
+    lifeStatus: document.getElementById("lifeStatus"),
+    lifeRuntimeStatus: document.getElementById("lifeRuntimeStatus"),
+    lifeNextRun: document.getElementById("lifeNextRun"),
+    lifeNextChat: document.getElementById("lifeNextChat"),
+    lifeRunsToday: document.getElementById("lifeRunsToday"),
+    lifeRhythmList: document.getElementById("lifeRhythmList"),
+    lifePermissions: document.getElementById("lifePermissions"),
+    lifeInterestNote: document.getElementById("lifeInterestNote"),
+    lifeLastError: document.getElementById("lifeLastError"),
+    lifeActivitiesList: document.getElementById("lifeActivitiesList"),
+    lifeChatsList: document.getElementById("lifeChatsList"),
+    lifeDraftsList: document.getElementById("lifeDraftsList"),
     settingsPersonaStatus: document.getElementById("settingsPersonaStatus"),
     settingsPersonaOverride: document.getElementById("settingsPersonaOverride"),
     reloadSettingsPersonaBtn: document.getElementById("reloadSettingsPersonaBtn"),
@@ -1597,6 +1642,7 @@ function bindMessageView() {
 }
 
 function bindSettingsController() {
+  desktopStickerEditor = window.AmadeusStickerPreferences.create({element:document.getElementById('desktopStickerSettings')});
   settingsController = SETTINGS_CONTROLLER.createSettingsController({
     getSettings: () => settings,
     normalizeSettings,
@@ -1606,6 +1652,7 @@ function bindSettingsController() {
     request: (...args) => fetch(...args),
     onLoaded: data => {
       registerBackgroundImages(data.backgroundPresets);
+      desktopStickerSeries = data.stickerSeries || [];
       if (data.windowAspectRatios?.lite && data.windowAspectRatios?.full) {
         windowAspectRatios = data.windowAspectRatios;
       }
@@ -1624,6 +1671,55 @@ function bindSettingsController() {
     notify: message => toast(message),
   });
   settingsController.bind();
+}
+
+function bindLifeController() {
+  lifeController = LIFE_CONTROLLER.createController({
+    elements: {
+      page: document.getElementById("lifeSettings"),
+      enabled: dom.lifeEnabledInput,
+      activityFrequency: dom.lifeActivityFrequencyInput,
+      activityFrequencyValue: dom.lifeActivityFrequencyValue,
+      activityFrequencyPreview: dom.lifeActivityFrequencyPreview,
+      activeStartHour: dom.lifeActiveStartHourInput,
+      activeEndHour: dom.lifeActiveEndHourInput,
+      instructions: dom.lifeInstructionsInput,
+      directories: dom.lifeDirectoriesInput,
+      sources: dom.lifeSourcesInput,
+      sourcePreset: dom.lifeSourcePresetInput,
+      addSource: dom.lifeAddSourceBtn,
+      allowWeb: dom.lifeAllowWebInput,
+      allowQqRead: dom.lifeAllowQqReadInput,
+      allowQqChat: dom.lifeAllowQqChatInput,
+      qqChatOwner: dom.lifeQqChatOwnerInput,
+      qqChatHint: dom.lifeQqChatHint,
+      publishMode: dom.lifePublishModeInput,
+      publishAccount: dom.lifePublishAccountInput,
+      useQqAccount: dom.lifeUseQqAccountBtn,
+      accountHint: dom.lifeAccountHint,
+      publishVisibility: dom.lifePublishVisibilityInput,
+      dailyPublishLimit: dom.lifeDailyPublishLimitInput,
+      save: dom.lifeSaveBtn,
+      run: dom.lifeRunBtn,
+      stop: dom.lifeStopBtn,
+      refresh: dom.lifeRefreshBtn,
+      status: dom.lifeStatus,
+      runtimeStatus: dom.lifeRuntimeStatus,
+      nextRun: dom.lifeNextRun,
+      nextChat: dom.lifeNextChat,
+      runsToday: dom.lifeRunsToday,
+      rhythm: dom.lifeRhythmList,
+      permissions: dom.lifePermissions,
+      interestNote: dom.lifeInterestNote,
+      lastError: dom.lifeLastError,
+      activities: dom.lifeActivitiesList,
+      chats: dom.lifeChatsList,
+      drafts: dom.lifeDraftsList,
+    },
+    request: (...args) => storageScopedFetch(...args),
+    notify: message => toast(message),
+  });
+  lifeController.bind();
 }
 
 function bindUpdateController() {
@@ -1690,6 +1786,7 @@ function bindTodoController() {
         dom.todoEditorTitle.value = String(item.title || "");
         dom.todoEditorDetails.value = String(item.instructions ?? (item.onDue || item.details || ""));
         dom.todoEditorMode.value = item.onDue ? "execute" : "remind";
+        dom.todoEditorDelivery.textContent = TODO_CONTROLLER.deliverySummary(item, true);
         dom.todoEditorDetails.required = Boolean(item.onDue);
         dom.todoEditorDueAt.value = todoDateTimeInputValue(item.dueAt);
         dom.todoEditorDueDate.value = String(item.dueDate || "");
@@ -2567,18 +2664,45 @@ function bindEvents() {
     resizeChatInput();
     syncChatSubmitButton();
   });
+  window.AmadeusChatClipboard?.bind(dom.userInput, addPendingAttachments);
   bindAttachmentDropEvents();
   bindChatResizeHandle();
 
   dom.settingsTabs.forEach(button => {
     button.addEventListener("click", () => {
       activateSettingsTab(button.dataset.tab);
+      if (button.dataset.tab === "stickers") {
+        fetch('/api/settings').then(response => response.json()).then(data => {
+          desktopStickerSeries=data.stickerSeries || [];
+          desktopStickerEditor?.render({series:desktopStickerSeries});
+        }).catch(error => toast(`表情目录读取失败：${error.message}`));
+      }
       if (button.dataset.tab === "storage") refreshCacheStatus();
       if (button.dataset.tab === "persona") personaController?.load();
+    });
+    button.addEventListener("keydown", event => {
+      const navigationKeys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
+      if (!navigationKeys.includes(event.key)) return;
+      const tabs = dom.settingsTabs.filter(candidate => !(document.body.classList.contains("release-mode") && candidate.classList.contains("release-path-hidden")));
+      const currentIndex = tabs.indexOf(button);
+      if (currentIndex < 0) return;
+      let nextIndex = currentIndex;
+      if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+      else if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+      else nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+      event.preventDefault();
+      const nextTab = tabs[nextIndex];
+      nextTab.click();
+      nextTab.focus();
     });
   });
   dom.saveDisplayBtn.addEventListener("click", saveDisplaySettings);
   dom.saveInteractionBtn?.addEventListener("click", saveInteractionSettings);
+  document.getElementById('saveStickerSettingsBtn')?.addEventListener('click', async () => {
+    try { await saveSettings({stickerPreferences:desktopStickerEditor.getValue()}, '表情设置已保存'); }
+    catch (error) { toast(`表情设置保存失败：${error.message}`); }
+  });
   dom.saveVoiceBtn.addEventListener("click", saveVoiceSettings);
   dom.savePermissionsBtn.addEventListener("click", savePermissionsSettings);
   dom.testWebSearchBtn?.addEventListener("click", testWebSearchConnection);
@@ -3423,6 +3547,7 @@ function renderTodoItems(items = []) {
     if (recurrenceLabel) details.push(isPaused ? `${recurrenceLabel}（已暂停）` : recurrenceLabel);
     else if (isPaused) details.push("已暂停");
     details.push(item.onDue ? `到点执行：${todoTextSnippet(item.instructions || item.onDue)}` : "仅提醒");
+    details.push(TODO_CONTROLLER.deliverySummary(item));
     if (item.snoozedUntil) details.push("推迟至 " + todoLocalDateTime(item.snoozedUntil));
     const lastExecution = todoLastExecutionSummary(item);
     if (lastExecution) details.push("最近执行：" + lastExecution);
@@ -3631,6 +3756,7 @@ function normalizeLayoutMode(value) {
 }
 
 function fillSettingsForm() {
+  desktopStickerEditor?.render({series:desktopStickerSeries, value:settings.stickerPreferences ?? null});
   if (dom.visionEnabledInput) dom.visionEnabledInput.checked = settings.visionEnabled !== false;
   if (dom.visionApiKeyInput) dom.visionApiKeyInput.value = settings.visionApiKeySet ? SAVED_API_KEY_MASK : "";
   if (dom.visionApiHint) dom.visionApiHint.textContent = settings.visionStatus?.message || "云端识图跟随当前使用的配置；Google Gemini 不使用独立 DeepSeek Key。";
@@ -4793,6 +4919,7 @@ function openSettings() {
   backgroundDraft = newBackgroundDraft();
   fillSettingsForm();
   dom.settingsModal.classList.remove("hidden");
+  lifeController?.open();
   qqSetupController?.refresh();
   modelProfileController?.refresh().catch(() => {});
   backgroundEditor?.refresh();
@@ -4820,6 +4947,7 @@ function openFirstRunApiSetupIfNeeded() {
 function closeSettings() {
   if (modelProfileController?.getState().editing && !modelProfileController.cancel()) return;
   closeSalieriWindow();
+  lifeController?.close();
   dom.settingsModal.classList.add("hidden");
   backgroundDraft = null;
   updateBackgroundControls();
@@ -4831,9 +4959,19 @@ function closeSalieriWindow() {
 
 function activateSettingsTab(tab) {
   if (tab !== "memory") closeSalieriWindow();
-  dom.settingsTabs.forEach(button => button.classList.toggle("active", button.dataset.tab === tab));
-  dom.tabPages.forEach(page => page.classList.toggle("active", page.dataset.page === tab));
+  dom.settingsTabs.forEach(button => {
+    const active = button.dataset.tab === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  dom.tabPages.forEach(page => {
+    const active = page.dataset.page === tab;
+    page.classList.toggle("active", active);
+    page.setAttribute("aria-hidden", String(!active));
+  });
   if (tab === "qq") qqSetupController?.refresh();
+  lifeController?.setActive(tab === "life");
   backgroundEditor?.refresh();
 }
 
@@ -6813,6 +6951,13 @@ async function applyAssistant(data, userMessage = "") {
     const addedAssistantMessage = addMessage("assistant", reply, messageMeta);
     if (messageMeta.kind === "chat") chatController?.setPendingAssistant(addedAssistantMessage);
     else activeInteractionAssistantMessage = addedAssistantMessage;
+  } else if (data.source === "todo-reminder" && data.scheduledExecutionStatus) {
+    // The task's written result is complete even when an optional audio unit
+    // fails. Commit its full text before ACK, including any unvoiced tail.
+    progressiveMessage.message.content = reply;
+    progressiveMessage.message.meta.progressiveComplete = true;
+    progressiveMessage.message.meta.deliveryPartial = false;
+    messageView?.updateProgressive(progressiveMessage.message);
   }
   const committedAssistantMessage = progressiveMessage?.message
     || (messageMeta.kind === "chat" ? chatController?.getPendingAssistant() : activeInteractionAssistantMessage);
@@ -6839,9 +6984,9 @@ async function applyAssistant(data, userMessage = "") {
     conversationWasInterrupted = false;
   }
   persist();
-  // Scheduled execution ACK must follow the whole narration, including its tail.
-  return data.source === "todo-reminder" && data.scheduledExecutionStatus && settings.voiceEnabled
-    ? startedVoice === true : true;
+  // Audio has already settled above. ACK the committed written result so an
+  // optional speech failure cannot repeatedly deliver the same task output.
+  return Boolean(committedAssistantMessage);
 }
 
 function updateInteractionCoordinator(now = performance.now()) {

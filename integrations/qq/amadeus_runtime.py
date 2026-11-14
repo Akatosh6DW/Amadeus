@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 from urllib.parse import urlparse
+from .incoming_voice import record_segments
 from .media import segment_description
 from .identity import mention_text, mentions, event_sender
 from .references import reply_text
@@ -76,10 +77,13 @@ def message_text(event: dict) -> str:
 
 
 def reply_trigger(event: dict, account: str, policy: dict | None = None) -> bool:
-    """Cheap candidate filter; quoted messages must be resolved outside the WS reader."""
+    """Cheap candidate filter; media and quotes are resolved outside the WS reader."""
     if event.get('message_type') == 'group':
-        return bool(local_group_match(event, account, policy or {}) or quoted_message_id(event, policy or {}))
-    return event.get('message_type') == 'private' and bool(message_text(event))
+        policy = policy or {}
+        return bool(local_group_match(event, account, policy) or quoted_message_id(event, policy)
+                    or (record_segments(event) and 'keyword' in policy.get('group_triggers', [])
+                        and policy.get('group_keywords')))
+    return event.get('message_type') == 'private' and bool(message_text(event) or record_segments(event))
 
 
 def session_settings(model: dict, root: Path, *, voice: bool = False, speech_language: str = 'inherit') -> dict:
@@ -142,7 +146,8 @@ class AmadeusRunner:
                     trigger: dict | None = None, reply_format: str = "text", speech_language: str = 'inherit',
                     owner_ids: list[str] | None = None, account_role: str = 'assistant',
                     identity_context: dict | None = None, identity_scope: dict | None = None,
-                    message_context: dict | None = None, reply_style: str = 'game') -> dict:
+                    message_context: dict | None = None, reply_style: str = 'game',
+                    sticker_preferences: dict | None = None) -> dict:
         key = scope_key(account, kind, target)
         if (not owner_instruction and event.get('user_id') is not None
                 and isinstance(event.get('sender'), dict) and event['sender'].get('user_id') is not None
@@ -171,6 +176,8 @@ class AmadeusRunner:
             payload["conversation_context"] = conversation_context or {}
             payload["reply_instructions"] = reply_instructions[:2000]
             payload['reply_style'] = reply_style
+            from .sticker_preferences import sticker_preferences as select_sticker
+            payload['sticker_preferences'] = select_sticker(sticker_preferences, request_id)
             payload.update(images=images or [], media_notes=media_notes or [], compact_reply=compact_reply,
                            reply_identity=reply_identity, owner_instruction=owner_instruction, owner_tasks=owner_tasks or [],
                            reply_format=reply_format, speech_language=speech_language)

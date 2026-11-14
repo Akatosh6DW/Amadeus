@@ -1112,7 +1112,7 @@ def research_receipt_from_tool_results(
     web_results = [
         item
         for item in tool_results
-        if str(item.get("name") or "") in {"web_search", "read_web_page"}
+        if str(item.get("name") or "") in {"web_search", "read_web_page", "public_read"}
     ]
     if not web_results:
         return None
@@ -1138,7 +1138,10 @@ def research_receipt_from_tool_results(
             "success", "partial", "ok", "fetched",
         }:
             return False
-        return len(str(source.get("body") or "").strip()) >= 120
+        body = str(source.get("body") or "").strip()
+        if source.get("sourceOrigin") == "public_read":
+            return bool(body)
+        return len(body) >= 120
 
     for item in web_results:
         any_success = any_success or bool(item.get("ok"))

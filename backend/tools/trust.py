@@ -31,6 +31,7 @@ UNTRUSTED_SOURCE_TYPES = frozenset({
     "web_page",
     "web_search",
     "read_web_page",
+    "public_read",
     "attachment",
     "file_attachment",
     "qq_history",

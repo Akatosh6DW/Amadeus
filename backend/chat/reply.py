@@ -16,7 +16,12 @@ from .parsing import (
     extract_complete_json_string_field,
     looks_like_incomplete_structured_reply,
 )
-from backend.providers.reply_protocol import is_reply_envelope, is_nested_reply_envelope, parse_json_mapping
+from backend.providers.reply_protocol import (
+    is_reply_envelope,
+    is_nested_reply_envelope,
+    normalize_qq_reply_audience,
+    parse_json_mapping,
+)
 from .presentation import (
     ALLOWED_EMOTIONS,
     ALLOWED_GESTURES,
@@ -397,6 +402,7 @@ def normalize_model_reply(
         requires_user_response = False
         requires_user_response_provided = True
         expected_response_type = ""
+    qq_reply_audience = normalize_qq_reply_audience(value.get("qqReplyAudience"))
     return {
         **({"_participantSpeechRealized": True} if value.get("_participantSpeechRealized") is True else {}),
         "imageIds": value.get('imageIds') if isinstance(value.get('imageIds'), list) else [],
@@ -474,4 +480,9 @@ def normalize_model_reply(
         "attachmentAction": deepcopy(value.get("attachmentAction")) if isinstance(value.get("attachmentAction"), Mapping) else None,
         "_modelSpeechUnits": raw_model_speech_units,
         "claimPatches": normalize_claim_patches(value.get("claimPatches")),
+        **(
+            {"qqReplyAudience": qq_reply_audience}
+            if qq_reply_audience
+            else {}
+        ),
     }

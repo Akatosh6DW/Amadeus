@@ -19,7 +19,11 @@ from backend.chat.reply_fields import normalize_proactive_directive, normalize_r
 from backend.chat.delivery import require_delivery
 from backend.common.values import clamp_int
 from backend.providers.errors import UpstreamProtocolError
-from backend.providers.reply_protocol import unwrap_reply_envelope
+from backend.providers.reply_protocol import (
+    merge_qq_reply_audiences,
+    normalize_qq_reply_audience,
+    unwrap_reply_envelope,
+)
 from backend.tts.contract import MAX_SPEECH_UNITS
 
 
@@ -142,6 +146,9 @@ def normalize_streaming_utterance(
             contract_warnings.append("turn_contract_coverage_unverified")
         if payload.get("standalone", True) is not True:
             contract_warnings.append("first_visible_segment_not_standalone")
+    qq_reply_audience = normalize_qq_reply_audience(
+        payload.get("qqReplyAudience")
+    )
     normalized = services.projection.normalize_model_reply(
         {
             **(
@@ -169,6 +176,11 @@ def normalize_streaming_utterance(
             "memoryUpdates": [],
             "speechSegmentCount": valid_speech_segment_count(payload.get("speechSegmentCount"))
             or 1,
+            **(
+                {"qqReplyAudience": qq_reply_audience}
+                if qq_reply_audience
+                else {}
+            ),
         },
         settings=settings,
     )
@@ -209,6 +221,11 @@ def normalize_streaming_utterance(
             else {}
         ),
         "utteranceId": str(payload.get("utteranceId") or f"u{sequence}")[:80],
+        **(
+            {"qqReplyAudience": qq_reply_audience}
+            if qq_reply_audience
+            else {}
+        ),
         "proactiveDirective": normalize_proactive_directive(payload.get("proactiveDirective")),
         "proactiveDirectiveProvided": str(payload.get("proactiveDirective") or "").strip().lower()
         in PROACTIVE_DIRECTIVES,
@@ -321,8 +338,17 @@ def fast_stream_combined_result(
         if isinstance(trailer.get("relationEventProvided"), bool)
         else isinstance(trailer.get("relationEvent"), Mapping)
     )
+    qq_reply_audience = merge_qq_reply_audiences(
+        trailer.get("qqReplyAudience"),
+        *(item.get("qqReplyAudience") for item in utterances),
+    )
     return {
         "reply": "\n\n".join((str(item["textZh"]) for item in utterances)),
+        **(
+            {"qqReplyAudience": qq_reply_audience}
+            if qq_reply_audience
+            else {}
+        ),
         'imageIds': trailer.get('imageIds') if isinstance(trailer.get('imageIds'), list) else [],
         'galleryAccount': str(trailer.get('galleryAccount') or ''),
         "spokenTextJa": "\n\n".join((str(item["spokenTextJa"]) for item in utterances)),

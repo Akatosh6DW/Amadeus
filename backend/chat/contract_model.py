@@ -20,6 +20,7 @@ from backend.chat.parsing import parse_json_object
 from backend.context import prompts as context_prompts
 from backend.context import tool_evidence
 from backend.providers.errors import UpstreamProtocolError
+from backend.providers.reply_protocol import merge_qq_reply_audiences
 
 
 class ContractModelGateway(Protocol):
@@ -403,6 +404,12 @@ def rewrite_reply_to_turn_contract(
         ):
             rewritten[key] = result[key]
     attachment_delivery.preserve_attachment_delivery(result, rewritten)
+    previous_qq_reply_audience = merge_qq_reply_audiences(
+        result.get("qqReplyAudience"), rewritten.get("qqReplyAudience")
+    )
+    if previous_qq_reply_audience:
+        # Rewriting cannot downgrade private content to source delivery.
+        rewritten["qqReplyAudience"] = previous_qq_reply_audience
     from .gallery import preserve_gallery_selection
     preserve_gallery_selection(result, rewritten)
     rewritten["turnContractRewrittenByModel"] = True

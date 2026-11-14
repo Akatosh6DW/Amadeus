@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import urllib.parse
 from typing import Any, Callable, Mapping
-from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
+from agent.tool_architecture import DEFAULT_TOOL_REGISTRY, WEB_TOOL_NAMES
 from agent.todo_architecture import (
     TodoCommand, TodoTargetRef, classify_todo_request, classify_todo_request_with_context,
     recent_todo_action_context, recent_todo_task_ids, todo_request_targets_recent_receipt,
@@ -232,7 +232,7 @@ class ModelToolRequestConstraints:
                     "selection": {**dict(request.get("selection") or {}), "toolAuthorization": "navigate", "targetDomain": "browser"},
                 })
                 continue
-            if cognitive_state and name in {"web_search", "read_web_page"}:
+            if cognitive_state and name in WEB_TOOL_NAMES:
                 if task_tool_violations(cognitive_state, [request], DEFAULT_TOOL_REGISTRY):
                     continue
                 if name == "web_search":
@@ -249,8 +249,13 @@ class ModelToolRequestConstraints:
                     # not an additional permission. The executor still checks
                     # web permission, public addresses, DNS and every redirect.
                     constrained.append(dict(request))
+                elif name == "public_read":
+                    # Provider-specific source/operation arguments are already
+                    # bounded by the public_read schema and adapter. Preserve
+                    # the model-selected read request as-is.
+                    constrained.append(dict(request))
                 continue
-            if name in {"web_search", "read_web_page"} and web_research_explicitly_disabled(user_message):
+            if name in WEB_TOOL_NAMES and web_research_explicitly_disabled(user_message):
                 continue
             if name == "web_search":
                 if web_query_count >= 3:

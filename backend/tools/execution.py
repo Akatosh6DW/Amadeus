@@ -37,7 +37,7 @@ def execute_prepared_agent_tool(
         # The audit reason may use the actual authorized request. It must not
         # depend on the model repeating that request in a redundant field.
         execution_args["_requestText"] = str(user_question or "")[:1000]
-    if name in {"web_search", "read_web_page"}:
+    if name in {"web_search", "read_web_page", "public_read"}:
         execution_args["requestId"] = request_id
         if name == "read_web_page" and not (execution_args.get("researchQuery") or execution_args.get("query")):
             execution_args["researchQuery"] = user_question

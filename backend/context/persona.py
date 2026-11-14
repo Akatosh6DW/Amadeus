@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping
 
 from agent.fingerprints import runtime_fingerprint
 from agent.dialogue_task import current_dialogue_task
-from agent.reply_prompt_layers import ReplyPromptLayers, read_override_sections
+from agent.reply_prompt_layers import PERSONA_TURN_RULES, ReplyPromptLayers, read_override_sections
 from agent.persona_context import (
     PersonaContextMode,
     PersonaContextRuntime,
@@ -53,6 +53,12 @@ class PersonaDocuments:
     read_text: Callable[[Path], str]
 
 
+def _empty_continuity_context(_body: Mapping[str, Any] | None = None) -> str:
+    """Default host boundary: no shared life material is available."""
+
+    return ""
+
+
 @dataclass(frozen=True)
 class PersonaTurnAccess:
     read_relationship: Callable[[], dict[str, Any]]
@@ -60,6 +66,7 @@ class PersonaTurnAccess:
     cognitive_state: Callable[[Mapping[str, Any]], dict[str, Any]]
     relationship_prompt: Callable[[dict[str, Any]], str]
     streaming_user_message: Callable[[dict[str, Any]], tuple[str, list[dict[str, Any]]]]
+    continuity_context: Callable[[Mapping[str, Any] | None], str] = _empty_continuity_context
 
 
 @dataclass(frozen=True)
@@ -182,6 +189,94 @@ class PersonaContextService:
         text = read_override_sections(env.override_path)['persona']
         return "[Developer Persona Override]\n" + text if text else ""
 
+    def read_expression_prompt(self, *, override: Mapping[str, str] | None = None) -> str:
+        """Shared speaking preferences, independent of a foreground reply protocol."""
+        env = self.environment()
+        if env.release_mode:
+            override = {}
+        elif override is None:
+            override = read_override_sections(env.override_path)
+        from backend.life.context import COMPANION_LIFE_GROUNDING
+        return '\n'.join((env.natural_dialogue_style(), COMPANION_LIFE_GROUNDING,
+                          override.get('expression', '')))
+
+    def _read_continuity_context(self, cognitive_body: Mapping[str, Any] | None) -> str:
+        """Read host-approved life continuity without inferring a recipient.
+
+        The host owns the scope decision.  This service deliberately forwards
+        the request body as opaque context and never decides whether a QQ
+        sender is the owner from message text.
+        """
+
+        try:
+            value = self.turn.continuity_context(cognitive_body)
+        except Exception as error:  # continuity must never break an ordinary reply
+            self.diagnostics.log(
+                "continuity_context_unavailable",
+                errorType=type(error).__name__,
+            )
+            return ""
+        return str(value or "").strip()
+
+    @staticmethod
+    def _append_prompt(base: str, extra: str) -> str:
+        base_text = str(base or "").strip()
+        extra_text = str(extra or "").strip()
+        if not extra_text or extra_text in base_text:
+            return base_text
+        return "\n\n".join(item for item in (base_text, extra_text) if item)
+
+    def read_companion_prompt(
+        self,
+        user_message: str = "",
+        *,
+        cognitive_body: Mapping[str, Any] | None = None,
+        include_continuity: bool = True,
+    ) -> str:
+        """Return the shared character/voice/relationship prompt for life turns.
+
+        This is intentionally a prompt projection, rather than a chat payload:
+        engineering instructions, ordinary JSON protocols, tool lists and forum
+        corpus material stay with their owning caller.  A delegated dialogue
+        worker never receives the host's life continuity through this method.
+        """
+
+        if current_dialogue_task():
+            return ""
+        if (
+            isinstance(cognitive_body, Mapping)
+            and cognitive_body.get("_qqReplyStyle") in {"tieba", "kangba"}
+        ):
+            return ""
+        relationship = None
+        if isinstance(cognitive_body, Mapping):
+            relationship = self.turn.frozen_relationship(cognitive_body)
+        if not isinstance(relationship, dict):
+            relationship = self.turn.read_relationship()
+        snapshot = self.build_snapshot(
+            user_message,
+            [],
+            {},
+            relationship_state=relationship,
+            cognitive_body=cognitive_body,
+            reply_media_prompt="",
+            reply_example_prompt="",
+            include_continuity=include_continuity,
+        )
+        layers = snapshot.reply_layers
+        if layers is not None:
+            parts = [layers.persona, layers.persona_context, layers.continuity, layers.expression]
+        else:
+            parts = [snapshot.system_prompt, snapshot.prompt_text, self.read_expression_prompt()]
+        parts.append(self.turn.relationship_prompt(relationship))
+        return "\n\n".join(
+            dict.fromkeys(
+                text
+                for text in (str(item or "").strip() for item in parts)
+                if text
+            )
+        )
+
     def source_documents(self) -> dict[str, Any]:
         paths = self.environment()
         return {
@@ -274,6 +369,7 @@ class PersonaContextService:
         runtime_provider: Callable[[], PersonaContextRuntime] | None = None,
         reply_media_prompt: str = '',
         reply_example_prompt: str = '',
+        include_continuity: bool = True,
     ) -> PersonaContextSnapshot:
         """ON 不访问旧选择器；OFF 不初始化检索 runtime；SHADOW 仍计算旧 payload。"""
         task = current_dialogue_task()
@@ -355,23 +451,37 @@ class PersonaContextService:
                 system_prompt_suffix=self.read_override_prompt() if mode is PersonaContextMode.ON else "",
             )
         )
+        scene_text = snapshot.prompt_text
+        continuity = self._read_continuity_context(cognitive_body) if include_continuity else ""
+        if continuity:
+            snapshot = replace(
+                snapshot,
+                prompt_text=self._append_prompt(snapshot.prompt_text, continuity),
+                snapshot_id=runtime_fingerprint(
+                    (snapshot.snapshot_id, continuity), length=32,
+                ),
+            )
         override = read_override_sections(env.override_path) if not env.release_mode else {}
+        # Only the Kernel persona was stripped of these host rules; legacy
+        # system prompts still carry their own copy.
+        turn_rules = PERSONA_TURN_RULES if mode is PersonaContextMode.ON else ''
         layers = ReplyPromptLayers(mode='game',
-            engineering=override.get('engineering', '') + reply_media_prompt,
-            persona=snapshot.system_prompt, persona_context=snapshot.prompt_text,
-            expression=env.natural_dialogue_style() + '\n' + override.get('expression', ''),
+            engineering=turn_rules + override.get('engineering', '') + reply_media_prompt,
+            persona=snapshot.system_prompt, persona_context=scene_text,
+            continuity=continuity if continuity and continuity not in scene_text else '',
+            expression=self.read_expression_prompt(override=override),
             examples=reply_example_prompt)
         if cognitive_body is not None and cognitive_body.get('_qqReplyStyle'):
             from integrations.qq.persona_style import qq_reply_layers
             qq_layers = qq_reply_layers(str(cognitive_body.get('_qqReplyInstructions') or ''),
                 reply_style=str(cognitive_body['_qqReplyStyle']),
                 compact_reply=cognitive_body.get('_qqCompactReply', True), owner_control=True,
-                engineering=layers.engineering, shared_style=override.get('expression', ''),
+                engineering=layers.engineering, shared_style=self.read_expression_prompt(override=override),
                 examples=reply_example_prompt)
             # The default owner conversation keeps its complete Kurisu skills;
             # only explicitly independent forum personas replace them.
             layers = replace(qq_layers, persona=snapshot.system_prompt,
-                             persona_context=snapshot.prompt_text)
+                             persona_context=layers.persona_context, continuity=layers.continuity)
         snapshot = replace(snapshot, reply_layers=layers,
             snapshot_id=runtime_fingerprint((snapshot.snapshot_id, layers), length=32))
         self.record_snapshot(snapshot, cognitive_body)
@@ -382,7 +492,8 @@ class PersonaContextService:
         if isinstance(cognitive_body, dict) and not self.environment().release_mode:
             cognitive_body["_personaSkillDiagnostic"] = {
                 "snapshot": snapshot.safe_diagnostic(),
-                "promptFingerprint": runtime_fingerprint(snapshot.prompt_text),
+                "promptFingerprint": runtime_fingerprint(
+                    snapshot.reply_layers.persona_context if snapshot.reply_layers else snapshot.prompt_text),
                 "kernelFingerprint": runtime_fingerprint(snapshot.system_prompt),
             }
 

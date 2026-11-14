@@ -226,7 +226,15 @@ def source_has_readable_evidence(source: dict[str, Any]) -> bool:
     body = str(source.get("body") or "").strip()
     # A provider snippet is discovery metadata, not proof that the page was
     # read. Only a substantive successful fetch can cross the evidence gate.
-    return source_fetch_state(source) == "success" and len(body) >= 120
+    # Public API records are already fetched content even when a legitimate
+    # post/title/abstract is shorter than the web-page prose floor.  The
+    # explicit adapter marker prevents ordinary search snippets from using
+    # this exception.
+    if source_fetch_state(source) != "success":
+        return False
+    if str(source.get("sourceOrigin") or "").strip().lower() == "public_read":
+        return bool(body)
+    return len(body) >= 120
 
 
 def source_satisfies_policy(source: dict[str, Any], policy_id: str) -> bool:

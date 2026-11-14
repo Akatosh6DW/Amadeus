@@ -1,9 +1,8 @@
-"""Split a finished QQ text reply into a small number of safe bubbles.
+"""Preserve model-selected semantic units for QQ delivery.
 
-The splitter is deliberately conservative.  It prefers complete sentences and
-clauses, never cuts inside URLs or backtick code spans, and lets an individual
-unbreakable token exceed the soft character limit.  The character limit is a
-delivery preference rather than a request to rewrite model output.
+The active delivery path uses ``normalize_reply_parts``: complete semantic
+units, explicit blank paragraphs, or the whole reply.  The older lexical
+``split_reply`` helper remains for compatibility with existing callers only.
 """
 from __future__ import annotations
 
@@ -175,10 +174,177 @@ def split_reply(text: str, max_chars: int = DEFAULT_REPLY_BUBBLE_CHARS,
     return result
 
 
+def _compact_with_map(text: str) -> tuple[str, list[int]]:
+    """Return substantive characters and their offsets in ``text``.
+
+    QQ speech units are semantic boundaries, so whitespace used to lay out the
+    complete reply must not make an otherwise valid model boundary fail.  The
+    offset map lets the caller project the accepted unit back onto the exact
+    source text without rewriting URLs, code, or internal spacing.
+    """
+    characters: list[str] = []
+    offsets: list[int] = []
+    for index, character in enumerate(text):
+        if character.isspace():
+            continue
+        characters.append(character)
+        offsets.append(index)
+    return "".join(characters), offsets
+
+
+def _project_semantic_parts(reply: str, candidates: object) -> list[str] | None:
+    """Project an ordered model unit array onto ``reply`` when it covers it."""
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    compact_reply, offsets = _compact_with_map(reply)
+    if not compact_reply:
+        return []
+    cursor = 0
+    projected: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            return None
+        compact_candidate, _ = _compact_with_map(candidate)
+        if not compact_candidate:
+            return None
+        start = compact_reply.find(compact_candidate, cursor)
+        # Requiring adjacency prevents an array that omitted or reordered a
+        # substantive phrase from silently becoming a partial delivery plan.
+        if start != cursor:
+            return None
+        end = start + len(compact_candidate)
+        if end > len(offsets):
+            return None
+        original_start = offsets[start]
+        original_end = offsets[end - 1] + 1
+        piece = reply[original_start:original_end].strip()
+        if not piece:
+            return None
+        projected.append(piece)
+        cursor = end
+    if cursor != len(compact_reply):
+        return None
+    return projected
+
+
+def _explicit_paragraph_parts(reply: str) -> list[str]:
+    """Split only at explicit blank paragraphs, never inside fenced code."""
+    lines = reply.splitlines(keepends=True)
+    if not lines:
+        stripped = reply.strip()
+        return [stripped] if stripped else []
+    parts: list[str] = []
+    start = 0
+    offset = 0
+    blank_start: int | None = None
+    in_fence = False
+    for line in lines:
+        content = line.rstrip("\r\n")
+        fence_line = content.lstrip().startswith("```")
+        if in_fence:
+            offset += len(line)
+            if fence_line:
+                in_fence = False
+            continue
+        if fence_line:
+            if blank_start is not None:
+                piece = reply[start:blank_start].strip()
+                if piece:
+                    parts.append(piece)
+                start = offset
+                blank_start = None
+            offset += len(line)
+            in_fence = True
+            continue
+        if not content.strip():
+            if blank_start is None:
+                blank_start = offset
+            offset += len(line)
+            continue
+        if blank_start is not None:
+            piece = reply[start:blank_start].strip()
+            if piece:
+                parts.append(piece)
+            start = offset
+            blank_start = None
+        offset += len(line)
+    end = blank_start if blank_start is not None else len(reply)
+    piece = reply[start:end].strip()
+    if piece:
+        parts.append(piece)
+    return parts
+
+
+def normalize_reply_parts(reply: str, parts: object = None) -> list[str]:
+    """Return semantic QQ message units without lexical re-splitting.
+
+    A valid ordered unit array is projected onto the full reply and therefore
+    keeps the model's semantic grouping.  If the array is absent or does not
+    cover the full reply, only explicit blank paragraphs are used as a
+    compatibility fallback; otherwise the complete reply remains one unit.
+    """
+    if not isinstance(reply, str):
+        raise TypeError("QQ 回复必须为文字")
+    if not reply.strip():
+        return []
+    projected = _project_semantic_parts(reply, parts)
+    if projected is not None:
+        return projected
+    return _explicit_paragraph_parts(reply) or [reply.strip()]
+
+
+def _speech_unit_texts(result: object) -> list[str] | None:
+    """Extract the model's ordered Chinese unit text for QQ projection."""
+    if not isinstance(result, dict):
+        return None
+    for field in ("speechUnits", "_modelSpeechUnits", "utterances", "replyParts"):
+        raw = result.get(field)
+        if not isinstance(raw, list) or not raw:
+            continue
+        values: list[str] = []
+        valid = True
+        for item in raw:
+            if isinstance(item, str):
+                value = item
+            elif isinstance(item, dict):
+                value = next(
+                    (item.get(key) for key in ("textZh", "zh", "reply", "text")
+                     if isinstance(item.get(key), str) and item.get(key).strip()),
+                    "",
+                )
+            else:
+                valid = False
+                break
+            if not isinstance(value, str) or not value.strip():
+                valid = False
+                break
+            values.append(value)
+        if valid and values:
+            return values
+    return None
+
+
+def reply_parts_from_result(result: object, reply: str, *, voice: bool = False) -> list[str]:
+    """Project a completed chat result into QQ semantic text messages.
+
+    Voice delivery remains one complete text unit because the voice path owns
+    its speech plan.  Text delivery uses the model's explicit semantic units;
+    ``normalize_reply_parts`` provides the paragraph-only compatibility
+    fallback when the upstream result has no reliable unit array.
+    """
+    if not isinstance(reply, str):
+        reply = str(reply or "")
+    if voice:
+        return [reply] if reply.strip() else []
+    return normalize_reply_parts(reply, _speech_unit_texts(result))
+
+
 __all__ = [
     "DEFAULT_REPLY_BUBBLE_CHARS",
     "MAX_REPLY_BUBBLE_CHARS",
     "MAX_REPLY_BUBBLES",
     "MAX_OWNER_CONTROL_BUBBLES",
+    "normalize_reply_parts",
+    "reply_parts_from_result",
     "split_reply",
 ]

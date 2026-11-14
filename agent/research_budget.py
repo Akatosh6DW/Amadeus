@@ -10,7 +10,9 @@ import json
 import time
 from typing import Any, Mapping, MutableMapping, Sequence
 
-WEB_TOOLS = frozenset({"web_search", "read_web_page"})
+from agent.tool_architecture import WEB_TOOL_NAMES
+
+WEB_TOOLS = WEB_TOOL_NAMES
 DEPTHS = ("quick", "standard", "deep", "exhaustive")
 DEFAULT_RESEARCH_BUDGETS = {
     "quick": {"maxCalls": 12, "maxSeconds": 60},

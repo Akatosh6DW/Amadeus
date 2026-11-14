@@ -220,7 +220,11 @@ def speech_unit_contract_for_result(
     if projected_directions:
         updated["speechStageDirectionsProjected"] = True
     partial_delivery = bool(updated.get("speechPartialDelivery")) and bool(spoken)
-    if not reply or (speech_language == "ja-JP" and not spoken and not partial_delivery):
+    text_only_delivery = bool(updated.get("textOnlyDelivery")) and not spoken
+    if not reply or (
+        speech_language == "ja-JP" and not spoken
+        and not partial_delivery and not text_only_delivery
+    ):
         updated["speechUnits"] = []
         updated["speechUnitContract"] = {
             "schemaVersion": 2,
@@ -248,9 +252,14 @@ def speech_unit_contract_for_result(
             spoken_ja = re.sub(
                 r"\s+", " ", str(item.get("spokenTextJa") or item.get("ja") or "")
             ).strip()
+            if text_only_delivery:
+                # The upstream boundary rejected the speech track. Preserve
+                # its explicit text boundaries without reviving stale audio.
+                spoken_ja = ""
             if not text_zh or (
                 speech_language == "ja-JP"
                 and not spoken_ja
+                and not text_only_delivery
                 and not (partial_delivery and bool(item.get("textOnlyDelivery")))
             ):
                 candidates = []
@@ -317,6 +326,7 @@ def speech_unit_contract_for_result(
             unit["textOnlyDelivery"] = True
             unit["speechUnavailableReason"] = str(
                 candidate.get("speechUnavailableReason")
+                or updated.get("speechUnavailableReason")
                 or "spoken_alignment_failed"
             )
             unit["ttsUnavailableReason"] = str(

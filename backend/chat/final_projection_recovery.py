@@ -24,6 +24,7 @@ from agent.deepseek_vision import VISION_MODEL
 from agent.persona_context import PersonaContextSnapshot
 from backend.chat.parsing import parse_json_object
 from backend.tools.outcomes import effective_tool_results
+from backend.providers.reply_protocol import merge_qq_reply_audiences
 
 
 class FinalProjectionCognitiveOperations(Protocol):
@@ -173,6 +174,14 @@ def recover_final_projection_candidate(
         )
 
     repaired = deepcopy(dict(parsed))
+    prior_qq_reply_audience = merge_qq_reply_audiences(
+        error.candidate.get("qqReplyAudience"), repaired.get("qqReplyAudience")
+    )
+    if prior_qq_reply_audience:
+        # A repair cannot downgrade private content to source delivery.
+        repaired["qqReplyAudience"] = prior_qq_reply_audience
+    else:
+        repaired.pop("qqReplyAudience", None)
     from .gallery import preserve_gallery_selection
     preserve_gallery_selection(error.candidate, repaired)
     # 修复后的语音由 Flash 决定。这里只携带最终化器所需的本请求执行信息和账务

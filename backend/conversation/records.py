@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from integrations.qq.media_library import MAX_REPLY_IMAGES
+
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -296,7 +298,7 @@ class TurnRecordAssembler:
         if isinstance(result.get("webEvidenceStatus"), dict):
             turn["webEvidenceStatus"] = result["webEvidenceStatus"]
         if isinstance(result.get('galleryMedia'), list):
-            turn['galleryMedia'] = result['galleryMedia'][:2]
+            turn['galleryMedia'] = result['galleryMedia'][:MAX_REPLY_IMAGES]
         if isinstance(result.get("sources"), list):
             source_batch = (
                 dict(result.get("sourceBatch"))

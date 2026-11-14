@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
+from agent.tool_architecture import WEB_TOOL_NAMES
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,24 @@ class TurnExecutionPlanner:
         "grounded_claim_gate_evidence_gap",
     })
 
+    @staticmethod
+    def _is_advisory_web_obligation(item: CapabilityObligation) -> bool:
+        """Keep public-web wording from becoming a host-enforced obligation.
+
+        A request projected from natural-language intent is only a capability
+        hint.  The model may select a web tool after seeing the complete turn
+        and the actual permissions.  A web obligation created after a
+        structured model selection (or while resolving a browser target) is
+        different: it represents a concrete execution boundary and remains
+        enforceable.  Keeping this distinction here prevents callers from
+        turning lexical or preflight guesses into ``requiredTools``.
+        """
+
+        return (
+            item.capability in WEB_TOOL_NAMES
+            and item.source == "explicit_user_request"
+        )
+
     @classmethod
     def finalize(
         cls,
@@ -86,17 +105,20 @@ class TurnExecutionPlanner:
     ) -> TurnExecutionPlan:
         reasons = tuple(dict.fromkeys(str(item) for item in research_reasons if str(item)))
         required = tuple(dict.fromkeys(
-            item.capability for item in obligations if item.capability
+            item.capability
+            for item in obligations
+            if item.capability and not cls._is_advisory_web_obligation(item)
         ))
         authority = [
             f"obligation:{item.source}:{item.capability}:{item.reason}"
             for item in obligations
+            if not cls._is_advisory_web_obligation(item)
         ]
 
         proposed = str(proposed_research_policy or "allowed").lower()
         explicit_web_obligation = any(
-            item.capability in {"web_search", "read_web_page"}
-            and item.source in {"explicit_user_request", "browser_target_resolution"}
+            item.capability in WEB_TOOL_NAMES
+            and item.source == "browser_target_resolution"
             for item in obligations
         )
         user_forbids_web = "user_forbids_web" in reasons
@@ -111,7 +133,7 @@ class TurnExecutionPlanner:
             item in cls._HARD_RESEARCH_REASONS for item in reasons
         ):
             research_policy = "required"
-            if "web_search" not in required and "read_web_page" not in required:
+            if not WEB_TOOL_NAMES.intersection(required):
                 required = (*required, "web_search")
             authority.extend(f"research:{item}" for item in reasons)
         else:
@@ -123,7 +145,7 @@ class TurnExecutionPlanner:
 
         forbidden = ()
         if research_policy == "forbidden":
-            forbidden = ("web_search", "read_web_page")
+            forbidden = ("web_search", "read_web_page", "public_read")
             required = tuple(item for item in required if item not in forbidden)
 
         deduped_hints: list[CapabilityHint] = []

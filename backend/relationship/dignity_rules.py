@@ -40,7 +40,10 @@ def dignity_boundary_context_prompt(
         "本轮独立预判：" + json.dumps(assessment, ensure_ascii=False),
         (
             (
-                "最终 JSON 必须包含 boundaryAssessment={kind,severity,confidence,reason}。"
+                # An absent field is read as kind=none, so the ordinary turn
+                # does not spend output on declaring that nothing happened.
+                "本轮属于 ordinary_conflict、severe_personal_insult 或 sincere_apology 时，最终 JSON 必须包含 "
+                "boundaryAssessment={kind,severity,confidence,reason}；没有冲突的普通对话省略该字段，后端按 none 处理。"
                 if require_output_field else
                 "本轮边界判断由后端采用上述独立预判，普通核心对话不要重复输出 boundaryAssessment。"
             )

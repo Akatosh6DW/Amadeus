@@ -24,7 +24,6 @@ from agent.dialogue_architecture import (
     bind_current_visual_observation_contract,
     build_turn_contract,
     choose_turn_policy,
-    policy_prompt,
 )
 from agent.discourse_reference import (
     DiscourseLedger,
@@ -41,6 +40,7 @@ from agent.schedule_architecture import SCHEDULE_INTENT_PROMPT
 from agent.tool_architecture import (
     DEFAULT_TOOL_REGISTRY,
     PerceptionNeed,
+    WEB_TOOL_NAMES,
     bind_required_capabilities,
     merge_searched_tool_candidates,
     discover_capabilities,
@@ -53,6 +53,7 @@ from backend.chat.completion import reply_integrity_issues
 from backend.chat.delivery import require_delivery
 from backend.chat.preparation_cache import StreamPreparation, resolve_turn_references
 from backend.chat.parsing import extract_complete_json_string_field, looks_like_incomplete_structured_reply, parse_json_object
+from backend.providers.reply_protocol import merge_qq_reply_audiences
 from backend.common.text import unique_strings
 from backend.common.values import clamp_float, safe_nonnegative_int as _safe_nonnegative_int
 from backend.context.reference import _reference_evidence, contextual_reference_prompt, visual_relevant_context_prompt
@@ -933,14 +934,14 @@ def prepare_upstream_turn(services: UpstreamPipelineServices, state: UpstreamRun
         state.inferred_requests = [
             item
             for item in state.inferred_requests
-            if str(item.get("name") or "") not in {"web_search", "read_web_page"}
+            if str(item.get("name") or "") not in WEB_TOOL_NAMES
         ]
     elif (
         state.continuation is None
         and not services.task_planning.cognitive_turn_state(state.body)
         and execution_plan.research_policy == "required"
         and not any(
-        str(item.get("name") or "") in {"web_search", "read_web_page"}
+        str(item.get("name") or "") in WEB_TOOL_NAMES
         for item in state.inferred_requests
         )
     ):
@@ -1656,7 +1657,7 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
     generic_grounding_instruction = services.delivery_prompts.tool_grounding_instruction(
         generic_prompt_tool_results
     )
-    from backend.context.reply_layers import reply_layer_messages, independent_persona
+    from backend.context.reply_layers import reply_layer_messages, independent_persona, reply_policy_prompt
     independent = independent_persona(state.active_persona_snapshot)
     visual_style_context = (
         "[当前视觉任务] 沿用本轮选定的人格，先准确完成用户针对当前画面的具体问题；"
@@ -1691,15 +1692,15 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
     state.base_messages = [
         *reply_layer_messages(state.active_persona_snapshot, services.policy.natural_dialogue_style,
                               services.policy.emotion_selection_rule, visual=state.visual_focus_mode),
-        system_message('backend/chat/upstream_pipeline.py:1688', services.policy.cognitive_dialogue_reply_rule if services.task_planning.cognitive_turn_state(state.body) else services.policy.utterance_stream_reply_rule, source='backend/chat/upstream_pipeline.py', category='unclassified'),
-        *([system_message('backend/chat/upstream_pipeline.py:1693', state.turn_persona_context["factsPrompt"], source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        system_message('wire.reply_rule', services.policy.cognitive_dialogue_reply_rule if services.task_planning.cognitive_turn_state(state.body) else services.policy.utterance_stream_reply_rule, source='backend/chat/upstream_pipeline.py', category='unclassified'),
+        *([system_message('persona.facts', state.turn_persona_context["factsPrompt"], source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode else []),
         *([system_message('backend/chat/upstream_pipeline.py:1695', visual_style_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if visual_style_context else []),
         *([system_message('backend/chat/upstream_pipeline.py:1697', visual_recent_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if visual_recent_context else []),
         *(services.task_planning.task_local_dialogue_messages(state.body) if state.visual_focus_mode else []),
-        system_message('backend/chat/upstream_pipeline.py:1700', policy_prompt(state.turn_policy), source='backend/chat/upstream_pipeline.py', category='unclassified'),
+        system_message('backend/chat/upstream_pipeline.py:1700', reply_policy_prompt(state.turn_policy, state.active_persona_snapshot), source='backend/chat/upstream_pipeline.py', category='unclassified'),
         system_message('dialogue.speaker', services.policy.speaker_attribution_rule, source='backend/chat/upstream_pipeline.py', category='engineering'),
         system_message('engineering.accuracy', services.policy.technical_accuracy_rule, source='backend/chat/upstream_pipeline.py', category='engineering'),
         *([system_message('tools.legacy', services.policy.amadeus_tool_rule, source='backend/chat/upstream_pipeline.py', category='engineering')]
@@ -1709,16 +1710,16 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
         system_message('capability.current', services.delivery_prompts.tool_preflight_prompt(state.tool_preflight, state.capability), source='backend/chat/upstream_pipeline.py', category='mixed'),
         *([system_message('backend/chat/upstream_pipeline.py:1709', services.delivery_prompts.todo_reconciliation_prompt(state.todo_reconciliation), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if services.delivery_prompts.todo_reconciliation_prompt(state.todo_reconciliation) and not state.visual_focus_mode and not services.task_planning.cognitive_turn_state(state.body) else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1711', services.context_prompts.relationship_context_prompt(state.relationship_state), source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('relationship.context', services.context_prompts.relationship_context_prompt(state.relationship_state), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode and not independent else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1713', services.context_prompts.dignity_boundary_context_prompt(
+        *([system_message('dignity.boundary', services.context_prompts.dignity_boundary_context_prompt(
             state.relationship_state,
             state.body.get("_dignityAssessment") if isinstance(state.body.get("_dignityAssessment"), dict) else None,
             require_output_field=False,
         ), source='backend/chat/upstream_pipeline.py', category='unclassified')] if not state.visual_focus_mode and not independent else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1718', services.context_prompts.transition_style_prompt(state.messages), source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('turn.style', services.context_prompts.transition_style_prompt(state.messages), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode and not independent else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1720', services.context_prompts.permission_context_prompt(state.settings, body=state.body), source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('permission.context', services.context_prompts.permission_context_prompt(state.settings, body=state.body), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode else []),
         *([system_message('backend/chat/upstream_pipeline.py:1722', state.attachment_prompt_for_model, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.attachment_prompt_for_model else []),
@@ -1730,9 +1731,9 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
           if services.delivery_prompts.visual_relationship_reaction_instruction(state.prompt_tool_results, state.relationship_state)
           and not state.visual_focus_mode and not independent else []),
         *([system_message('backend/chat/upstream_pipeline.py:1731', interruption_context, source='backend/chat/upstream_pipeline.py', category='unclassified')] if interruption_context else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1732', explicit_context_control, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('context.control', explicit_context_control, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if explicit_context_control else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1734', explicit_reply_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('context.reply', explicit_reply_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if explicit_reply_context else []),
         *([system_message('backend/chat/upstream_pipeline.py:1736', services.context_prompts.explicit_user_position_prompt(state.user_message), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if services.context_prompts.explicit_user_position_prompt(state.user_message) and not state.visual_focus_mode else []),
@@ -1752,9 +1753,9 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
           if not state.visual_focus_mode else []),
         *([system_message('backend/chat/upstream_pipeline.py:1752', services.delivery_prompts.proactive_control_prompt(services.context.frozen_turn_context_state(state.body)), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.visual_focus_mode else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1754', services.context_prompts.session_temporal_context_prompt(state.user_message, settings=state.settings), source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('session.time_base', services.context_prompts.session_temporal_context_prompt(state.user_message, settings=state.settings), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if not state.visual_focus_mode else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1756', state.attribution_evidence, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('dialogue.attribution', state.attribution_evidence, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.attribution_evidence and not state.visual_focus_mode else []),
         *services.context.conversation_history_messages(state.body, [
             item for item in (
@@ -1764,11 +1765,11 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
             )
             if isinstance(item, dict) and not state.visual_focus_mode
         ]),
-        *([system_message('backend/chat/upstream_pipeline.py:1766', state.identity_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('identity.grounding', state.identity_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.identity_context and not state.visual_focus_mode and not independent else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1768', legacy_nickname_prompt, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('persona.nickname', legacy_nickname_prompt, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if legacy_nickname_prompt and not state.visual_focus_mode and not independent else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1770', legacy_motif_prompt, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('persona.motif', legacy_motif_prompt, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if legacy_motif_prompt and not state.visual_focus_mode else []),
         *([system_message('conversation.immediate', services.context_prompts.immediate_context_prompt(
             state.messages,
@@ -1778,13 +1779,13 @@ def generate_upstream_candidate(services: UpstreamPipelineServices, state: Upstr
             cognitive_state=services.task_planning.cognitive_turn_state(state.body),
         ), source='backend/chat/upstream_pipeline.py', category='mixed')]
           if not state.visual_focus_mode else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1780', state.pending_question_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('dialogue.pending_question', state.pending_question_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.pending_question_context and not state.visual_focus_mode else []),
         *([system_message('backend/chat/upstream_pipeline.py:1782', state.todo_pending_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.todo_pending_context and not state.visual_focus_mode else []),
         *([system_message('backend/chat/upstream_pipeline.py:1784', state.schedule_state_context, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if state.schedule_state_context and not state.visual_focus_mode else []),
-        *([system_message('backend/chat/upstream_pipeline.py:1786', contextual_reference_prompt(state.context_resolution), source='backend/chat/upstream_pipeline.py', category='unclassified')]
+        *([system_message('context.reference', contextual_reference_prompt(state.context_resolution), source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if contextual_reference_prompt(state.context_resolution) and not state.visual_focus_mode else []),
         *([system_message('backend/chat/upstream_pipeline.py:1788', current_visual_contract, source='backend/chat/upstream_pipeline.py', category='unclassified')]
           if current_visual_contract else []),
@@ -2003,7 +2004,7 @@ def apply_upstream_grounding_gates(services: UpstreamPipelineServices, state: Up
     state.pre_context_result = deepcopy(candidate)
     state.research_candidates = []
     state.has_web_grounding = any(
-        item.get("ok") and item.get("name") in {"web_search", "read_web_page"}
+        item.get("ok") and item.get("name") in WEB_TOOL_NAMES
         for item in state.grounding_tool_results
     )
     if state.has_web_grounding:
@@ -2115,6 +2116,13 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
                 settings=state.settings,
                 persona_snapshot=state.active_persona_snapshot,
             )
+            previous_qq_reply_audience = merge_qq_reply_audiences(
+                state.result.get("qqReplyAudience"), repaired_result.get("qqReplyAudience")
+            )
+            if previous_qq_reply_audience:
+                # The bounded format repair may repair syntax only; it cannot
+                # replace the delivery choice already made by the answer.
+                repaired_result["qqReplyAudience"] = previous_qq_reply_audience
             if repaired_result.get("structuredOutputInvalid"):
                 repaired_result["structuredOutputInvalidFromModel"] = True
             repaired_issues = reply_integrity_issues(repaired_result)
@@ -2160,11 +2168,11 @@ def repair_upstream_candidate(services: UpstreamPipelineServices, state: Upstrea
 
     failed_web_results = [
         item for item in state.executed_tool_results
-        if item.get("name") in {"web_search", "read_web_page"} and not item.get("ok")
+        if item.get("name") in WEB_TOOL_NAMES and not item.get("ok")
     ]
     successful_web_results = [
         item for item in state.executed_tool_results
-        if item.get("name") in {"web_search", "read_web_page"} and item.get("ok")
+        if item.get("name") in WEB_TOOL_NAMES and item.get("ok")
     ]
     insufficient_web_results = [
         item for item in successful_web_results
@@ -2326,30 +2334,38 @@ def project_upstream_result(services: UpstreamPipelineServices, state: UpstreamR
         state.result["speechSegmentCount"] = 1
         state.result["speechSegmentCountSource"] = "atomic_no_model_boundary"
     if requires_field_repair:
-        # Missing speech is a presentation limitation.  Freeze the canonical
-        # reply and degrade audio locally; a field-only model call is not a
-        # reason to replace or delay useful text.
+        # Alignment is advisory: preserve the model's nonempty Japanese track
+        # for the presentation stage. A style/length recommendation does not
+        # authorize deleting speech before that stage can align it.
         field_repair_source = "local_degraded_delivery"
         state.result["dialogueFieldRepairSkipped"] = True
         state.result["dialogueFieldRepairFields"] = list(
             dict.fromkeys((*missing_fields, *invalid_fields))
         )
         state.result["dialogueFieldRepairAttempted"] = False
-        state.result["spokenTextJa"] = ""
-        state.result["speechText"] = str(state.result.get("reply") or "")
-        state.result["speechUnavailableReason"] = "optional_speech_field_missing"
-        state.result["ttsUnavailableReason"] = "optional_speech_field_missing"
-        state.result["textOnlyDelivery"] = True
-        state.result["deliveryFallbackReason"] = "optional_speech_field_missing"
+        spoken = str(state.result.get("spokenTextJa") or "").strip()
+        state.result["speechValidation"] = {
+            "alignmentReason": str(field_validation.get("spokenAlignmentReason") or "alignment_recommended"),
+            "spokenCharacters": len(spoken),
+            "spokenFingerprint": runtime_fingerprint(spoken, length=32),
+            "replyCharacters": len(str(state.result.get("reply") or "")),
+        }
+        if not spoken:
+            state.result["speechText"] = str(state.result.get("reply") or "")
+            state.result["speechUnavailableReason"] = "optional_speech_field_missing"
+            state.result["ttsUnavailableReason"] = "optional_speech_field_missing"
+            state.result["textOnlyDelivery"] = True
+            state.result["deliveryFallbackReason"] = "optional_speech_field_missing"
         services.runtime.write_log(
             "dialogue_field_repair_skipped",
             requestId=state.request_id,
             missingFields=missing_fields,
             invalidFields=invalid_fields,
+            speechValidation=state.result["speechValidation"],
             frozenReplyFingerprint=runtime_fingerprint(
                 state.result.get("reply"), length=32
             ),
-            reason="delivery_boundary_preserves_text_without_extra_model_call",
+            reason=("speech_alignment_deferred" if spoken else "delivery_boundary_preserves_text_without_extra_model_call"),
         )
     if primary_emotion_missing:
         state.result["emotionResolvedLocally"] = True

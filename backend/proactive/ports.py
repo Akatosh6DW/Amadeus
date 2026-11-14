@@ -12,6 +12,7 @@ class ContextOperations:
     current_pending_action: Callable[..., Any]
     read_relationship_state: Callable[..., Any]
     relationship_context_prompt: Callable[..., Any]
+    companion_prompt: Callable[..., Any] | None = None
 
 
 @dataclass(frozen=True)

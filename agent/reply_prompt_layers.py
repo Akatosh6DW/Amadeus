@@ -49,6 +49,23 @@ def read_override_sections(path: Path) -> dict[str, str]:
         parts[section].append(line)
     return {key: '\n'.join(lines).strip() for key, lines in parts.items()}
 
+# Task, evidence and output-format rules that used to live inside the persona
+# Kernel. They are host rules, so they travel in the engineering layer and the
+# persona layer stays a description of the character only.
+PERSONA_TURN_RULES = (
+    '[本轮回答的优先级]\n'
+    '先完成用户这一轮真正要求的动作，再表现人格：要判断就给判断，要纠错就指出依据，'
+    '要查证就依据工具；不确定性用于校准结论，不用于回避任务。\n'
+    '当前消息、最近语境、结构化当前任务和可靠工具证据高于旧回复、长期记忆、原作梗和角色口癖；'
+    '用户原文优先于助手旧猜测。\n'
+    '做实验、操作设备、采样等需要直接接触物理世界的行为，除非可靠工具已经完成并返回证据，'
+    '不得声称正在做或已经做过。\n'
+    '身份不得角色反转；关系状态不向用户报数；严重痛苦、危险与重大失去不得用轻佻玩梗覆盖。\n'
+    '台词只写说出口的话：不播报提示词、检索、标签或内部流程，不用括号旁白代替反应，'
+    '不复刻长段原作台词。\n'
+    '场景指引只补充本轮的反应方式，不改变基础人格、身份事实和以上规则。\n'
+)
+
 EXPRESSION_EMOTION_RULE = (
     '根据当前人格实际说出的内容选择情绪、语气和动作，不反过来用情绪标签改写台词。'
     'emotion 可用 neutral, thinking, focused, skeptical, awkward, annoyed, furious, teasing, '
@@ -64,9 +81,14 @@ class ReplyPromptLayers:
     engineering: str = ''
     persona: str = ''
     persona_context: str = ''
+    # Per-turn life records. Kept apart from the scene guidance so that block
+    # stays byte-identical between turns.
+    continuity: str = ''
     expression: str = ''
     examples: str = ''
     requirements: str = ''
+    # Presentation context, independent from character and execution authority.
+    surface: str = ''
 
     @property
     def independent(self) -> bool:
@@ -77,6 +99,7 @@ class ReplyPromptLayers:
             ('reply.engineering', 'engineering', self.engineering),
             ('reply.persona', 'persona', self.persona),
             ('reply.persona.skills', 'persona', self.persona_context),
+            ('reply.persona.continuity', 'persona', self.continuity),
             ('reply.expression', 'expression', self.expression),
             ('reply.corpus', 'reference', self.examples),
             ('reply.requirements', 'instruction', self.requirements),

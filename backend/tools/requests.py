@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from agent.action_grounding import PreparedTurn
-from agent.tool_architecture import DEFAULT_TOOL_REGISTRY
+from agent.tool_architecture import DEFAULT_TOOL_REGISTRY, WEB_TOOL_NAMES
 from backend.tools.validation import normalize_tool_authorization
 
 
@@ -96,7 +96,7 @@ class ToolRequestService:
         # Reading/searching public information is likewise not inferred here.
         # Web schemas are exposed to the main model, which must emit the structured
         # tool_use itself after interpreting the complete turn.
-        has_research = any(item.get("name") in {"web_search", "read_web_page"} for item in requests)
+        has_research = any(item.get("name") in WEB_TOOL_NAMES for item in requests)
         if has_research:
             for request in requests:
                 if request.get("name") != "open_browser":

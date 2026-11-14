@@ -598,6 +598,7 @@ from backend.tools import transactions as tool_transactions
 from backend.tts import japanese_rules, japanese_lexicon, japanese_alignment, field_repair
 from backend.chat import emotion_repair
 from backend.tools import web as web_tools
+from backend.tools import public_reading as public_reading_tools
 from backend.research import fact_policy as research_fact_policy
 from backend.research import fact_audit as research_fact_audit
 from backend.research import routing as research_routing
@@ -803,7 +804,7 @@ GENERIC_MEMORY_NOISE = {"什么", "干什么", "做什么", "怎么办", "不知
 
 UPSTREAM_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
 UPSTREAM_RETRY_DELAYS = (0.45, 1.2)
-UPSTREAM_BACKGROUND_PURPOSES = {"ambient_emotion", "proactive_generation", "proactive_availability"}
+UPSTREAM_BACKGROUND_PURPOSES = {"ambient_emotion", "proactive_generation", "proactive_availability", "autonomous_life"}
 COGNITIVE_BODY_READ_PURPOSES = frozenset({
     "cognitive_format_recovery",
     "cognitive_adaptation_recall",
@@ -1075,6 +1076,7 @@ PUBLIC_DEFAULTS = load_public_defaults(ROOT / "configs" / "public_defaults.json"
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "stickerPreferences": None,
     "apiEndpoint": VISION_ENDPOINT,
     "apiModel": VISION_MODEL,
     "apiContextLimit": 1_000_000,
@@ -1275,6 +1277,7 @@ PERSONA_CONTEXT_SERVICE = persona_context_service.PersonaContextService(
         cognitive_state=lambda body: cognitive_turn_state(body),
         relationship_prompt=lambda state: relationship_context_prompt(state),
         streaming_user_message=lambda body: streaming_user_message(body),
+        continuity_context=lambda body: _daily_life_context(body),
     ),
     diagnostics=persona_context_service.PersonaDiagnostics(
         log=lambda event, **details: write_server_log(event, **details),
@@ -1625,11 +1628,16 @@ COGNITIVE_DIALOGUE_REPLY_RULE = (
     "不以逗号、分号、冒号或未完接续词收尾，不把省略号独立拆成单元。"
     + PROACTIVE_DIRECTIVE_INSTRUCTION +
     "需要澄清时用 kind=clarification，并同样给认知、收尾和对话字段。"
-    "工具调用用 kind=tool_use，每项 call 的 selection 声明实际目标域与用户授权；"
+    # Fields the host fills or ignores are not requested: selection is read
+    # only for sensor targets and browser retries, memoryAction/memoryUpdates
+    # are unused under the cognitive protocol, and an absent relationEvent or
+    # boundaryAssessment already means "none".
+    "工具调用用 kind=tool_use，每项 call 给 name 和 args；selection 只在感知工具指明 targetDomain、"
+    "浏览器重试指明 actionRelation 时填写，其余调用省略。"
     "可以给 progress:{zh,ja,emotion}，不要把进度重复进最终回答。"
     "可核验的外部事实另给 knowledgeConfidence=high/medium/low；受质疑或缺乏把握时按认知协议实际查证。"
-    "memoryAction 固定 none、memoryUpdates=[]；长期事实与偏好只通过认知补丁保存。"
-    "relationEvent={signals:[],commitment:'none',confidence:0,evidence:[]}，只有本轮真实关系事件才填写；"
+    "不输出 memoryAction、memoryUpdates；长期事实与偏好只通过认知补丁保存。"
+    "本轮确有真实关系事件时才输出 relationEvent={signals,commitment,confidence,evidence}，否则省略整个字段；"
     "signals 可为 shared_routine、positive、distress、repair，evidence 含 speaker 和逐字 quote；"
     "恋爱承诺 accepted 必须引用双方本轮原话。"
     "emotionIntensity 可在顶层或单元覆盖；boundaryAfter、gesture、voiceStyle、voiceTone、voiceIntensity 等可选。"
@@ -1675,6 +1683,7 @@ AMADEUS_TOOL_RULE = (
     "capture_camera（按需拍摄一帧摄像头画面并识别，需要 permissionReadCamera），"
     "web_search（在线搜索并读取来源网页正文，需要 permissionWebSearch；args.query 为搜索词），"
     "read_web_page（读取用户给出的公网网页正文，需要 permissionWebSearch；args.url 为完整 URL），"
+    "public_read（只读访问公开 Bluesky 帖子/串、Bangumi 条目、arXiv 摘要或 RSS/Atom；需要 permissionWebSearch；按 source/operation 传 query、actor、uri、id 或 url；不登录、不发帖），"
     "list_directory（列出授权工作区内的目录，需要 permissionFileRead；args.path 为相对路径），"
     "read_text_file（读取授权工作区内的 UTF-8 文本文件，需要 permissionFileRead；args.path 为相对路径），"
     "create_directory（在授权工作区内新建目录，需要 permissionFileWrite），"
@@ -1782,7 +1791,8 @@ def now_iso() -> str:
 def read_system_prompt() -> str:
     from backend.chat.gallery import gallery_prompt
     return PERSONA_CONTEXT_SERVICE.read_system_prompt() + gallery_prompt(
-        globals().get('GALLERY_CONFIG_PATH', DATA_DIR / 'qq-agent' / 'gateway.json'))
+        globals().get('GALLERY_CONFIG_PATH', DATA_DIR / 'qq-agent' / 'gateway.json'),
+        reply_preferences=globals().get('GALLERY_REPLY_PREFERENCES'))
 
 
 SYSTEM_PROMPT = read_system_prompt()
@@ -1950,6 +1960,33 @@ def persona_context_runtime() -> PersonaContextRuntime:
     return PERSONA_CONTEXT_SERVICE.runtime_instance()
 
 
+def reply_sticker_preferences(body=None, user_message=''):
+    body = body if isinstance(body, Mapping) else {}
+    if current_dialogue_task() and '_qqStickerPreferences' not in body:
+        return globals().get('GALLERY_REPLY_PREFERENCES')
+    from integrations.qq.sticker_preferences import sticker_preferences
+    request_id = str(body.get('requestId') or body.get('currentTurnId') or user_message)
+    # Desktop owner turns carry the effective QQ-session setting from the
+    # gateway.  An explicit ``None`` means that session has no proactive
+    # series preference; only an absent private field falls back to the
+    # desktop-wide setting used by ordinary local chat.
+    weights = (body.get('_qqStickerPreferences')
+               if '_qqStickerPreferences' in body
+               else load_settings().get('stickerPreferences'))
+    preferences = sticker_preferences(weights, request_id)
+    # Owner image sends do not enter the normal Ledger, so the gateway passes
+    # a bounded, account/session-scoped history from owner-receipts.  The
+    # gallery prompt consumes only the derived asset ids; malformed or absent
+    # history remains an advisory no-op.
+    history = body.get('_qqDeliveryHistory')
+    if history:
+        from backend.chat.gallery import recent_gallery_ids
+        recent = recent_gallery_ids(history, limit=64)
+        if recent:
+            preferences = {**preferences, '_recent_image_ids': recent}
+    return preferences
+
+
 def build_persona_context_snapshot(
     user_message: str = "",
     messages: list[dict[str, Any]] | None = None,
@@ -1965,7 +2002,8 @@ def build_persona_context_snapshot(
         legacy_builder=_build_legacy_persona_context,
         system_prompt_reader=read_system_prompt,
         runtime_provider=persona_context_runtime,
-        reply_media_prompt=gallery_prompt(globals().get('GALLERY_CONFIG_PATH', DATA_DIR / 'qq-agent' / 'gateway.json')),
+        reply_media_prompt=gallery_prompt(globals().get('GALLERY_CONFIG_PATH', DATA_DIR / 'qq-agent' / 'gateway.json'),
+            reply_preferences=reply_sticker_preferences(cognitive_body, user_message)),
         reply_example_prompt=persona_examples_prompt(
             DATA_DIR, str((cognitive_body or {}).get('_qqStyleQuery') or user_message),
             style=str((cognitive_body or {}).get('_qqReplyStyle') or 'game'),
@@ -2286,7 +2324,30 @@ def dignity_boundary_context_prompt(
 ) -> str:
     if current_dialogue_task():
         return "[QQ 沟通边界]结合具体语境区分玩笑、争论与辱骂；自然回应或结束交流，不把账号主人的人际关系解释成 Amadeus 的身份关系，遵循当前任务的对外身份。"
+    if qq_conversation_active():
+        # The owner talking over QQ keeps the same boundary and tone, but the
+        # verdict is not counted there, so the field is not requested.
+        require_output_field = False
     return dignity_rules.dignity_boundary_context_prompt(state, preflight_assessment, require_output_field=require_output_field)
+
+
+def qq_conversation_active() -> bool:
+    """Whether this turn belongs to a QQ conversation, from host state only.
+
+    A QQ worker process installs its dialogue frame before the application
+    starts; the owner bridge enters the verified owner route before running
+    the local pipeline. Neither can be set by a message or by model output.
+    """
+
+    if current_dialogue_task():
+        return True
+    try:
+        from backend.tools.trust_context import authenticated_owner_delivery_target
+
+        target = authenticated_owner_delivery_target()
+    except (ImportError, AttributeError, RuntimeError):
+        return False
+    return isinstance(target, Mapping) and str(target.get("channel") or "").lower() == "qq"
 
 
 DIGNITY_MODEL_SERVICE = DignityModelService(
@@ -2300,6 +2361,7 @@ DIGNITY_BOUNDARY_SERVICE = DignityBoundaryService(
     write_state=lambda *args, **kwargs: write_relationship_state(*args, **kwargs),
     classify=lambda *args, **kwargs: classify_dignity_message_with_model(*args, **kwargs),
     write_log=lambda *args, **kwargs: write_server_log(*args, **kwargs),
+    counting_suspended=lambda: qq_conversation_active(),
 )
 
 
@@ -3670,6 +3732,7 @@ RESEARCH_EXECUTION = ResearchExecution(ResearchExecutionPorts(
     bind_reused=lambda *args, **kwargs: bind_reused_tool_steps(*args, **kwargs),
     web_search=lambda *args, **kwargs: tool_web_search(*args, **kwargs),
     read_page=lambda *args, **kwargs: tool_read_web_page(*args, **kwargs),
+    public_read=lambda *args, **kwargs: tool_public_read(*args, **kwargs),
     log=lambda *args, **kwargs: write_server_log(*args, **kwargs),
     rounds=lambda: _RESEARCH_ROUNDS,
     store=lambda: _RESEARCH_STORE,
@@ -5059,6 +5122,7 @@ def _append_conversation_turn_locked(
         compact_artifact=compact_turns_artifact,
         refine_summary=refine_conversation_summary,
         summary_jobs=SUMMARY_JOB_REGISTRY,
+        record_daily_turn=lambda turn: _record_daily_turn(turn),
     ))
     return writer.append_locked(user_message, result, settings, diagnostics)
 
@@ -5157,6 +5221,7 @@ PROACTIVE_PERSONA = PersonaResources(
     root=lambda: ROOT, layers_path=lambda: PERSONA_LAYERS_PATH,
     prompt_path=lambda: PROACTIVE_PERSONA_PROMPT_PATH,
     read_json=lambda *args, **kwargs: read_json_file(*args, **kwargs),
+    companion_prompt=lambda user_message="", cognitive_body=None: _proactive_companion_prompt(user_message, cognitive_body),
 )
 
 
@@ -6070,11 +6135,17 @@ def execute_scheduled_task(reminder: dict[str, Any], settings: dict[str, Any]) -
     ensure_turn_context_snapshot(body, request_id=request_id, user_message=instruction)
     isolate_scheduled_context(body, default_context=default_conversation_context())
     body["_preparedActionTurn"] = prepare_action_turn(instruction, request_id=request_id, pending_action={})
+    desktop_delivery = (task.get("deliveryTarget") or {}).get("channel") != "qq"
+    # Freeze the same persona for task generation and its optional narration,
+    # just as the foreground chat pipeline does.
+    speech_persona = (_build_pipeline_persona_snapshot(body, instruction, [], request_id=request_id)
+                      if desktop_delivery and settings.get("voiceEnabled", True) else None)
     from backend.tools.trust_context import qq_account_scope
 
     def run_task_model():
         with qq_account_scope(str((task.get("deliveryTarget") or {}).get("accountId") or "")):
-            return call_upstream(body)
+            return (call_upstream(body, persona_snapshot=speech_persona)
+                    if speech_persona is not None else call_upstream(body))
 
     result = run_task_model()
     if scheduled_execution_continuation_required(body, result):
@@ -6090,6 +6161,14 @@ def execute_scheduled_task(reminder: dict[str, Any], settings: dict[str, Any]) -
         )
         result = run_task_model()
     bind_turn_context_to_result(body, result)
+    if desktop_delivery:
+        # QQ owns its own voice preferences; its local success confirmation is
+        # silent and must not add a desktop narration request.
+        result = reminder_application.prepare_scheduled_speech(
+            result, settings, align=align_spoken_text_ja,
+            write_log=write_server_log, request_id=request_id,
+            persona_snapshot=speech_persona,
+        )
     # Freeze public delivery units before the reminder cache drops private fields.
     result = speech_unit_contract_for_result(result, request_id=request_id)
     outcome = body.get("_cognitiveOutcome") or {}
@@ -6677,7 +6756,7 @@ def effective_tool_results_for_status(
 ) -> list[dict[str, Any]]:
     """Compatibility name for consumers that need authoritative outcomes."""
 
-    return effective_tool_results(results)
+    return tool_outcomes.effective_tool_results_for_status(results)
 
 
 def enforce_external_action_receipt(
@@ -7089,6 +7168,9 @@ def execute_web_research_plan(
 
 
 WEB_TOOLS = web_tools.WebTools(write_log=lambda *args, **kwargs: write_server_log(*args, **kwargs))
+PUBLIC_READING_TOOLS = public_reading_tools.PublicReadingTools(
+    write_log=lambda *args, **kwargs: write_server_log(*args, **kwargs),
+)
 
 
 # WebTools owns fetching only.  ReadingContextService is intentionally attached
@@ -7116,6 +7198,10 @@ def tool_read_web_page(settings: dict[str, Any], args: dict[str, Any]) -> dict[s
         result,
         request_id=str(args.get("requestId") or "")[:120],
     )
+
+
+def tool_public_read(settings: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    return PUBLIC_READING_TOOLS.tool_public_read(settings, args)
 
 
 def research_evidence_fingerprint(result: dict[str, Any]) -> tuple[str, ...]:
@@ -7267,11 +7353,13 @@ def _agent_tool_executor(name: str):
 
     return {
         "get_system_time": lambda settings, args, question: tool_get_system_time(settings),
+        "life_journal": lambda settings, args, question: tool_life_journal(),
         "capture_screen": lambda settings, args, question: tool_capture_screen(settings, question),
         "capture_camera": lambda settings, args, question: tool_capture_camera(settings, question),
         "read_image": lambda settings, args, question: tool_read_image(settings, args, question),
         "web_search": lambda settings, args, question: tool_web_search(settings, args),
         "read_web_page": lambda settings, args, question: tool_read_web_page(settings, args),
+        "public_read": lambda settings, args, question: tool_public_read(settings, args),
         "list_directory": lambda settings, args, question: tool_list_directory(settings, args),
         "read_text_file": lambda settings, args, question: tool_read_text_file(settings, args),
         "create_directory": lambda settings, args, question: tool_create_directory(settings, args),
@@ -7737,6 +7825,7 @@ REPLY_REPAIRS = ReplyRepairs(ReplyRepairPorts(
     natural_style=lambda: NATURAL_DIALOGUE_STYLE,
     emotion_rule=lambda: EMOTION_SELECTION_RULE,
     forbidden_phrases=lambda: FORBIDDEN_ASSISTANT_PHRASES,
+    alignment_reason=lambda *args, **kwargs: JAPANESE_ALIGNMENT.spoken_alignment_reason(*args, **kwargs),
 ))
 
 
@@ -8376,6 +8465,12 @@ def normalize_claim_patches(value: Any) -> list[dict[str, str]]:
     return chat_reply_fields.normalize_claim_patches(value)
 
 
+def resolve_model_reply_media(value: dict[str, Any]) -> list[dict[str, str]]:
+    from backend.chat.gallery import resolve_reply_media
+    return resolve_reply_media(value,
+        globals().get('GALLERY_CONFIG_PATH', DATA_DIR / 'qq-agent' / 'gateway.json'))
+
+
 def normalize_model_reply(value: Any, settings: dict[str, Any] | None = None, *, persona_snapshot=None) -> dict[str, Any]:
     result = chat_reply.normalize_model_reply(
         value, settings,
@@ -8384,9 +8479,7 @@ def normalize_model_reply(value: Any, settings: dict[str, Any] | None = None, *,
         normalize_spoken_japanese_terms=normalize_spoken_japanese_terms,
         persona_snapshot=persona_snapshot,
     )
-    from backend.chat.gallery import resolve_reply_media
-    result['galleryMedia'] = resolve_reply_media(result,
-        globals().get('GALLERY_CONFIG_PATH', DATA_DIR / 'qq-agent' / 'gateway.json'))
+    result['galleryMedia'] = resolve_model_reply_media(result)
     result['imageIds'] = [item['id'] for item in result['galleryMedia']]
     return result
 
@@ -10322,6 +10415,7 @@ REPLY_FINALIZER = ReplyFinalizer(
         punctuation_fallback_speech_units=lambda *args, **kwargs: punctuation_fallback_speech_units(*args, **kwargs),
         speech_unit_contract_for_result=lambda *args, **kwargs: speech_unit_contract_for_result(*args, **kwargs),
         enforce_speaker_attribution_grounding=lambda *args, **kwargs: enforce_speaker_attribution_grounding(*args, **kwargs),
+        resolve_reply_media=lambda result: resolve_model_reply_media(result),
     ),
     FinalizationPersistenceOperations(
         materialize_generated_files=lambda *args, **kwargs: materialize_generated_files(*args, **kwargs),
@@ -10598,6 +10692,7 @@ SETTINGS_ROUTES = SettingsRoutes(SettingsOperations(
     background_images=lambda: available_background_images(),
     test_api=lambda: test_api_connection(),
     test_web_search=lambda: test_web_search_connection(),
+    sticker_series=lambda: QQ_SETUP_SERVICE._sticker_series(),
 ))
 
 MODEL_PROFILE_SERVICE = ModelProfileService(
@@ -12067,12 +12162,101 @@ TOUCH_APPLICATION = TouchApplication(
 
 from backend.qq_owner import classify_group_message, deliver_owner_chat, publish_endpoint as publish_qq_owner_endpoint
 
+from backend.life.service import LifePorts, LifeService
+from backend.life.store import LifeStore
+from backend.life.context import render_continuity_context
+from backend.life.owner_scope import current_owner_life_context
+from backend.life.conversation import record_daily_turn
+from backend.life.owner_receipts import read_owner_delivery_state
+from backend.api.life_routes import LifeRoutes
+
+
+def _life_persona() -> str:
+    # Life shares identity and speaking preferences, but owns its action protocol.
+    # LifeService supplies the structured daily context once in its own payload.
+    return PERSONA_CONTEXT_SERVICE.read_companion_prompt(include_continuity=False)
+
+
+def _daily_scope_allowed() -> bool:
+    if current_dialogue_task() or developer_storage_active():
+        return False
+    owner_context = current_owner_life_context()
+    if owner_context is None:
+        return True
+    return (owner_context["kind"] == "private" and owner_context["target"] == owner_context["owner"]
+            and (owner_context["account"], owner_context["owner"]) == LIFE_SERVICE.selected_owner())
+
+
+def _daily_life_context(body=None) -> str:
+    if not _daily_scope_allowed():
+        return ""
+    return render_continuity_context(LIFE_SERVICE.daily_context())
+
+
+def _proactive_companion_prompt(user_message="", cognitive_body=None) -> str:
+    if not _daily_scope_allowed():
+        return ""
+    return PERSONA_CONTEXT_SERVICE.read_companion_prompt(user_message, cognitive_body=cognitive_body)
+
+
+def _record_daily_turn(turn) -> None:
+    if not _daily_scope_allowed():
+        return
+    record_daily_turn(LIFE_SERVICE.continuity, turn, selected_owner=LIFE_SERVICE.selected_owner(),
+        owner_context=current_owner_life_context(), delegated=bool(current_dialogue_task()), now=LIFE_SERVICE.clock())
+
+
+LIFE_SERVICE = LifeService(
+    LifeStore(DATA_DIR / "autonomous-life.sqlite3"),
+    LifePorts(
+        settings=lambda: load_settings(), configured=lambda value: configured(value),
+        model=lambda *a, **k: send_upstream_chat_payload(*a, **k), persona=_life_persona,
+        qq_account=lambda: QQ_SETUP_SERVICE.configured_account(),
+        qq_owners=lambda account: QQ_SETUP_SERVICE.configured_owners(account),
+        qq_receipts=lambda account, owner, ids: QQ_SETUP_SERVICE.chat_receipts(account, owner, ids),
+        qq_request_receipts=lambda account, owner, ids: QQ_SETUP_SERVICE.chat_receipts_for_requests(account, owner, ids),
+        owner_receipt=lambda **identity: read_owner_delivery_state(QQ_SETUP_SERVICE.runtime, **identity),
+        web=lambda name, settings, args: ({"web_search": tool_web_search,
+                                           "read_web_page": tool_read_web_page,
+                                           "public_read": tool_public_read}[name])(settings, args),
+        qq=lambda name, settings, args: execute_qq_tool(name, settings, args, data_root=DATA_DIR),
+        log=lambda *a, **k: write_server_log(*a, **k),
+    ), data_dir=DATA_DIR,
+)
+LIFE_ROUTES = LifeRoutes(LIFE_SERVICE)
+
+
+def tool_life_journal() -> dict[str, Any]:
+    # Delegated QQ conversations must not read the owner's desktop diary.
+    if not _daily_scope_allowed():
+        return {"name": "life_journal", "ok": False, "error": "desktop_diary_scope_required"}
+    snapshot = LIFE_SERVICE.snapshot()
+    account, owner = LIFE_SERVICE.selected_owner(snapshot["config"])
+    return {"name": "life_journal", "ok": True, "note": snapshot["state"]["note"],
+            "continuity": snapshot["continuity"],
+            "activities": snapshot["activities"][:8],
+            "chats": [{k: row[k] for k in ("messages", "state", "createdAt")} for row in snapshot["chats"]
+                      if (row["account"], row["owner"]) == (account, owner)][:5],
+            "qzoneEvents": snapshot["qzoneEvents"][:5],
+            "drafts": [{k: row[k] for k in ("id", "content", "state", "createdAt")} for row in snapshot["drafts"][:5]]}
+
+
+def start_background_services() -> None:
+    start_scheduled_tasks()
+    LIFE_SERVICE.start()
+    write_server_log("background_services_started", services=["scheduled_tasks", "autonomous_life"])
+
+
+def stop_background_services() -> None:
+    LIFE_SERVICE.shutdown()
+    SCHEDULED_TASK_RUNNER.stop()
+
 HTTP_SERVICES = http_server.HttpServices(
     routes=http_server.HttpRoutes(
         runtime=RUNTIME_ROUTES, updates=UPDATE_ROUTES, assets=ASSET_ROUTES, workbench=WORKBENCH_ROUTES,
         settings=SETTINGS_ROUTES, model_profiles=MODEL_PROFILE_ROUTES,
         cache=CACHE_ROUTES, conversation=CONVERSATION_ROUTES,
-        tasks=TASK_ROUTES, memory=MEMORY_ROUTES, actions=ACTION_ROUTES, speech=SPEECH_ROUTES,
+        tasks=TASK_ROUTES, memory=MEMORY_ROUTES, actions=ACTION_ROUTES, speech=SPEECH_ROUTES, life=LIFE_ROUTES,
     ),
     runtime=http_server.HttpRuntime(
         log=lambda *a, **k: write_server_log(*a, **k),
@@ -12096,7 +12280,7 @@ HTTP_SERVICES = http_server.HttpServices(
         stream=lambda handler, body: STREAM_CHAT_DELIVERY.deliver(handler, body),
         atomic=lambda handler, body: ATOMIC_CHAT_DELIVERY.deliver(handler, body),
         qq_owner=lambda handler, body: deliver_owner_chat(handler, body, runtime=DATA_DIR / 'qq-agent',
-            atomic=ATOMIC_CHAT_DELIVERY.deliver,
+            atomic=ATOMIC_CHAT_DELIVERY.deliver_prepared,
             classify_group=lambda text: classify_group_message(text, load_settings(), open_api_request)),
     ),
     errors=http_server.HttpErrors(
@@ -12121,7 +12305,7 @@ STARTUP_SERVICES = StartupServices(
     should_start_vision=lambda settings: should_start_vision_service(settings),
     ensure_vision=lambda *a, **k: ensure_vision_service(*a, **k),
     stop_tts=lambda: stop_gpt_sovits_service(), stop_vision=lambda: stop_vision_service(),
-    start_tasks=lambda: start_scheduled_tasks(), stop_tasks=lambda: SCHEDULED_TASK_RUNNER.stop(),
+    start_tasks=lambda: start_background_services(), stop_tasks=lambda: stop_background_services(),
 )
 
 def main() -> None:

@@ -110,7 +110,7 @@ def execution_trust_context(user_text: str, body: Mapping | None, *, data_root: 
                                 '_hostHistorical': bool(item.get('historical'))})
     unknown = []
     qzone_account = ""
-    external_tools = {"web_search", "read_web_page", "read_text_file", "read_image",
+    external_tools = {"web_search", "read_web_page", "public_read", "read_text_file", "read_image",
                       "capture_screen", "capture_camera", "qq_history", "qq_space"}
     for item in results:
         if not isinstance(item, Mapping):

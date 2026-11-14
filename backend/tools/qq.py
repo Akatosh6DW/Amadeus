@@ -10,6 +10,7 @@ import urllib.request
 from collections.abc import Mapping
 
 from integrations.qq.policy import policy_revision, CONVERSATION_FIELDS, conversation_policy, voice_enabled
+from integrations.qq.media_library import MAX_REPLY_IMAGES
 
 
 # MediaLibrary IDs are content-addressed SHA-256 values.  Keep the adapter
@@ -59,7 +60,7 @@ def _qq_attachment_ids(value) -> list[str] | None:
 def _qq_image_ids(value) -> list[str] | None:
     if value is None:
         return []
-    if not isinstance(value, list) or not value or len(value) > 2:
+    if not isinstance(value, list) or not value or len(value) > MAX_REPLY_IMAGES:
         return None
     result = []
     for item in value:
@@ -214,7 +215,7 @@ def execute_qq_tool(name: str, settings: dict, args: dict, *, data_root: Path, s
                 image_ids = _qq_image_ids(args.get("imageIds"))
                 if not image_ids:
                     return {"ok": False, "error": "invalid_qq_image_ids", "attempted": False,
-                            "message": "本轮最多选择两张不重复的真实 QQ 图片。"}
+                            "message": f"本轮最多选择{MAX_REPLY_IMAGES}张不重复的真实 QQ 图片。"}
                 # /api/media calls the formal MediaLibrary parameter assetIds;
                 # imageIds remains the model-facing name used by qq_media.
                 payload["assetIds"] = image_ids
@@ -378,7 +379,7 @@ def execute_qq_tool(name: str, settings: dict, args: dict, *, data_root: Path, s
                 "recentEvents": result.get("events", [])[:10],
                 "capabilities": {"read": ["连接状态", "授权范围", "近期草稿与发送回执"],
                     "manage": ["configure", "delegate", "send", "draft", "approve", "pause", "resume", "mute", "unmute", "stop"], "historyTool": "qq_history",
-                    "configureFields": ["account_role", "owner_ids", "owner_control_enabled", "owner_control_in_groups", "owner_developer_mode", "qzone_enabled", "qzone_allow_write", "qzone_allow_publish", "qzone_autonomous", "qzone_interval_minutes", "qzone_instructions", "mode", "private_ids", "group_ids", "reply_format", "voice_reply_percent", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "reply_bubble_chars", "max_sends_per_hour", "minimum_interval_seconds", "muted_private_ids", "muted_group_ids", "background_enabled", "history_messages", "compact_reply", "reply_identity", "reply_style", "group_triggers", "group_keywords"],
+                    "configureFields": ["account_role", "owner_ids", "owner_control_enabled", "owner_control_in_groups", "owner_developer_mode", "qzone_enabled", "qzone_allow_write", "qzone_allow_publish", "qzone_autonomous", "qzone_interval_minutes", "qzone_instructions", "mode", "private_ids", "group_ids", "reply_format", "voice_reply_percent", "sticker_preferences", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "reply_bubble_chars", "max_sends_per_hour", "minimum_interval_seconds", "muted_private_ids", "muted_group_ids", "background_enabled", "history_messages", "compact_reply", "reply_identity", "reply_style", "group_triggers", "group_keywords"],
                     "conversationConfigure": {"target": "targetType + targetId", "fields": sorted(CONVERSATION_FIELDS), "inherit": "字段设 null 恢复默认；全局暂停优先"},
                     "modes": {"paused": "暂停", "review": "主人确认后发送", "auto": "自动回复白名单来信"},
                     "setupLocation": "设置 → QQ", "requiresOwnerIntent": True},
@@ -400,7 +401,7 @@ def execute_qq_tool(name: str, settings: dict, args: dict, *, data_root: Path, s
             patch = args.get("policy")
             expected = args.get("expectedPolicy")
             revision = args.get("expectedRevision")
-            if not isinstance(patch, dict) or not patch or set(patch) - {"mode", "account_role", "owner_ids", "owner_control_enabled", "owner_control_in_groups", "owner_developer_mode", "qzone_enabled", "qzone_allow_write", "qzone_allow_publish", "qzone_autonomous", "qzone_interval_minutes", "qzone_instructions", "private_ids", "group_ids", "reply_format", "voice_reply_percent", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "reply_bubble_chars", "max_sends_per_hour", "minimum_interval_seconds", "muted_private_ids", "muted_group_ids", "background_enabled", "history_messages", "compact_reply", "reply_identity", "reply_style", "group_triggers", "group_keywords"}:
+            if not isinstance(patch, dict) or not patch or set(patch) - {"mode", "account_role", "owner_ids", "owner_control_enabled", "owner_control_in_groups", "owner_developer_mode", "qzone_enabled", "qzone_allow_write", "qzone_allow_publish", "qzone_autonomous", "qzone_interval_minutes", "qzone_instructions", "private_ids", "group_ids", "reply_format", "voice_reply_percent", "sticker_preferences", "speech_language", "reply_instructions", "reply_delay_seconds", "reply_delay_mode", "reply_bubble_chars", "max_sends_per_hour", "minimum_interval_seconds", "muted_private_ids", "muted_group_ids", "background_enabled", "history_messages", "compact_reply", "reply_identity", "reply_style", "group_triggers", "group_keywords", "reply_on_login"}:
                 return {"ok": False, "error": "invalid_qq_policy", "message": "只允许修改回复设置、触发条件、每小时发送上限和好友、群白名单。"}
             if not isinstance(expected, dict) and not isinstance(revision, str):
                 return {"ok": False, "error": "qq_policy_snapshot_required", "message": "尚未修改。先调用 qq_status，再将 policyRevision 原样作为 args.expectedRevision 重试；也可传完整 expectedPolicy。"}
@@ -420,12 +421,14 @@ def execute_qq_tool(name: str, settings: dict, args: dict, *, data_root: Path, s
                     if target not in saved_targets and not owner_target:
                         raise ValueError('请先把该联系人或群加入已保存名单，或将本人 QQ 号保存为主人账号')
                     if set(patch) - CONVERSATION_FIELDS:
-                        raise ValueError('单独会话只能修改回复方式、身份、要求、间隔、上下文、排版和群聊触发；暂停请用 mute')
+                        raise ValueError('单独会话只能修改回复方式、身份、要求、间隔、上下文、排版、群聊触发和登录后补回；暂停请用 mute')
                     overrides = dict(expected.get('conversation_overrides', {}))
                     key = f'{kind}:{target}'
                     overrides[key] = {**overrides.get(key, {}), **patch}
                     policy = normalize_policy({**expected, 'conversation_overrides': overrides})
                 else:
+                    if 'reply_on_login' in patch:
+                        raise ValueError('登录后补回遗漏消息须指定具体 targetType 和 targetId')
                     policy = normalize_policy({**expected, **patch})
             except (ValueError, TypeError) as exc:
                 return {"ok": False, "error": "invalid_qq_policy", "message": str(exc)}
@@ -504,7 +507,7 @@ def execute_qq_tool(name: str, settings: dict, args: dict, *, data_root: Path, s
         image_ids = _qq_image_ids(args.get("imageIds"))
         if image_ids is None:
             return {"ok": False, "error": "invalid_qq_image_ids", "sent": False,
-                    "message": "本轮最多选择两张不重复的真实 QQ 图片。"}
+                    "message": f"本轮最多选择{MAX_REPLY_IMAGES}张不重复的真实 QQ 图片。"}
         if attachment_ids:
             # A draft does not otherwise need a status round trip, but importing
             # a main-chat image is account-sensitive.  Verify the live policy
@@ -537,13 +540,16 @@ def execute_qq_tool(name: str, settings: dict, args: dict, *, data_root: Path, s
                 return {"ok": False, "error": "invalid_imported_qq_image_ids", "sent": False,
                         "message": "图片导入回执无效，本次没有发送。"}
             image_ids = list(dict.fromkeys([*image_ids, *imported_ids]))
-            if len(image_ids) > 2:
+            if len(image_ids) > MAX_REPLY_IMAGES:
                 return {"ok": False, "error": "qq_image_selection_limit", "sent": False,
-                        "message": "本轮合计最多发送两张图片，请减少 imageIds 或主对话附件。"}
+                        "message": f"本轮合计最多发送{MAX_REPLY_IMAGES}张图片，请减少 imageIds 或主对话附件。"}
         if action in {"draft", "send", "approve"} and not request_id:
             return {"ok": False, "error": "qq_request_id_required", "attempted": False,
                     "sent": False, "message": "请求缺少本轮标识，不能在没有独立回合边界时发送或确认。"}
         payload = {"message_type": args.get("targetType"), "message": str(args.get("text", "")), "reason": reason}
+        if action in {"send", "draft"} and isinstance(args.get("replyParts"), list):
+            from integrations.qq.reply_segments import normalize_reply_parts
+            payload["replyParts"] = normalize_reply_parts(payload["message"], args["replyParts"])
         if image_ids:
             payload["imageIds"] = image_ids
         if payload["message_type"] not in {"private", "group"}:
@@ -554,6 +560,8 @@ def execute_qq_tool(name: str, settings: dict, args: dict, *, data_root: Path, s
         payload["request_id"] = hashlib.sha256((request_id+json.dumps(identity,sort_keys=True,ensure_ascii=False)).encode("utf-8")).hexdigest()
         if action in {"draft", "send"}:
             payload["creation_request_id"] = request_id
+            if "replyFormat" in args:
+                payload["replyFormat"] = args["replyFormat"]
         if "speechLanguage" in args:
             payload["speechLanguage"] = args["speechLanguage"]
         if current:

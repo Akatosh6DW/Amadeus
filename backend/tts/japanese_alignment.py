@@ -76,43 +76,48 @@ class JapaneseAlignment:
 
     def should_align_spoken_text_ja(self, settings: dict[str, Any], result: dict[str, Any], *,
                                   persona_snapshot: PersonaContextSnapshot | None = None) -> bool:
+        return bool(self.spoken_alignment_reason(settings, result, persona_snapshot=persona_snapshot))
+
+    def spoken_alignment_reason(self, settings: dict[str, Any], result: dict[str, Any], *,
+                                persona_snapshot: PersonaContextSnapshot | None = None) -> str:
+        """Explain the existing alignment recommendation without rejecting text."""
         if speech_language_profile(settings)["speechLanguage"] != "ja-JP":
-            return False
+            return ""
         if not settings.get("alignSpokenJa", True):
-            return False
+            return ""
         if not self.operations.configured(settings):
-            return False
+            return ""
         if str(settings.get("ttsProvider") or "").strip().lower() != "gpt-sovits":
-            return False
+            return ""
         reply = re.sub(r"\[S\d+\]", "", str(result.get("reply") or ""), flags=re.I).strip()
         spoken = str(result.get("spokenTextJa") or result.get("spoken_text_ja") or "").strip()
         if not reply:
-            return False
+            return ""
         # Plain-text recovery has no trustworthy spokenTextJa field. Keep its
         # provenance explicit so even a later compatibility transform cannot make
         # a generic sentence masquerade as a semantically aligned voice line.
         if result.get("spokenTextJaMissingFromModel"):
-            return True
+            return "missing_model_speech"
         if not spoken:
-            return True
-        if (
-            (not independent_persona(persona_snapshot) and spoken_japanese_style_needs_repair(spoken))
-            or spoken_japanese_content_needs_repair(spoken)
-            or self.operations.spoken_japanese_pronunciation_needs_repair(reply, spoken)
-        ):
-            return True
+            return "empty_speech"
+        if not independent_persona(persona_snapshot) and spoken_japanese_style_needs_repair(spoken):
+            return "style_alignment"
+        if spoken_japanese_content_needs_repair(spoken):
+            return "language_content_alignment"
+        if self.operations.spoken_japanese_pronunciation_needs_repair(reply, spoken):
+            return "pronunciation_alignment"
         reply_units = re.findall(r"[\u3400-\u9fffA-Za-z0-9]", reply)
         spoken_units = re.findall(r"[\u3040-\u30ff\u3400-\u9fffA-Za-z0-9]", spoken)
         # Chinese and Japanese are both compact scripts. A Japanese line shorter
         # than roughly half of the Chinese semantic units is almost always a
         # partial translation, not merely a natural paraphrase.
         if len(spoken_units) < max(7, int(math.ceil(len(reply_units) * 0.55))):
-            return True
+            return "possible_partial_translation"
         if not re.search(r"[\u3040-\u30ff]", spoken):
-            return True
+            return "no_kana"
         if re.search(r"[\u4e00-\u9fff]{8,}", spoken) and not re.search(r"[ぁ-んァ-ンー]{4,}", spoken):
-            return True
-        return False
+            return "unvoiced_han_sequence"
+        return ""
 
 
     def align_spoken_text_ja(
@@ -200,6 +205,9 @@ class JapaneseAlignment:
         else:
             result["spokenTextJaRepaired"] = False
             result["speechText"] = projected_fixed
+        result["textOnlyDelivery"] = False
+        for key in ("speechUnavailableReason", "ttsUnavailableReason", "deliveryFallbackReason"):
+            result.pop(key, None)
         return result
 
 
